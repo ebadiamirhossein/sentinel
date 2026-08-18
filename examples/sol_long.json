@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "M4 demo fixture: a hand-written analyst report plus the market facts the",
+    "risk gate needs. Prices are realistic SOLUSDT levels; the instrument rules",
+    "are the real Binance USDT-M values recorded in M1 (tick 0.01, step 0.01,",
+    "min_notional 5 -> the engine's floor is max(5, 20) = 20).",
+    "Nothing here is live market data — it is a fixture, per CLAUDE.md."
+  ],
+  "report": {
+    "symbol": "SOLUSDT",
+    "candidate_status": "CANDIDATE",
+    "setup_type": "trend_pullback",
+    "direction": "long",
+    "timeframe_label": "intraday",
+    "thesis": "4h uptrend intact; 1h pullback into EMA50 and the prior breakout level 82.4 with volume drying up on the retrace. Funding neutral, OI rising with price. 15m shows demand absorption at the zone top.",
+    "evidence": [
+      {"claim": "4h regime is an uptrend", "source_field": "features.4h.trend_regime"},
+      {"claim": "price is retracing into the 1h EMA50", "source_field": "features.1h.ema50"},
+      {"claim": "prior breakout level at 82.4 held twice", "source_field": "features.levels"},
+      {"claim": "relative volume 0.41 on the retrace", "source_field": "features.1h.relative_volume"}
+    ],
+    "counter_thesis": "Fear & Greed at 74 (greed) — crowded-long risk into resistance at 84.6.",
+    "entry_zone": {"low": "82.10", "high": "83.10"},
+    "stop": "81.20",
+    "targets": ["84.90", "86.60", "88.90"],
+    "invalidation_price": "81.40",
+    "invalidation_text": "1h close below 81.40",
+    "confidence": 78,
+    "prompt_version": "v1",
+    "model": "claude-fable-5"
+  },
+  "market": {
+    "symbol": "SOLUSDT",
+    "last_price": "83.40",
+    "atr_1h": "0.90",
+    "instrument": {
+      "source": "binance_usdm",
+      "fetched_at": "2026-08-18T12:00:00+00:00",
+      "symbol": "SOLUSDT",
+      "tick_size": "0.01",
+      "qty_step": "0.01",
+      "min_notional": "5"
+    }
+  },
+  "account": {
+    "capital_eur": "10000",
+    "risk_per_trade_pct": "0.75",
+    "eurusd_rate": "1.1593"
+  },
+  "portfolio": {
+    "open_risk_pct": "0",
+    "open_positions": 0
+  }
+}

@@ -15,12 +15,15 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
+from sentinel.risk.models import GateDecision, PauseReason, PauseState
 from sentinel.storage.models import (
     FxRateRow,
+    GateDecisionRow,
     IngestionFailureRow,
     InstrumentMetaRow,
     MarketSnapshotRow,
     OhlcvCandleRow,
+    RiskStateRow,
 )
 
 #: Snapshot parts stored as JSONB on the snapshot row.
@@ -219,6 +222,73 @@ class FxRateRepository:
             pair=row.pair,
             rate=row.rate,
             is_last_known_good=True,
+        )
+
+
+class GateDecisionRepository:
+    """Audit trail for every risk-gate verdict (PRD F10; M9's rejection stats)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    @staticmethod
+    def to_row(decision: GateDecision, cycle_id: UUID | None = None) -> dict[str, Any]:
+        """Pure serialization — the reason travels as a code, not just as prose."""
+        return {
+            "cycle_id": cycle_id,
+            "symbol": decision.symbol,
+            "evaluated_at": decision.evaluated_at,
+            "gate_status": decision.status.value,
+            "reason": None if decision.reason is None else decision.reason.value,
+            "message": decision.message[:512],
+            "prompt_version": decision.prompt_version,
+            "plan": None if decision.plan is None else decision.plan.model_dump(mode="json"),
+        }
+
+    async def record(self, decision: GateDecision, cycle_id: UUID | None = None) -> None:
+        self._session.add(GateDecisionRow(**self.to_row(decision, cycle_id)))
+
+    async def recent(self, limit: int = 50) -> list[GateDecisionRow]:
+        result = await self._session.execute(
+            select(GateDecisionRow).order_by(GateDecisionRow.evaluated_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+class RiskStateRepository:
+    """§7 — pause state that survives a restart. One row, id=1."""
+
+    ROW_ID = 1
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def load(self) -> PauseState:
+        row = await self._session.get(RiskStateRow, self.ROW_ID)
+        if row is None:
+            return PauseState()
+        return PauseState(
+            paused=row.paused,
+            reason=None if row.pause_reason is None else PauseReason(row.pause_reason),
+            until=row.paused_until,
+        )
+
+    async def save(self, state: PauseState) -> None:
+        statement = insert(RiskStateRow).values(
+            id=self.ROW_ID,
+            paused=state.paused,
+            pause_reason=None if state.reason is None else state.reason.value,
+            paused_until=state.until,
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["id"],
+                set_={
+                    "paused": statement.excluded.paused,
+                    "pause_reason": statement.excluded.pause_reason,
+                    "paused_until": statement.excluded.paused_until,
+                },
+            )
         )
 
 

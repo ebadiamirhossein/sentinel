@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Index,
     Numeric,
@@ -108,6 +109,50 @@ class FxRateRow(Base):
     rate: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GateDecisionRow(Base):
+    """Every risk-gate verdict, approved or not (PRD F10, G5).
+
+    The ``reason`` column holds a machine-readable ``RejectionReason`` — M9 asks
+    "what is the gate rejecting most often, and was it right to?", which a prose
+    message cannot answer.
+    """
+
+    __tablename__ = "gate_decisions"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    gate_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    message: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: The full TradePlan on approval, null otherwise.
+    plan: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_gate_decisions_symbol_evaluated_at", "symbol", "evaluated_at"),
+        Index("ix_gate_decisions_reason", "reason"),
+    )
+
+
+class RiskStateRow(Base):
+    """Single-row pause state (§7): a pause must survive a restart."""
+
+    __tablename__ = "risk_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pause_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    paused_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class IngestionFailureRow(Base):

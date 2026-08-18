@@ -26,7 +26,7 @@ From the analyst (`AnalystReport`): direction, entry_zone {low, high}, stop, tar
 ## 2. Coherence checks (reject with reason if any fail)
 
 1. Long: `stop < entry_zone.low < entry_zone.high` and all targets > entry_zone.high. Short: mirrored.
-2. Entry zone within `max_entry_distance_pct` (default 3%) of last price — no chasing, no fantasy fills.
+2. Entry zone within `max_entry_distance_pct` (default 3%) of last price — no chasing, no fantasy fills. **(Ruling 2026-08-18, from M4: measured on BOTH edges, so every rung is a plausible fill.)**
 3. Stop distance ≥ 0.6 × ATR(14, 1h) — rejects noise-level stops that guarantee stop-outs.
 4. Stop distance ≤ 3 × ATR(14, 1h) — rejects lazy wide stops that wreck RR.
 5. RR to TP1 (from weighted avg entry) ≥ `min_rr_tp1`.
@@ -45,6 +45,20 @@ The analyst supplies a zone; the engine decides the ladder deterministically:
 - Weighted average entry `E = Σ(price_i × w_i)` is used for all sizing and RR math.
 - Ladder metadata stored so the tracker can account partial fills: if only rung 1 fills and stop hits, realized loss = 40% of planned risk (≈ −0.4R), and the card explains this.
 
+> **Correction (2026-08-18, from M4) — the weights are shares of RISK, not of notional.** This
+> section and §8.5 both promise that a rung-1-only stop-out is −0.40R. That is only true if each
+> rung takes `w_i` of the *risk budget*: `qty_i = risk_usdt × w_i / |p_i − stop|`. §4's
+> `qty_i = (notional × w_i)/p_i` makes them shares of notional instead, under which rung 1 —
+> nearest price and therefore furthest from the stop — carries **51.3%** of the risk, and a
+> rung-1-only stop-out is −0.51R. Owner ruling: **§3/§8.5 win**; §4's qty formula is superseded.
+> The two readings coincide exactly for a single-entry plan. See `journal/M4_REPORT.md`.
+
+> **Ruling (2026-08-18, from M4) — collapse order.** §4 says "collapse to fewer rungs (3→2→1)
+> preserving total notional" without saying which rung goes. The engine drops the **far rung** (the
+> smallest weight) and renormalizes the survivors proportionally (40/35 → 53.33/46.67); a single
+> surviving rung sits at the zone midpoint at 100%, matching the narrow-zone rule above. Because a
+> collapse moves `E`, rules 3–5 are re-checked against the final ladder before the plan ships.
+
 ## 4. Sizing & leverage math
 
 ```
@@ -58,6 +72,17 @@ leverage_raw    = notional_eur / margin_eur
 leverage        = clamp(ceil_to_step(leverage_raw, 1), 1, max_leverage)
 margin_eur_final= notional_eur / leverage           # recomputed after clamping
 ```
+
+> **Correction (2026-08-18, from M4) — EUR→USDT multiplies, it does not divide.** The line
+> `notional_usdt = notional_eur / eurusd_rate` above is wrong for the rate we actually store. M1
+> fetches Frankfurter with `base=EUR&symbols=USD`, so `FxRate.rate` is **USD per EUR** (1.1593), and
+> the conversion is `notional_usdt = notional_eur × eurusd_rate`. Dividing undersizes every position
+> by ~26% (1/1.1593² ≈ 0.744). The engine multiplies.
+
+> **Correction (2026-08-18, from M4) — `qty_i` is derived from risk, not from notional.** See the
+> ruling in §3: `qty_i = risk_usdt × w_i / |p_i − stop|`, and the notional is the *result*
+> (`Σ qty_i × p_i`) rather than the input. `notional = risk / stop_dist_pct` remains exactly true
+> for a single-entry plan, and is within a fraction of a percent of the ladder result otherwise.
 
 **Liquidation buffer rule:** approximate isolated-margin liquidation distance ≈ `1/leverage` (conservative, ignoring maintenance margin tiers in v1). Require:
 

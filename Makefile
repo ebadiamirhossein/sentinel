@@ -4,7 +4,7 @@ BIN := $(VENV)/bin
 COMPOSE ?= docker compose
 
 .DEFAULT_GOAL := help
-.PHONY: help install test lint format typecheck check run up down restart logs ps migrate revision shell clean require-env
+.PHONY: help install test lint format typecheck coverage-risk check run up down restart logs ps migrate revision shell clean require-env
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -33,7 +33,10 @@ format: install ## Apply Ruff formatting and safe fixes
 typecheck: install ## mypy --strict
 	$(BIN)/mypy sentinel tests
 
-check: test lint typecheck ## Everything the milestone gate requires
+coverage-risk: install ## Risk engine: 100% branch coverage or fail (specs/RISK_ENGINE.md)
+	$(BIN)/pytest tests/risk --cov=sentinel.risk --cov-branch --cov-fail-under=100
+
+check: test lint typecheck coverage-risk ## Everything the milestone gate requires
 
 run: install require-env ## Run the app locally (no Docker)
 	$(BIN)/python -m sentinel.main

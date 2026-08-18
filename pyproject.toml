@@ -45,6 +45,9 @@ dev = [
   "httpx>=0.27",
   "mypy>=1.13",
   "ruff>=0.8",
+  # M4 — property tests for the risk engine, required by name in
+  # specs/RISK_ENGINE.md §8.2. ~0.5MB, under CLAUDE.md's 1MB approval bar.
+  "hypothesis>=6.100",
   "types-PyYAML>=6.0",
   "pandas-stubs>=2.2",
   # M2: third-party oracle for the indicator tests only (owner-approved
@@ -104,3 +107,9 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["sentinel"]
+
+[tool.coverage.report]
+# The risk engine is the one module the specs require at 100% branch coverage
+# (MILESTONES M4, ARCHITECTURE §2). `make coverage-risk` enforces it.
+show_missing = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

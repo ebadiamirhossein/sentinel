@@ -6,6 +6,11 @@
 
 ## 1. Signal card (the core message)
 
+> **ILLUSTRATIVE — the numbers below are hand-written, not computed, and are not authoritative.**
+> They show *layout and tone only*. `specs/RISK_ENGINE.md` §4 is the single source of truth for the
+> math (this example's quantities, leverage and notional do not reconcile with each other). To be
+> regenerated from real engine output at M6, when the bot renders its first card.
+
 ```
 🟢 LONG — SOLUSDT   [trend_pullback · intraday · conf 78]
 Prompt v3 · Signal #142 · 2026-08-17 14:32 UTC
