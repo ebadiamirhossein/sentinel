@@ -138,6 +138,34 @@ class DataQualityConfig(_Strict):
     max_age_seconds: MaxAgeConfig = MaxAgeConfig()
 
 
+class NewsConfig(_Strict):
+    """specs/DATA_SOURCES.md §2.2. The CryptoPanic key itself lives in .env."""
+
+    limit: int = 20
+    important_only: bool = True
+    cryptopanic_base_url: str = "https://cryptopanic.com/api/v1/posts/"
+    rss_feeds: tuple[str, ...] = (
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://cointelegraph.com/rss",
+    )
+
+
+class IngestionConfig(_Strict):
+    """specs/DATA_SOURCES.md §2-§3 — timeouts, retries and endpoints."""
+
+    request_timeout_seconds: float = 10.0
+    max_retries: int = 2
+    retry_backoff_seconds: float = 0.5
+    open_interest_history_period: str = "1h"
+    open_interest_history_limit: int = 24
+    long_short_period: str = "1h"
+    orderbook_depth: int = 50
+    news: NewsConfig = NewsConfig()
+    fear_greed_url: str = "https://api.alternative.me/fng/"
+    coingecko_global_url: str = "https://api.coingecko.com/api/v3/global"
+    frankfurter_url: str = "https://api.frankfurter.dev/v1/latest"
+
+
 class RiskConfig(_Strict):
     """specs/RISK_ENGINE.md sections 1-4. ``capital_eur`` is not here: set via /capital."""
 
@@ -208,6 +236,7 @@ class AppConfig(_Strict):
     )
     schedule: ScheduleConfig = ScheduleConfig()
     market_data: MarketDataConfig = MarketDataConfig()
+    ingestion: IngestionConfig = IngestionConfig()
     data_quality: DataQualityConfig = DataQualityConfig()
     risk: RiskConfig = RiskConfig()
     ladder: LadderConfig = LadderConfig()

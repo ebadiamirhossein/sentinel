@@ -1,0 +1,386 @@
+[
+  {
+    "baseVolume": 8516991.32,
+    "datetime": "2026-08-17T09:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8516991.32000000",
+      "sumOpenInterestValue": "640477747.26400000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786957200000
+    },
+    "openInterestAmount": 8516991.32,
+    "openInterestValue": 640477747.264,
+    "quoteVolume": 640477747.264,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786957200000
+  },
+  {
+    "baseVolume": 8525160.78,
+    "datetime": "2026-08-17T10:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8525160.78000000",
+      "sumOpenInterestValue": "642016034.45258880",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786960800000
+    },
+    "openInterestAmount": 8525160.78,
+    "openInterestValue": 642016034.4525888,
+    "quoteVolume": 642016034.4525888,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786960800000
+  },
+  {
+    "baseVolume": 8556153.43,
+    "datetime": "2026-08-17T11:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8556153.43000000",
+      "sumOpenInterestValue": "648043060.78820000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786964400000
+    },
+    "openInterestAmount": 8556153.43,
+    "openInterestValue": 648043060.7882,
+    "quoteVolume": 648043060.7882,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786964400000
+  },
+  {
+    "baseVolume": 8586136.78,
+    "datetime": "2026-08-17T12:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8586136.78000000",
+      "sumOpenInterestValue": "649627108.77480000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786968000000
+    },
+    "openInterestAmount": 8586136.78,
+    "openInterestValue": 649627108.7748,
+    "quoteVolume": 649627108.7748,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786968000000
+  },
+  {
+    "baseVolume": 8601850.06,
+    "datetime": "2026-08-17T13:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8601850.06000000",
+      "sumOpenInterestValue": "648593377.65194130",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786971600000
+    },
+    "openInterestAmount": 8601850.06,
+    "openInterestValue": 648593377.6519413,
+    "quoteVolume": 648593377.6519413,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786971600000
+  },
+  {
+    "baseVolume": 8564130.82,
+    "datetime": "2026-08-17T14:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8564130.82000000",
+      "sumOpenInterestValue": "647362648.68380000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786975200000
+    },
+    "openInterestAmount": 8564130.82,
+    "openInterestValue": 647362648.6838,
+    "quoteVolume": 647362648.6838,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786975200000
+  },
+  {
+    "baseVolume": 8599074.18,
+    "datetime": "2026-08-17T15:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8599074.18000000",
+      "sumOpenInterestValue": "653054783.13125240",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786978800000
+    },
+    "openInterestAmount": 8599074.18,
+    "openInterestValue": 653054783.1312524,
+    "quoteVolume": 653054783.1312524,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786978800000
+  },
+  {
+    "baseVolume": 8628886.12,
+    "datetime": "2026-08-17T16:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8628886.12000000",
+      "sumOpenInterestValue": "656331554.28558240",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786982400000
+    },
+    "openInterestAmount": 8628886.12,
+    "openInterestValue": 656331554.2855824,
+    "quoteVolume": 656331554.2855824,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786982400000
+  },
+  {
+    "baseVolume": 8654039.97,
+    "datetime": "2026-08-17T17:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8654039.97000000",
+      "sumOpenInterestValue": "657447416.52090000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786986000000
+    },
+    "openInterestAmount": 8654039.97,
+    "openInterestValue": 657447416.5209,
+    "quoteVolume": 657447416.5209,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786986000000
+  },
+  {
+    "baseVolume": 8638882.1,
+    "datetime": "2026-08-17T18:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8638882.10000000",
+      "sumOpenInterestValue": "655518373.74800000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786989600000
+    },
+    "openInterestAmount": 8638882.1,
+    "openInterestValue": 655518373.748,
+    "quoteVolume": 655518373.748,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786989600000
+  },
+  {
+    "baseVolume": 8677651.12,
+    "datetime": "2026-08-17T19:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8677651.12000000",
+      "sumOpenInterestValue": "658319238.37357430",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786993200000
+    },
+    "openInterestAmount": 8677651.12,
+    "openInterestValue": 658319238.3735743,
+    "quoteVolume": 658319238.3735743,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786993200000
+  },
+  {
+    "baseVolume": 8688256.78,
+    "datetime": "2026-08-17T20:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8688256.78000000",
+      "sumOpenInterestValue": "658396098.78840000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1786996800000
+    },
+    "openInterestAmount": 8688256.78,
+    "openInterestValue": 658396098.7884,
+    "quoteVolume": 658396098.7884,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1786996800000
+  },
+  {
+    "baseVolume": 8666572.24,
+    "datetime": "2026-08-17T21:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8666572.24000000",
+      "sumOpenInterestValue": "658276941.58806010",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787000400000
+    },
+    "openInterestAmount": 8666572.24,
+    "openInterestValue": 658276941.5880601,
+    "quoteVolume": 658276941.5880601,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787000400000
+  },
+  {
+    "baseVolume": 8656893.06,
+    "datetime": "2026-08-17T22:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8656893.06000000",
+      "sumOpenInterestValue": "657154125.86840530",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787004000000
+    },
+    "openInterestAmount": 8656893.06,
+    "openInterestValue": 657154125.8684053,
+    "quoteVolume": 657154125.8684053,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787004000000
+  },
+  {
+    "baseVolume": 8672414.22,
+    "datetime": "2026-08-17T23:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8672414.22000000",
+      "sumOpenInterestValue": "656588480.59620000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787007600000
+    },
+    "openInterestAmount": 8672414.22,
+    "openInterestValue": 656588480.5962,
+    "quoteVolume": 656588480.5962,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787007600000
+  },
+  {
+    "baseVolume": 8662353.75,
+    "datetime": "2026-08-18T00:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8662353.75000000",
+      "sumOpenInterestValue": "658252261.46250000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787011200000
+    },
+    "openInterestAmount": 8662353.75,
+    "openInterestValue": 658252261.4625,
+    "quoteVolume": 658252261.4625,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787011200000
+  },
+  {
+    "baseVolume": 8661987.9,
+    "datetime": "2026-08-18T01:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8661987.90000000",
+      "sumOpenInterestValue": "658224460.52100000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787014800000
+    },
+    "openInterestAmount": 8661987.9,
+    "openInterestValue": 658224460.521,
+    "quoteVolume": 658224460.521,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787014800000
+  },
+  {
+    "baseVolume": 8602043.16,
+    "datetime": "2026-08-18T02:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582784162.88815140",
+      "sumOpenInterest": "8602043.16000000",
+      "sumOpenInterestValue": "650142422.03280000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787018400000
+    },
+    "openInterestAmount": 8602043.16,
+    "openInterestValue": 650142422.0328,
+    "quoteVolume": 650142422.0328,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787018400000
+  },
+  {
+    "baseVolume": 8591136.26,
+    "datetime": "2026-08-18T03:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582895817.87033780",
+      "sumOpenInterest": "8591136.26000000",
+      "sumOpenInterestValue": "646445239.24960780",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787022000000
+    },
+    "openInterestAmount": 8591136.26,
+    "openInterestValue": 646445239.2496078,
+    "quoteVolume": 646445239.2496078,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787022000000
+  },
+  {
+    "baseVolume": 8599994.65,
+    "datetime": "2026-08-18T04:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582895817.87033780",
+      "sumOpenInterest": "8599994.65000000",
+      "sumOpenInterestValue": "648931827.19378660",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787025600000
+    },
+    "openInterestAmount": 8599994.65,
+    "openInterestValue": 648931827.1937866,
+    "quoteVolume": 648931827.1937866,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787025600000
+  },
+  {
+    "baseVolume": 8601855.53,
+    "datetime": "2026-08-18T05:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582895817.87033780",
+      "sumOpenInterest": "8601855.53000000",
+      "sumOpenInterestValue": "651955418.55092230",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787029200000
+    },
+    "openInterestAmount": 8601855.53,
+    "openInterestValue": 651955418.5509223,
+    "quoteVolume": 651955418.5509223,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787029200000
+  },
+  {
+    "baseVolume": 8602283.16,
+    "datetime": "2026-08-18T06:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582895817.87033780",
+      "sumOpenInterest": "8602283.16000000",
+      "sumOpenInterestValue": "651092497.14894780",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787032800000
+    },
+    "openInterestAmount": 8602283.16,
+    "openInterestValue": 651092497.1489478,
+    "quoteVolume": 651092497.1489478,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787032800000
+  },
+  {
+    "baseVolume": 8622208.23,
+    "datetime": "2026-08-18T07:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582895817.87033780",
+      "sumOpenInterest": "8622208.23000000",
+      "sumOpenInterestValue": "655029159.23310000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787036400000
+    },
+    "openInterestAmount": 8622208.23,
+    "openInterestValue": 655029159.2331,
+    "quoteVolume": 655029159.2331,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787036400000
+  },
+  {
+    "baseVolume": 8678849.56,
+    "datetime": "2026-08-18T08:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "582895817.87033780",
+      "sumOpenInterest": "8678849.56000000",
+      "sumOpenInterestValue": "660113297.53360000",
+      "symbol": "SOLUSDT",
+      "timestamp": 1787040000000
+    },
+    "openInterestAmount": 8678849.56,
+    "openInterestValue": 660113297.5336,
+    "quoteVolume": 660113297.5336,
+    "symbol": "SOL/USDT:USDT",
+    "timestamp": 1787040000000
+  }
+]

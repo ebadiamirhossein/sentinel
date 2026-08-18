@@ -1,0 +1,29 @@
+{
+  "datetime": "2026-08-18T08:10:49.000Z",
+  "estimatedSettlePrice": 76.01881358,
+  "fundingDatetime": "2026-08-18T16:00:00.000Z",
+  "fundingRate": -4.422e-05,
+  "fundingTimestamp": 1787068800000,
+  "indexPrice": 75.8837646,
+  "info": {
+    "estimatedSettlePrice": "76.01881358",
+    "indexPrice": "75.88376460",
+    "interestRate": "0.00010000",
+    "lastFundingRate": "-0.00004422",
+    "markPrice": "75.83370787",
+    "nextFundingTime": 1787068800000,
+    "symbol": "SOLUSDT",
+    "time": 1787040649000
+  },
+  "interestRate": 0.0001,
+  "interval": null,
+  "markPrice": 75.83370787,
+  "nextFundingDatetime": null,
+  "nextFundingRate": null,
+  "nextFundingTimestamp": null,
+  "previousFundingDatetime": null,
+  "previousFundingRate": null,
+  "previousFundingTimestamp": null,
+  "symbol": "SOL/USDT:USDT",
+  "timestamp": 1787040649000
+}

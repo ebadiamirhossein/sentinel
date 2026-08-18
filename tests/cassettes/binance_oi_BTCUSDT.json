@@ -1,0 +1,14 @@
+{
+  "baseVolume": 106182.123,
+  "datetime": "2026-08-18T08:10:40.020Z",
+  "info": {
+    "openInterest": "106182.123",
+    "symbol": "BTCUSDT",
+    "time": 1787040640020
+  },
+  "openInterestAmount": 106182.123,
+  "openInterestValue": null,
+  "quoteVolume": null,
+  "symbol": "BTC/USDT:USDT",
+  "timestamp": 1787040640020
+}

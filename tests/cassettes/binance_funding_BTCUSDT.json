@@ -1,0 +1,29 @@
+{
+  "datetime": "2026-08-18T08:10:45.003Z",
+  "estimatedSettlePrice": 64191.1481413,
+  "fundingDatetime": "2026-08-18T16:00:00.000Z",
+  "fundingRate": 5.084e-05,
+  "fundingTimestamp": 1787068800000,
+  "indexPrice": 64122.3373913,
+  "info": {
+    "estimatedSettlePrice": "64191.14814130",
+    "indexPrice": "64122.33739130",
+    "interestRate": "0.00010000",
+    "lastFundingRate": "0.00005084",
+    "markPrice": "64093.88900000",
+    "nextFundingTime": 1787068800000,
+    "symbol": "BTCUSDT",
+    "time": 1787040645003
+  },
+  "interestRate": 0.0001,
+  "interval": null,
+  "markPrice": 64093.889,
+  "nextFundingDatetime": null,
+  "nextFundingRate": null,
+  "nextFundingTimestamp": null,
+  "previousFundingDatetime": null,
+  "previousFundingRate": null,
+  "previousFundingTimestamp": null,
+  "symbol": "BTC/USDT:USDT",
+  "timestamp": 1787040645003
+}

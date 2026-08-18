@@ -1,0 +1,386 @@
+[
+  {
+    "baseVolume": 109975.647,
+    "datetime": "2026-08-17T09:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "109975.64700000",
+      "sumOpenInterestValue": "6966957237.45000000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786957200000
+    },
+    "openInterestAmount": 109975.647,
+    "openInterestValue": 6966957237.45,
+    "quoteVolume": 6966957237.45,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786957200000
+  },
+  {
+    "baseVolume": 109768.858,
+    "datetime": "2026-08-17T10:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "109768.85800000",
+      "sumOpenInterestValue": "6947281999.70580000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786960800000
+    },
+    "openInterestAmount": 109768.858,
+    "openInterestValue": 6947281999.7058,
+    "quoteVolume": 6947281999.7058,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786960800000
+  },
+  {
+    "baseVolume": 109421.331,
+    "datetime": "2026-08-17T11:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "109421.33100000",
+      "sumOpenInterestValue": "6966499631.04413800",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786964400000
+    },
+    "openInterestAmount": 109421.331,
+    "openInterestValue": 6966499631.044138,
+    "quoteVolume": 6966499631.044138,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786964400000
+  },
+  {
+    "baseVolume": 109026.255,
+    "datetime": "2026-08-17T12:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "109026.25500000",
+      "sumOpenInterestValue": "6934473445.83651400",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786968000000
+    },
+    "openInterestAmount": 109026.255,
+    "openInterestValue": 6934473445.836514,
+    "quoteVolume": 6934473445.836514,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786968000000
+  },
+  {
+    "baseVolume": 108319.868,
+    "datetime": "2026-08-17T13:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "108319.86800000",
+      "sumOpenInterestValue": "6881192926.48880000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786971600000
+    },
+    "openInterestAmount": 108319.868,
+    "openInterestValue": 6881192926.4888,
+    "quoteVolume": 6881192926.4888,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786971600000
+  },
+  {
+    "baseVolume": 107949.637,
+    "datetime": "2026-08-17T14:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "107949.63700000",
+      "sumOpenInterestValue": "6870670546.13900000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786975200000
+    },
+    "openInterestAmount": 107949.637,
+    "openInterestValue": 6870670546.139,
+    "quoteVolume": 6870670546.139,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786975200000
+  },
+  {
+    "baseVolume": 107688.642,
+    "datetime": "2026-08-17T15:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "107688.64200000",
+      "sumOpenInterestValue": "6879051975.93960200",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786978800000
+    },
+    "openInterestAmount": 107688.642,
+    "openInterestValue": 6879051975.939602,
+    "quoteVolume": 6879051975.939602,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786978800000
+  },
+  {
+    "baseVolume": 107473.795,
+    "datetime": "2026-08-17T16:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "107473.79500000",
+      "sumOpenInterestValue": "6896582677.77050000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786982400000
+    },
+    "openInterestAmount": 107473.795,
+    "openInterestValue": 6896582677.7705,
+    "quoteVolume": 6896582677.7705,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786982400000
+  },
+  {
+    "baseVolume": 107473.632,
+    "datetime": "2026-08-17T17:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "107473.63200000",
+      "sumOpenInterestValue": "6887136033.18720000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786986000000
+    },
+    "openInterestAmount": 107473.632,
+    "openInterestValue": 6887136033.1872,
+    "quoteVolume": 6887136033.1872,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786986000000
+  },
+  {
+    "baseVolume": 106601.997,
+    "datetime": "2026-08-17T18:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106601.99700000",
+      "sumOpenInterestValue": "6853945452.76861600",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786989600000
+    },
+    "openInterestAmount": 106601.997,
+    "openInterestValue": 6853945452.768616,
+    "quoteVolume": 6853945452.768616,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786989600000
+  },
+  {
+    "baseVolume": 106533.938,
+    "datetime": "2026-08-17T19:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106533.93800000",
+      "sumOpenInterestValue": "6860893577.03011500",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786993200000
+    },
+    "openInterestAmount": 106533.938,
+    "openInterestValue": 6860893577.030115,
+    "quoteVolume": 6860893577.030115,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786993200000
+  },
+  {
+    "baseVolume": 106486.203,
+    "datetime": "2026-08-17T20:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106486.20300000",
+      "sumOpenInterestValue": "6845131764.19067600",
+      "symbol": "BTCUSDT",
+      "timestamp": 1786996800000
+    },
+    "openInterestAmount": 106486.203,
+    "openInterestValue": 6845131764.190676,
+    "quoteVolume": 6845131764.190676,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1786996800000
+  },
+  {
+    "baseVolume": 106467.875,
+    "datetime": "2026-08-17T21:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106467.87500000",
+      "sumOpenInterestValue": "6852566244.67412100",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787000400000
+    },
+    "openInterestAmount": 106467.875,
+    "openInterestValue": 6852566244.674121,
+    "quoteVolume": 6852566244.674121,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787000400000
+  },
+  {
+    "baseVolume": 106414.247,
+    "datetime": "2026-08-17T22:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106414.24700000",
+      "sumOpenInterestValue": "6847778077.29940000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787004000000
+    },
+    "openInterestAmount": 106414.247,
+    "openInterestValue": 6847778077.2994,
+    "quoteVolume": 6847778077.2994,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787004000000
+  },
+  {
+    "baseVolume": 106654.095,
+    "datetime": "2026-08-17T23:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106654.09500000",
+      "sumOpenInterestValue": "6854413381.23150000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787007600000
+    },
+    "openInterestAmount": 106654.095,
+    "openInterestValue": 6854413381.2315,
+    "quoteVolume": 6854413381.2315,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787007600000
+  },
+  {
+    "baseVolume": 106396.499,
+    "datetime": "2026-08-18T00:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106396.49900000",
+      "sumOpenInterestValue": "6863100374.01192500",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787011200000
+    },
+    "openInterestAmount": 106396.499,
+    "openInterestValue": 6863100374.011925,
+    "quoteVolume": 6863100374.011925,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787011200000
+  },
+  {
+    "baseVolume": 106530.932,
+    "datetime": "2026-08-18T01:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106530.93200000",
+      "sumOpenInterestValue": "6855840741.23280000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787014800000
+    },
+    "openInterestAmount": 106530.932,
+    "openInterestValue": 6855840741.2328,
+    "quoteVolume": 6855840741.2328,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787014800000
+  },
+  {
+    "baseVolume": 106702.488,
+    "datetime": "2026-08-18T02:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071237.00000000",
+      "sumOpenInterest": "106702.48800000",
+      "sumOpenInterestValue": "6847632167.40000000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787018400000
+    },
+    "openInterestAmount": 106702.488,
+    "openInterestValue": 6847632167.4,
+    "quoteVolume": 6847632167.4,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787018400000
+  },
+  {
+    "baseVolume": 106074.304,
+    "datetime": "2026-08-18T03:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071518.00000000",
+      "sumOpenInterest": "106074.30400000",
+      "sumOpenInterestValue": "6796877266.45078850",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787022000000
+    },
+    "openInterestAmount": 106074.304,
+    "openInterestValue": 6796877266.4507885,
+    "quoteVolume": 6796877266.4507885,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787022000000
+  },
+  {
+    "baseVolume": 106155.27,
+    "datetime": "2026-08-18T04:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071518.00000000",
+      "sumOpenInterest": "106155.27000000",
+      "sumOpenInterestValue": "6810371875.81959150",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787025600000
+    },
+    "openInterestAmount": 106155.27,
+    "openInterestValue": 6810371875.8195915,
+    "quoteVolume": 6810371875.8195915,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787025600000
+  },
+  {
+    "baseVolume": 106022.558,
+    "datetime": "2026-08-18T05:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071518.00000000",
+      "sumOpenInterest": "106022.55800000",
+      "sumOpenInterestValue": "6804750419.81180000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787029200000
+    },
+    "openInterestAmount": 106022.558,
+    "openInterestValue": 6804750419.8118,
+    "quoteVolume": 6804750419.8118,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787029200000
+  },
+  {
+    "baseVolume": 105798.126,
+    "datetime": "2026-08-18T06:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071518.00000000",
+      "sumOpenInterest": "105798.12600000",
+      "sumOpenInterestValue": "6792629461.76241900",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787032800000
+    },
+    "openInterestAmount": 105798.126,
+    "openInterestValue": 6792629461.762419,
+    "quoteVolume": 6792629461.762419,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787032800000
+  },
+  {
+    "baseVolume": 105812.793,
+    "datetime": "2026-08-18T07:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071518.00000000",
+      "sumOpenInterest": "105812.79300000",
+      "sumOpenInterestValue": "6803540383.03470000",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787036400000
+    },
+    "openInterestAmount": 105812.793,
+    "openInterestValue": 6803540383.0347,
+    "quoteVolume": 6803540383.0347,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787036400000
+  },
+  {
+    "baseVolume": 105932.197,
+    "datetime": "2026-08-18T08:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "20071518.00000000",
+      "sumOpenInterest": "105932.19700000",
+      "sumOpenInterestValue": "6797776376.22081600",
+      "symbol": "BTCUSDT",
+      "timestamp": 1787040000000
+    },
+    "openInterestAmount": 105932.197,
+    "openInterestValue": 6797776376.220816,
+    "quoteVolume": 6797776376.220816,
+    "symbol": "BTC/USDT:USDT",
+    "timestamp": 1787040000000
+  }
+]

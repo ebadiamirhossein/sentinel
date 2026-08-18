@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool
 
 from sentinel.core.config import Secrets
+
+# Importing the models registers every table on Base.metadata, which is what
+# --autogenerate diffs against. Keep this import even though it looks unused.
+from sentinel.storage import models as _models  # noqa: F401
 from sentinel.storage.base import Base
 
 config = context.config

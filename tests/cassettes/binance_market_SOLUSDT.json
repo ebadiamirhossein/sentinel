@@ -1,0 +1,152 @@
+{
+  "active": true,
+  "base": "SOL",
+  "baseId": "SOL",
+  "contract": true,
+  "contractSize": 1.0,
+  "created": 1600066800000,
+  "expiry": null,
+  "expiryDatetime": null,
+  "feeSide": "get",
+  "future": false,
+  "id": "SOLUSDT",
+  "index": null,
+  "info": {
+    "baseAsset": "SOL",
+    "baseAssetPrecision": 8,
+    "contractType": "PERPETUAL",
+    "deliveryDate": 4133404800000,
+    "filters": [
+      {
+        "filterType": "PRICE_FILTER",
+        "maxPrice": "6857",
+        "minPrice": "0.4200",
+        "tickSize": "0.0100"
+      },
+      {
+        "filterType": "LOT_SIZE",
+        "maxQty": "1000000",
+        "minQty": "0.01",
+        "stepSize": "0.01"
+      },
+      {
+        "filterType": "MARKET_LOT_SIZE",
+        "maxQty": "80000",
+        "minQty": "0.01",
+        "stepSize": "0.01"
+      },
+      {
+        "filterType": "MAX_NUM_ORDERS",
+        "limit": 200
+      },
+      {
+        "filterType": "MIN_NOTIONAL",
+        "notional": "5"
+      },
+      {
+        "filterType": "PERCENT_PRICE",
+        "multiplierDecimal": "4",
+        "multiplierDown": "0.9500",
+        "multiplierUp": "1.0500"
+      },
+      {
+        "filterType": "POSITION_RISK_CONTROL",
+        "positionControlSide": "NONE"
+      }
+    ],
+    "liquidationFee": "0.015000",
+    "maintMarginPercent": "2.5000",
+    "marginAsset": "USDT",
+    "marketTakeBound": "0.05",
+    "maxMoveOrderLimit": 10000,
+    "onboardDate": 1600066800000,
+    "orderTypes": [
+      "LIMIT",
+      "MARKET",
+      "STOP",
+      "STOP_MARKET",
+      "TAKE_PROFIT",
+      "TAKE_PROFIT_MARKET",
+      "TRAILING_STOP_MARKET"
+    ],
+    "pair": "SOLUSDT",
+    "permissionSets": [
+      "GRID",
+      "COPY",
+      "DCA",
+      "PSB"
+    ],
+    "pricePrecision": 4,
+    "quantityPrecision": 2,
+    "quoteAsset": "USDT",
+    "quotePrecision": 8,
+    "requiredMarginPercent": "5.0000",
+    "status": "TRADING",
+    "symbol": "SOLUSDT",
+    "timeInForce": [
+      "GTC",
+      "IOC",
+      "FOK",
+      "GTX",
+      "GTD"
+    ],
+    "triggerProtect": "0.0500",
+    "underlyingSubType": [
+      "Layer-1"
+    ],
+    "underlyingType": "COIN"
+  },
+  "inverse": false,
+  "limits": {
+    "amount": {
+      "max": 1000000.0,
+      "min": 0.01
+    },
+    "cost": {
+      "max": null,
+      "min": 5.0
+    },
+    "leverage": {
+      "max": null,
+      "min": null
+    },
+    "market": {
+      "max": 80000.0,
+      "min": 0.01
+    },
+    "price": {
+      "max": 6857.0,
+      "min": 0.42
+    }
+  },
+  "linear": true,
+  "lowercaseId": "solusdt",
+  "maker": 0.0002,
+  "margin": false,
+  "marginModes": {
+    "cross": true,
+    "isolated": true
+  },
+  "option": false,
+  "optionType": null,
+  "percentage": true,
+  "precision": {
+    "amount": 0.01,
+    "base": 1e-08,
+    "price": 0.01,
+    "quote": 1e-08
+  },
+  "quote": "USDT",
+  "quoteId": "USDT",
+  "settle": "USDT",
+  "settleId": "USDT",
+  "spot": false,
+  "stock": false,
+  "strike": null,
+  "subType": "linear",
+  "swap": true,
+  "symbol": "SOL/USDT:USDT",
+  "taker": 0.0005,
+  "tierBased": false,
+  "type": "swap"
+}

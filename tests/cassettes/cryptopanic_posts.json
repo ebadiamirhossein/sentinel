@@ -1,0 +1,99 @@
+{
+  "count": 3,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "kind": "news",
+      "domain": "coindesk.com",
+      "source": {
+        "title": "CoinDesk",
+        "region": "en",
+        "domain": "coindesk.com"
+      },
+      "title": "Bitcoin holds above key support as ETF inflows resume",
+      "published_at": "2026-08-18T07:30:00Z",
+      "slug": "bitcoin-holds-above-key-support",
+      "id": 20421317,
+      "url": "https://cryptopanic.com/news/20421317/bitcoin-holds-above-key-support",
+      "currencies": [
+        {
+          "code": "BTC",
+          "title": "Bitcoin",
+          "slug": "bitcoin",
+          "url": "https://cryptopanic.com/news/bitcoin/"
+        }
+      ],
+      "votes": {
+        "negative": 0,
+        "positive": 12,
+        "important": 4,
+        "liked": 3,
+        "disliked": 0,
+        "lol": 0,
+        "toxic": 0,
+        "saved": 1,
+        "comments": 2
+      }
+    },
+    {
+      "kind": "news",
+      "domain": "theblock.co",
+      "source": {
+        "title": "The Block",
+        "region": "en",
+        "domain": "theblock.co"
+      },
+      "title": "Solana network activity hits a three-month high",
+      "published_at": "2026-08-18T06:05:00Z",
+      "slug": "solana-network-activity-high",
+      "id": 20421290,
+      "url": "https://cryptopanic.com/news/20421290/solana-network-activity-high",
+      "currencies": [
+        {
+          "code": "SOL",
+          "title": "Solana",
+          "slug": "solana",
+          "url": "https://cryptopanic.com/news/solana/"
+        }
+      ],
+      "votes": {
+        "negative": 1,
+        "positive": 8,
+        "important": 2,
+        "liked": 2,
+        "disliked": 0,
+        "lol": 0,
+        "toxic": 0,
+        "saved": 0,
+        "comments": 1
+      }
+    },
+    {
+      "kind": "news",
+      "domain": "reuters.com",
+      "source": {
+        "title": "Reuters",
+        "region": "en",
+        "domain": "reuters.com"
+      },
+      "title": "Fed minutes signal caution on further cuts",
+      "published_at": "2026-08-17T21:00:00Z",
+      "slug": "fed-minutes-signal-caution",
+      "id": 20420884,
+      "url": "https://cryptopanic.com/news/20420884/fed-minutes-signal-caution",
+      "currencies": [],
+      "votes": {
+        "negative": 0,
+        "positive": 5,
+        "important": 6,
+        "liked": 1,
+        "disliked": 0,
+        "lol": 0,
+        "toxic": 0,
+        "saved": 0,
+        "comments": 0
+      }
+    }
+  ]
+}

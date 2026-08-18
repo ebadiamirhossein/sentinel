@@ -1,0 +1,14 @@
+{
+  "baseVolume": 8698840.89,
+  "datetime": "2026-08-18T08:10:42.537Z",
+  "info": {
+    "openInterest": "8698840.89",
+    "symbol": "SOLUSDT",
+    "time": 1787040642537
+  },
+  "openInterestAmount": 8698840.89,
+  "openInterestValue": null,
+  "quoteVolume": null,
+  "symbol": "SOL/USDT:USDT",
+  "timestamp": 1787040642537
+}

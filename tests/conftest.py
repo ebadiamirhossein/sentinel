@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import socket
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -10,6 +14,38 @@ from sentinel.core.config import AppConfig, Secrets, Settings, load_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_CONFIG = REPO_ROOT / "config.yaml"
+CASSETTE_DIR = Path(__file__).resolve().parent / "cassettes"
+
+
+@pytest.fixture(autouse=True)
+def no_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hard guarantee that the suite never reaches a live API (CLAUDE.md).
+
+    Any code path that tries to open a real socket fails loudly instead of
+    quietly depending on the network. Tests marked ``@pytest.mark.allow_socket``
+    opt out — that marker exists only for the opt-in local-Postgres round-trip
+    tests, never for an external API.
+    """
+    if request.node.get_closest_marker("allow_socket") is not None:
+        return
+
+    def blocked(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("network access is not allowed in tests — replay a cassette instead")
+
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket, "create_connection", blocked)
+
+
+def cassette(name: str) -> Any:
+    """Load a recorded payload from ``tests/cassettes``."""
+    path = CASSETTE_DIR / name
+    if path.suffix == ".json":
+        return json.loads(path.read_text(encoding="utf-8"))
+    return path.read_text(encoding="utf-8")
+
+
+#: The instant the cassettes were recorded — anchors staleness assertions.
+CASSETTE_NOW = datetime(2026, 8, 18, 8, 15, tzinfo=UTC)
 
 
 @pytest.fixture

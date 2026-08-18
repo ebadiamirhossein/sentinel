@@ -34,6 +34,29 @@ market_data:
     - { timeframe: 4h, candles: 200 }
     - { timeframe: 1d, candles: 100 }
 
+# specs/DATA_SOURCES.md §2–§3 — client behaviour and endpoints. Keys stay in .env.
+ingestion:
+  request_timeout_seconds: 10
+  max_retries: 2                  # §3: retry with backoff, max 2
+  retry_backoff_seconds: 0.5
+  open_interest_history_period: 1h
+  open_interest_history_limit: 24 # "current + 24h series"
+  long_short_period: 1h
+  orderbook_depth: 50
+  news:
+    limit: 20
+    important_only: true
+    cryptopanic_base_url: https://cryptopanic.com/api/v1/posts/
+    # §2.2 fallback, parsed with feedparser when CryptoPanic is down or unkeyed.
+    rss_feeds:
+      - https://www.coindesk.com/arc/outboundfeeds/rss/
+      - https://cointelegraph.com/rss
+  fear_greed_url: https://api.alternative.me/fng/
+  coingecko_global_url: https://api.coingecko.com/api/v3/global
+  # Frankfurter's documented host is now api.frankfurter.dev; api.frankfurter.app
+  # 301-redirects here. ECB rates, no key (§2.4).
+  frankfurter_url: https://api.frankfurter.dev/v1/latest
+
 # specs/DATA_SOURCES.md §4 — staleness budget per field. Core field stale/missing → skip
 # symbol; secondary field stale → snapshot DEGRADED. Never fabricate a value instead.
 data_quality:
@@ -91,6 +114,6 @@ llm:
 
 # specs/TELEGRAM_UX.md — rendering/display only. Allowlist lives in .env.
 telegram:
-  owner_timezone: UTC             # set to your local IANA zone, e.g. Europe/Amsterdam
+  owner_timezone: Europe/Vilnius  # display only — everything internal stays UTC
   digest_hour_local: 8
   quiet_mode_on_no_setup: true
