@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sentinel"
+version = "0.1.0"
+description = "Sentinel — 24/7 crypto market-research and signal system. Analyzes only; a human trades."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+authors = [{ name = "Sentinel owner" }]
+
+# M0 runtime dependencies only. Heavier libraries from ARCHITECTURE.md §2
+# (ccxt, pandas, pandas-ta, mplfinance, anthropic, aiogram, feedparser) are added
+# in the milestone that needs them, per CLAUDE.md's >1MB approval rule.
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  "structlog>=24.4",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "pyyaml>=6.0",
+  "apscheduler>=3.10,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "pytest-cov>=6.0",
+  "httpx>=0.27",
+  "mypy>=1.13",
+  "ruff>=0.8",
+  "types-PyYAML>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["sentinel"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["sentinel", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",     # pycodestyle errors
+  "F",     # pyflakes
+  "I",     # import sorting
+  "UP",    # pyupgrade
+  "B",     # bugbear
+  "ASYNC", # async correctness
+  "C4",    # comprehensions
+  "SIM",   # simplify
+  "DTZ",   # naive-datetime guard — enforces the "UTC everywhere" rule
+  "RUF",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sentinel", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+source = ["sentinel"]

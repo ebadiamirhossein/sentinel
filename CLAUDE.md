@@ -1,0 +1,30 @@
+# CLAUDE.md — Standing Instructions for Claude Code
+
+You are building **Sentinel**, a 24/7 crypto market-research and signal system. It analyzes; a human trades. Read `docs/PRD.md` and `docs/ARCHITECTURE.md` before any work. The spec for the module you're touching (in `docs/specs/`) is the source of truth — if code and spec disagree, the spec wins; if the spec seems wrong, STOP and ask, don't improvise.
+
+## Workflow rules (spec-driven)
+1. Work milestone by milestone per `docs/MILESTONES.md`. Never start milestone N+1 with failing tests in N.
+2. Before coding a milestone: restate your implementation plan in ≤ 15 bullet points and list files you'll create/modify. Then implement.
+3. Every module ships with tests in the same session. `make test lint typecheck` must be green before you declare a milestone done.
+4. Risk engine (`sentinel/risk/`) is TDD: write the tests from `docs/specs/RISK_ENGINE.md` §8 FIRST.
+5. When done with a milestone, write a short `journal/M{N}_REPORT.md`: what was built, decisions made, deviations from spec (should be none without approval), how to demo.
+
+## Hard constraints — never violate
+- **NO trade execution code, ever.** No exchange API keys with trade/withdraw permission, no order-placement functions, not even "for later". This is v1's most important boundary.
+- **No LLM in deterministic modules** (`features/`, `risk/`, `tracker/`, `stats/`). Pure functions, Decimal for money.
+- **The LLM never sizes, never sets leverage, never approves.** It outputs analysis; the risk gate outputs numbers.
+- **Never invent data paths:** if a data source is unavailable, degrade explicitly (see specs/DATA_SOURCES.md §4); never fabricate placeholder market values outside test fixtures.
+- Secrets only via `.env` / environment. Never hardcode, never log them.
+- All timestamps UTC internally. All money math `Decimal`. Full type hints, `mypy --strict` clean.
+
+## Code standards
+- Python 3.12, async-first. Ruff for lint/format. Pydantic v2 models for all cross-module contracts (defined once in each module's `models.py`).
+- Small modules, dependency direction: `bot/tracker/analyst/... → storage`, never sideways imports between pipeline stages; the orchestrator in `core/` wires stages together.
+- External calls: timeout + max-2 retries + structured error; recorded-cassette tests, never live-API tests in the suite.
+- Log every LLM call: model, prompt_version, tokens in/out, cost estimate, duration.
+
+## Prompts
+- Prompt text lives ONLY in `sentinel/analyst/prompts/vN.md` files. Never inline prompt edits. New behavior = new version file + entry in `journal/PROMPT_LOG.md`.
+
+## When unsure
+Ask. A clarifying question costs a minute; a wrong assumption in a trading system costs money. Specifically ask before: changing any risk default, adding a dependency > 1MB, altering a Pydantic contract, or touching the DB schema outside a migration.

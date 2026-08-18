@@ -1,0 +1,29 @@
+# Environment / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Generated artifacts (charts are rendered at runtime, not committed).
+# NOTE: no blanket *.png — M3 ships chart fixtures and journal/ may reference images.
+/charts_out/
+sentinel/**/*.png
+
+# OS
+.DS_Store

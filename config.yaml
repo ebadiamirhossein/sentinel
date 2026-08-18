@@ -1,0 +1,96 @@
+# Sentinel — non-secret runtime configuration.
+#
+# Precedence (ARCHITECTURE.md §2): DB overrides (set via Telegram) > this file > code defaults.
+# Secrets NEVER live here — they come from .env / environment only.
+# Every value below is transcribed from the specs; see the reference next to each block.
+
+# PRD.md §7 — default watchlist (configurable at runtime via /watchlist).
+watchlist:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+  - BNBUSDT
+  - XRPUSDT
+  - DOGEUSDT
+  - AVAXUSDT
+  - LINKUSDT
+  - LTCUSDT
+  - ADAUSDT
+
+# PRD.md F1 (15 min cycle), ARCHITECTURE.md §3 (tracker every 60s).
+schedule:
+  scan_interval_minutes: 15
+  tracker_interval_seconds: 60
+  heartbeat_interval_seconds: 60
+  symbol_timeout_seconds: 20      # per-symbol snapshot timeout (ARCHITECTURE.md §3)
+
+# specs/DATA_SOURCES.md §2.1 — tail lengths per timeframe, order book depth.
+market_data:
+  exchange: binance_usdm
+  orderbook_depth: 50
+  timeframes:
+    - { timeframe: 15m, candles: 200 }
+    - { timeframe: 1h, candles: 200 }
+    - { timeframe: 4h, candles: 200 }
+    - { timeframe: 1d, candles: 100 }
+
+# specs/DATA_SOURCES.md §4 — staleness budget per field. Core field stale/missing → skip
+# symbol; secondary field stale → snapshot DEGRADED. Never fabricate a value instead.
+data_quality:
+  max_age_seconds:
+    ohlcv_multiplier: 2           # OHLCV: 2× its own timeframe
+    funding: 900                  # 15m
+    open_interest: 1800           # 30m
+    long_short_ratio: 1800
+    orderbook: 300
+    fear_greed: 86400             # 24h
+    btc_dominance: 86400
+    news_window: 21600            # 6h news window
+    eurusd: 3600                  # refetched hourly, last-known-good fallback
+
+# specs/RISK_ENGINE.md §1 — risk defaults. capital_eur is intentionally absent:
+# it is required before the first signal and set by the owner via /capital.
+risk:
+  risk_per_trade_pct: 0.75        # allowed range 0.25–1.5
+  risk_per_trade_min_pct: 0.25
+  risk_per_trade_max_pct: 1.5
+  max_open_risk_pct: 2.25         # = 3 trades worth
+  max_leverage: 10
+  margin_budget_pct: 10
+  daily_loss_limit_pct: 3.0
+  max_positions: 4
+  min_rr_tp1: 1.5
+  max_entry_distance_pct: 3.0     # §2 rule 2 — no chasing
+  min_confidence: 60              # §2 rule 6 — below → WATCHLIST
+  stop_atr_min_multiple: 0.6      # §2 rule 3
+  stop_atr_max_multiple: 3.0      # §2 rule 4
+  min_rung_notional_usdt: 20      # §4 min-notional floor
+  liq_buffer_multiple: 2.0        # §4 liq_distance ≥ 2× stop distance
+  signal_cooldown_hours: 4        # ARCHITECTURE.md §3 dedup guard
+
+# specs/RISK_ENGINE.md §3 — ladder construction (deterministic, engine-owned).
+ladder:
+  single_entry_atr_threshold: 0.5 # zone width < 0.5×ATR(1h) → single entry
+  weights_pct: [40, 35, 25]       # rung 1 (nearest price) → rung 3 (best price)
+
+# specs/RISK_ENGINE.md §5 — targets & management plan.
+management:
+  tp1_close_pct: 40
+  tp2_close_pct: 35
+  tp3_trail_atr_multiple: 1.0
+  entry_ttl_hours_intraday: 12
+  entry_ttl_hours_swing: 36
+
+# ARCHITECTURE.md §2 / specs/PROMPTS.md — model tiers. Prompt text itself lives only in
+# sentinel/analyst/prompts/vN.md files (CLAUDE.md).
+llm:
+  screener_model: claude-sonnet-4-6
+  analyst_model: claude-fable-5
+  analyst_effort: high
+  max_json_retries: 1             # retry once, then discard + log
+
+# specs/TELEGRAM_UX.md — rendering/display only. Allowlist lives in .env.
+telegram:
+  owner_timezone: UTC             # set to your local IANA zone, e.g. Europe/Amsterdam
+  digest_hour_local: 8
+  quiet_mode_on_no_setup: true
