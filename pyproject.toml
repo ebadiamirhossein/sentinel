@@ -65,13 +65,18 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
+# Prompt text is data, not code, and it must ship in the wheel so `load_prompt`
+# resolves inside the container as well as in a source checkout (CLAUDE.md
+# §Prompts). `packages` already does that: hatchling ships every file under
+# sentinel/, .md included — verified by inspecting the built wheel.
+#
+# There used to be a `force-include` here re-adding sentinel/analyst/prompts on
+# top of that. It was redundant, and from M5 it broke `docker build` outright:
+# hatchling refuses to add the same archive path twice, and the directory's
+# .gitkeep (there since M0) was the collision. The image could not be rebuilt
+# from M5 until M6.2 — which is why nothing catches it but a real build.
 packages = ["sentinel"]
 
-[tool.hatch.build.targets.wheel.force-include]
-# Prompt text is data, not code: it must ship in the wheel so `load_prompt`
-# resolves inside the container as well as in a source checkout (CLAUDE.md
-# §Prompts — prompt text lives ONLY in these files).
-"sentinel/analyst/prompts" = "sentinel/analyst/prompts"
 
 [tool.ruff]
 line-length = 100

@@ -450,7 +450,54 @@ displayed pair one quantum of slack. Strictly stronger than what it replaced.
 `TELEGRAM_UX.md` §1 was regenerated, and `RISK_ENGINE.md` §4 carries the ruling as a dated
 correction.
 
-## 12. Still unverified
+## 12. The image could not be built (found at deploy)
+
+`docker compose up -d --build app` failed:
+
+```
+ValueError: A second file is being added to the wheel archive at the same path:
+`sentinel/analyst/prompts/.gitkeep`
+```
+
+M5 added a `force-include` for `sentinel/analyst/prompts` so prompt text would ship
+in the wheel. `packages = ["sentinel"]` already does that — hatchling ships every
+file under `sentinel/`, `.md` included, which I confirmed by building a wheel
+without the block and listing its contents:
+
+```
+prompts in wheel: ['sentinel/analyst/prompts/.gitkeep',
+                   'sentinel/analyst/prompts/fable_v1.md',
+                   'sentinel/analyst/prompts/loader.py',
+                   'sentinel/analyst/prompts/screener_v1.md']
+```
+
+So the directive was redundant, and re-adding a directory that was already included
+made hatchling refuse the duplicate `.gitkeep` — present since M0. **The image has
+been unbuildable since M5**, and nothing in `make check` could have caught it:
+tests, ruff and mypy all run from a source checkout, where prompts resolve by path
+whether or not the wheel is correct. Only a real `docker build` exercises packaging.
+
+Removed, with the history recorded in `pyproject.toml` so it is not reintroduced.
+After the fix:
+
+```
+app-1  | bot.polling_started
+app-1  | Run polling for bot @zyndix_trader_bot id=8858349395 - 'Zyndix AI Trader'
+app-1  | Uvicorn running on http://0.0.0.0:8000
+alembic current -> 0005_signals_and_telegram (head)
+/health -> ok {'database': 'ok', 'scheduler': 'running'}
+```
+
+The container's `DATABASE_URL` is `...@postgres:5432/sentinel` from
+`docker-compose.yml`, while the host CLI uses `...@localhost:5432/sentinel` from
+`.env` — the same database reached correctly from both sides, which is the split
+introduced in §10.
+
+**For M8:** the deploy runbook should build the image as part of its verification.
+A milestone that ships only source-tree green can hide a packaging break for two
+milestones, as this one did.
+
+## 13. Still unverified
 
 Nothing in M6's scope. Two things belong to M7 and are named so they are not mistaken for
 gaps here: the tracker state machine (`signals.status` never leaves `PENDING_ENTRY` at M6) and
