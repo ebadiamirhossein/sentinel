@@ -14,6 +14,7 @@ import pytest
 from sentinel.analyst.models import AnalystReport, CandidateStatus, Direction
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import AppConfig
+from sentinel.risk.coherence import check_rr
 from sentinel.risk.engine import RiskEngine
 from sentinel.risk.models import (
     AccountState,
@@ -165,7 +166,7 @@ def test_short_baseline_is_coherent(config: AppConfig, clock: FrozenClock) -> No
         direction=Direction.SHORT,
         zone=("83.60", "84.60"),
         stop="86.10",
-        targets=("80.90", "79.20", "77.50"),
+        targets=("80.60", "79.20", "77.50"),
     )
     decision = decide(config, clock, rep=short, mkt=market(last_price="83.40"))
     assert decision.status is GateStatus.APPROVED_FOR_HUMAN
@@ -244,13 +245,37 @@ def test_rule5_rejects_thin_reward(config: AppConfig, clock: FrozenClock) -> Non
     assert decision.reason is RejectionReason.RR_TOO_LOW
 
 
-def test_rule5_accepts_exactly_the_minimum_rr(config: AppConfig, clock: FrozenClock) -> None:
-    # TP1 82.91 -> RR exactly 1.5.
-    at_min = report(zone=NARROW, stop="81.56", targets=("82.91", "84.00"))
-    decision = decide(config, clock, rep=at_min)
-    assert decision.status is GateStatus.APPROVED_FOR_HUMAN
-    assert decision.plan is not None
-    assert decision.plan.rr_targets[0] == Decimal("1.5")
+def test_rule5_accepts_a_reward_exactly_at_the_minimum() -> None:
+    """The boundary is inclusive: ``>=``, not ``>``.
+
+    Asserted on ``check_rr`` directly rather than through the engine, because
+    since §4.2 the engine gates rule 5 on the **net** figure and a gross 1.50 no
+    longer survives the round trip — see
+    ``test_rule5_at_the_gross_minimum_is_now_rejected_on_net`` below. The rule's
+    own boundary semantics are unchanged, and this is where they live.
+    """
+    assert check_rr(rr=(Decimal("1.5"), Decimal("3.0")), min_rr_tp1=Decimal("1.5")) is None
+    assert (
+        check_rr(rr=(Decimal("1.49"), Decimal("3.0")), min_rr_tp1=Decimal("1.5"))
+        is RejectionReason.RR_TOO_LOW
+    )
+
+
+def test_rule5_at_the_gross_minimum_is_now_rejected_on_net(
+    config: AppConfig, clock: FrozenClock
+) -> None:
+    """§4.2 — TP1 82.91 is exactly 1.50 gross and 1.26 net on a 0.66% stop.
+
+    The tightest-stop shape in the suite: €11,402 of notional for a €75 budget, so
+    fees alone are 10.6% of risk. This is the single clearest statement of the
+    behaviour change — ``min_rr_tp1`` is still 1.5, but it measures what the owner
+    keeps rather than what the chart promises.
+    """
+    at_gross_min = report(zone=NARROW, stop="81.56", targets=("82.91", "84.00"))
+    decision = decide(config, clock, rep=at_gross_min)
+    assert decision.status is GateStatus.REJECTED
+    assert decision.reason is RejectionReason.NET_RR_TOO_LOW
+    assert "1.50R gross" in decision.message
 
 
 # --------------------------------------------------------------------------- #

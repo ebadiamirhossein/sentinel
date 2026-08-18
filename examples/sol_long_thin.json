@@ -1,13 +1,10 @@
 {
   "_comment": [
-    "M4 demo fixture: a hand-written analyst report plus the market facts the",
-    "risk gate needs. Prices are realistic SOLUSDT levels; the instrument rules",
-    "are the real Binance USDT-M values recorded in M1 (tick 0.01, step 0.01,",
-    "min_notional 5 -> the engine's floor is max(5, 20) = 20).",
-    "TP1 is 85.20: at M4's 84.90 this plan is 1.51R gross but 1.41R net of fees,",
-    "which RISK_ENGINE.md §4.2 now rejects. See examples/sol_long_thin.json.",
-    "funding_rate is the real ETHUSDT rate observed in M5 (0.00193% per 8h).",
-    "Nothing here is live market data — it is a fixture, per CLAUDE.md."
+    "M5.1 cost-rejection demo: identical to sol_long.json except TP1, which is",
+    "M4's original 84.90. Gross RR 1.51 clears min_rr_tp1; net of \u20ac3.16 of fees",
+    "it is 1.41 and the gate rejects with NET_RR_TOO_LOW (RISK_ENGINE.md \u00a74.2).",
+    "This is the plan the system approved through M4 and M5 and no longer does.",
+    "Nothing here is live market data \u2014 it is a fixture, per CLAUDE.md."
   ],
   "report": {
     "symbol": "SOLUSDT",
@@ -17,15 +14,34 @@
     "timeframe_label": "intraday",
     "thesis": "4h uptrend intact; 1h pullback into EMA50 and the prior breakout level 82.4 with volume drying up on the retrace. Funding neutral, OI rising with price. 15m shows demand absorption at the zone top.",
     "evidence": [
-      {"claim": "4h regime is an uptrend", "source_field": "features.4h.trend_regime"},
-      {"claim": "price is retracing into the 1h EMA50", "source_field": "features.1h.ema50"},
-      {"claim": "prior breakout level at 82.4 held twice", "source_field": "features.levels"},
-      {"claim": "relative volume 0.41 on the retrace", "source_field": "features.1h.relative_volume"}
+      {
+        "claim": "4h regime is an uptrend",
+        "source_field": "features.4h.trend_regime"
+      },
+      {
+        "claim": "price is retracing into the 1h EMA50",
+        "source_field": "features.1h.ema50"
+      },
+      {
+        "claim": "prior breakout level at 82.4 held twice",
+        "source_field": "features.levels"
+      },
+      {
+        "claim": "relative volume 0.41 on the retrace",
+        "source_field": "features.1h.relative_volume"
+      }
     ],
-    "counter_thesis": "Fear & Greed at 74 (greed) — crowded-long risk into resistance at 84.6.",
-    "entry_zone": {"low": "82.10", "high": "83.10"},
+    "counter_thesis": "Fear & Greed at 74 (greed) \u2014 crowded-long risk into resistance at 84.6.",
+    "entry_zone": {
+      "low": "82.10",
+      "high": "83.10"
+    },
     "stop": "81.20",
-    "targets": ["85.20", "86.60", "88.90"],
+    "targets": [
+      "84.90",
+      "86.60",
+      "88.90"
+    ],
     "invalidation_price": "81.40",
     "invalidation_text": "1h close below 81.40",
     "confidence": 78,

@@ -140,6 +140,31 @@ risk:
   liq_buffer_multiple: 2.0        # §4 liq_distance ≥ 2× stop distance
   signal_cooldown_hours: 4        # ARCHITECTURE.md §3 dedup guard
 
+# specs/RISK_ENGINE.md §4.2 (correction 2026-08-18) — transaction costs.
+#
+# Binance USDⓈ-M VIP 0, verified against the published schedule on 2026-08-18:
+# https://www.binance.com/en/fee/futureFee  → maker 0.0200%, taker 0.0500%.
+# The BNB discount (-10%) and VIP tiers are deliberately NOT modelled: these are
+# the worst-case rates actually paid today, and a cost estimate should never be
+# optimistic. Entries are the maker leg (the ladder is limit orders); EVERY exit
+# — stop, TP, trail, manual — is priced as taker (owner ruling 2026-08-18).
+costs:
+  maker_fee_pct: 0.02
+  taker_fee_pct: 0.05
+  # Binance settles most USDⓈ-M perps every 8h (00/08/16 UTC); some settle every
+  # 4h, and a contract that hits its funding cap drops to 1h until rates settle.
+  # ccxt's premiumIndex response carries `interval: null` (see
+  # tests/cassettes/binance_funding_SOLUSDT.json), so the real per-symbol
+  # interval is not available without a second API call. 8h is an ESTIMATE —
+  # which is one more reason the funding figure is labelled as one.
+  funding_interval_hours: 8
+  # Funding is a cost for a long when the rate is positive and a CREDIT for a
+  # short. The card always shows the real signed estimate; this switch decides
+  # whether a credit is allowed to *improve* net RR and push a plan over
+  # min_rr_tp1. false = max(0, funding) in the gate — funding is an estimate of
+  # a frequently-flipping input and must never be the reason a trade approves.
+  credit_favourable_funding: false
+
 # specs/RISK_ENGINE.md §3 — ladder construction (deterministic, engine-owned).
 ladder:
   single_entry_atr_threshold: 0.5 # zone width < 0.5×ATR(1h) → single entry
@@ -165,7 +190,11 @@ llm:
   # content retry above — CLAUDE.md mandates the first, PROMPTS §2 the second.
   max_transport_retries: 2
   screener_timeout_seconds: 60
-  analyst_timeout_seconds: 90     # specs/ENSEMBLE.md §3 per-provider budget
+  # specs/ENSEMBLE.md §3 budgets 90s per provider. Raised to 150s (owner ruling
+  # 2026-08-18, recorded as a dated correction in ENSEMBLE.md §3): M5's live
+  # analyst calls ran 47-85s, so 90s leaves almost no headroom, and M10 runs two
+  # providers in parallel against the same budget.
+  analyst_timeout_seconds: 150
   screener_max_tokens: 4096
   analyst_max_tokens: 16000
   screener_batch_size: 0          # 0 = one call for the whole watchlist

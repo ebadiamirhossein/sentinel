@@ -35,8 +35,17 @@ def test_an_approved_plan_carries_every_field_the_card_needs(
     )
     assert plan.avg_entry > 0
     assert plan.stop == Decimal("81.20")
-    assert plan.targets == (Decimal("84.90"), Decimal("86.60"), Decimal("88.90"))
+    assert plan.targets == (Decimal("85.20"), Decimal("86.60"), Decimal("88.90"))
     assert len(plan.rr_targets) == len(plan.targets)
+    # §6 (correction 2026-08-18): the card shows both RR figures and the cost line,
+    # so both have to be on the plan — the bot renders, it never computes.
+    assert len(plan.rr_targets_net) == len(plan.targets)
+    assert len(plan.costs.tp_exit_fees_eur) == len(plan.targets)
+    assert plan.costs.entry_fee_eur > 0
+    assert plan.costs.stop_exit_fee_eur > 0
+    assert plan.costs.round_trip_cost_eur > 0
+    assert plan.costs.cost_pct_of_risk > 0
+    assert plan.schema_version == 2
     assert plan.risk_eur > 0
     assert plan.margin_eur > 0
     assert plan.notional_eur > 0

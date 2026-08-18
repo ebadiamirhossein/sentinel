@@ -61,6 +61,11 @@ class RejectionReason(StrEnum):
     STOP_TOO_TIGHT = "STOP_TOO_TIGHT"
     STOP_TOO_WIDE = "STOP_TOO_WIDE"
     RR_TOO_LOW = "RR_TOO_LOW"
+    #: §2 rule 5 measured NET of costs (correction 2026-08-18). Deliberately a
+    #: separate code from RR_TOO_LOW: "the analyst proposed a poor RR" and "the
+    #: setup was fine and fees ate it" call for different prompt-tuning actions,
+    #: and M9 cannot tell them apart if they share a code.
+    NET_RR_TOO_LOW = "NET_RR_TOO_LOW"
     LOW_CONFIDENCE = "LOW_CONFIDENCE"
     # §2 rule 7 / §7
     MAX_OPEN_RISK = "MAX_OPEN_RISK"
@@ -121,27 +126,38 @@ class PortfolioState(Frozen):
 
 
 class MarketContext(Frozen):
-    """The market facts the gate needs: last price, ATR(14,1h) and exchange rules."""
+    """The market facts the gate needs: last price, ATR(14,1h), exchange rules and
+    the current funding rate (§4.2 — the funding cost estimate's only input)."""
 
     symbol: str
     last_price: Decimal
     atr_1h: Decimal | None = None
     instrument: InstrumentMeta | None = None
+    #: Per-settlement funding rate as a fraction (0.0000193 = 0.00193%). Positive
+    #: means longs pay shorts. ``None`` when the snapshot has no derivatives data:
+    #: the funding estimate then degrades explicitly rather than assuming zero.
+    funding_rate: Decimal | None = None
+    #: Anchor for counting settlements across the plan's expiry window.
+    next_funding_time: datetime | None = None
 
     @classmethod
     def from_snapshot(
         cls, snapshot: MarketSnapshot, features: SymbolFeatures | None = None
     ) -> MarketContext:
-        """Assemble from M1/M2 output. Missing ATR stays missing — never guessed."""
+        """Assemble from M1/M2 output. Missing ATR stays missing — never guessed,
+        and the same goes for a missing funding rate."""
         atr: Decimal | None = None
         if features is not None:
             primary = features.timeframes.get("1h")
             atr = primary.atr14 if primary is not None else None
+        deriv = snapshot.derivatives
         return cls(
             symbol=snapshot.symbol,
             last_price=snapshot.last_price,
             atr_1h=atr,
             instrument=snapshot.instrument,
+            funding_rate=deriv.funding_rate if deriv is not None else None,
+            next_funding_time=deriv.next_funding_time if deriv is not None else None,
         )
 
 
@@ -167,10 +183,59 @@ class EntryRung(Frozen):
     notional_eur: Decimal
 
 
-class TradePlan(Frozen):
-    """§6 — everything the signal card shows. The bot renders; it never computes."""
+class PlanCosts(Frozen):
+    """§4.2 (correction 2026-08-18) — what this trade costs before it makes anything.
 
-    schema_version: int = 1
+    Fees are certain; funding is an **estimate** and every field carrying it says
+    so. Two funding numbers, deliberately:
+
+    * ``funding_eur`` is the honest signed estimate — negative means the position
+      is *paid* (a short while the rate is positive). This is what the card shows.
+    * ``funding_charged_eur`` is what the gate uses. With
+      ``costs.credit_favourable_funding`` false it is ``max(0, funding_eur)``, so a
+      credit can never be the reason a plan clears ``min_rr_tp1``.
+    """
+
+    maker_fee_pct: Decimal
+    taker_fee_pct: Decimal
+
+    #: Maker fee on the full ladder — every rung's own notional at its own price.
+    entry_fee_eur: Decimal
+    #: Taker fee on a full stop-out. Part of net *risk*.
+    stop_exit_fee_eur: Decimal
+    #: Taker fee on a full exit at each target, in target order. Part of net *reward*.
+    tp_exit_fees_eur: tuple[Decimal, ...]
+
+    #: The snapshot's current per-settlement rate, as a fraction. None → unavailable.
+    funding_rate: Decimal | None = None
+    funding_interval_hours: int = 8
+    #: Settlements falling inside (created_at, expires_at].
+    funding_settlements: int = 0
+    #: Signed estimate: positive = paid out, negative = received.
+    funding_eur: Decimal = Decimal("0")
+    #: What net RR actually charges — never negative unless credits are enabled.
+    funding_charged_eur: Decimal = Decimal("0")
+    #: False when the snapshot carried no funding rate. The estimate is then 0 and
+    #: the card says so, rather than implying funding is free (CLAUDE.md: degrade
+    #: explicitly, never fabricate).
+    funding_available: bool = False
+
+    #: Entry fee + taker exit at the stop + charged funding — the worst realistic
+    #: round trip, which is the one worth seeing before taking the trade.
+    round_trip_cost_eur: Decimal = Decimal("0")
+    #: ``round_trip_cost_eur`` as a percentage of the planned risk budget.
+    cost_pct_of_risk: Decimal = Decimal("0")
+
+
+class TradePlan(Frozen):
+    """§6 — everything the signal card shows. The bot renders; it never computes.
+
+    **schema_version 2** (2026-08-18) adds ``costs`` and ``rr_targets_net``.
+    ``rr_targets`` keeps both its name and its meaning — reward-to-risk *gross* of
+    costs — so plans stored by M4/M5 stay readable exactly as written.
+    """
+
+    schema_version: int = 2
     plan_id: UUID = Field(default_factory=uuid4)
     created_at: datetime
 
@@ -189,7 +254,12 @@ class TradePlan(Frozen):
     avg_fill_price: Decimal
     stop: Decimal
     targets: tuple[Decimal, ...]
+    #: Reward-to-risk **gross** of costs — §2.5's figure, unchanged since M4.
     rr_targets: tuple[Decimal, ...]
+    #: The same targets net of fees and estimated funding (§4.2). ``min_rr_tp1``
+    #: gates on ``rr_targets_net[0]``, not on ``rr_targets[0]``.
+    rr_targets_net: tuple[Decimal, ...]
+    costs: PlanCosts
 
     stop_distance_pct: Decimal
     planned_risk_eur: Decimal

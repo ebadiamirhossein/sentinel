@@ -94,7 +94,11 @@ def report(
     direction: Direction = Direction.LONG,
     zone: tuple[str, str] = ("82.10", "83.10"),
     stop: str = "81.20",
-    targets: tuple[str, ...] = ("84.90", "86.60", "88.90"),
+    #: TP1 was 84.90 through M4/M5 — gross RR 1.51, which clears §2 rule 5 on the
+    #: old gross reading and fails it on the §4.2 net one (1.41R after €3.16 of
+    #: fees). Moved to 85.20 (1.71 gross / 1.60 net) so the baseline stays an
+    #: *approved* plan; the 84.90 case now has its own rejection golden.
+    targets: tuple[str, ...] = ("85.20", "86.60", "88.90"),
     confidence: int = 78,
     status: CandidateStatus = CandidateStatus.CANDIDATE,
     timeframe_label: TimeframeLabel = TimeframeLabel.INTRADAY,
@@ -131,12 +135,21 @@ def market(
     last_price: str = "83.40",
     atr_1h: str = "0.90",
     meta: InstrumentMeta | None = None,
+    funding_rate: str | None = None,
+    next_funding_time: datetime | None = None,
 ) -> MarketContext:
+    """The baseline carries **no** funding rate, so the golden cases isolate fees.
+
+    Funding has its own tests, where the rate is stated explicitly — mixing an
+    estimated cost into hand-calculated fee goldens would blur both.
+    """
     return MarketContext(
         symbol=symbol,
         last_price=Decimal(last_price),
         atr_1h=Decimal(atr_1h),
         instrument=meta or SOLUSDT,
+        funding_rate=None if funding_rate is None else Decimal(funding_rate),
+        next_funding_time=next_funding_time,
     )
 
 

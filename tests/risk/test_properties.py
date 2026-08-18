@@ -10,6 +10,7 @@ leverage and the liquidation buffer.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from hypothesis import assume, given
@@ -57,6 +58,10 @@ SIZING_REJECTIONS = {
     RejectionReason.MIN_NOTIONAL,
     RejectionReason.INSUFFICIENT_MARGIN,
     RejectionReason.LIQ_BUFFER,
+    # §4.2: targets are generated at 3-4x the risk distance, so gross RR is never
+    # the problem — but a tight stop buys enough notional that fees alone can drag
+    # a 3R setup under 1.5R net. That is the finding, not a generator defect.
+    RejectionReason.NET_RR_TOO_LOW,
 }
 
 
@@ -118,7 +123,17 @@ def scenario(draw: st.DrawFn) -> Scenario:
         invalidation_text="generated",
         confidence=draw(st.integers(min_value=60, max_value=100)),
     )
-    market = MarketContext(symbol=meta.symbol, last_price=price, atr_1h=atr, instrument=meta)
+    # Funding is drawn across both signs and absent — a long paying, a short being
+    # paid, and a snapshot with no derivatives at all all have to hold.
+    funding = draw(st.one_of(st.none(), dec("-0.0075", "0.0075", places=7)))
+    market = MarketContext(
+        symbol=meta.symbol,
+        last_price=price,
+        atr_1h=atr,
+        instrument=meta,
+        funding_rate=funding,
+        next_funding_time=draw(st.sampled_from([None, NOW + timedelta(hours=3)])),
+    )
     account = AccountState(
         capital_eur=draw(dec("500", "1000000", places=2)),
         risk_per_trade_pct=draw(dec("0.25", "1.5", places=2)),
@@ -199,6 +214,79 @@ def test_structural_invariants_of_every_approved_plan(case: Scenario) -> None:
     assert all(entry.qty > 0 for entry in plan.entries)
     assert plan.rr_targets[0] >= CONFIG.risk.min_rr_tp1
     assert plan.expires_at > plan.created_at
+
+
+@given(scenario())
+def test_net_rr_never_exceeds_gross_rr(case: Scenario) -> None:
+    """§4.2 invariant — costs can only ever make a trade look worse.
+
+    Holds for every target, not just TP1: a smaller numerator over a larger
+    denominator. If this ever fails, a cost has gone negative somewhere.
+    """
+    plan = approved(case)
+    if plan is None:
+        return
+
+    assert len(plan.rr_targets_net) == len(plan.rr_targets)
+    for gross, net in zip(plan.rr_targets, plan.rr_targets_net, strict=True):
+        assert net <= gross
+
+
+@given(scenario())
+def test_costs_are_never_negative(case: Scenario) -> None:
+    """§4.2 invariant — every component of what the gate charges is >= 0.
+
+    ``funding_eur`` is deliberately exempt: it is the signed estimate, and a short
+    collecting funding is a real negative. ``funding_charged_eur`` is the figure
+    that reaches net RR, and *that* is floored while ``credit_favourable_funding``
+    is false — which is what keeps the invariant above true.
+    """
+    plan = approved(case)
+    if plan is None:
+        return
+
+    costs = plan.costs
+    assert costs.entry_fee_eur >= 0
+    assert costs.stop_exit_fee_eur >= 0
+    assert all(fee >= 0 for fee in costs.tp_exit_fees_eur)
+    assert costs.round_trip_cost_eur >= 0
+    assert costs.cost_pct_of_risk >= 0
+    assert costs.funding_settlements >= 0
+    if not CONFIG.costs.credit_favourable_funding:
+        assert costs.funding_charged_eur >= 0
+    assert costs.funding_available is (costs.funding_rate is not None)
+
+
+@given(scenario())
+def test_an_approved_plan_always_clears_the_minimum_on_net_rr(case: Scenario) -> None:
+    """§4.2 — the gate is on the net figure, so approval must imply the net bar.
+
+    The gross figure is free to be anything at or above it; only net is promised.
+    """
+    plan = approved(case)
+    if plan is None:
+        return
+
+    assert plan.rr_targets_net[0] >= CONFIG.risk.min_rr_tp1
+    assert plan.rr_targets[0] >= plan.rr_targets_net[0]
+
+
+@given(scenario())
+def test_a_plan_below_the_minimum_on_net_rr_is_rejected(case: Scenario) -> None:
+    """The contrapositive, checked against the engine's own cost arithmetic.
+
+    Re-derives net RR from a *rejected* decision's inputs would just re-run the
+    engine; instead this asserts the observable: whenever the gate rejects for
+    NET_RR_TOO_LOW it says so with both figures, and no plan escapes.
+    """
+    report, market, account = case
+    decision = ENGINE.evaluate(report=report, market=market, account=account, portfolio=portfolio())
+    if decision.reason is not RejectionReason.NET_RR_TOO_LOW:
+        return
+
+    assert decision.plan is None
+    assert decision.status is GateStatus.REJECTED
+    assert "net" in decision.message and "gross" in decision.message
 
 
 @given(scenario())

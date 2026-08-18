@@ -30,6 +30,14 @@ class AnalystProvider(Protocol):
 ## 3. Phase 1 — Shadow mode (M10)
 
 - For every symbol that reaches deep analysis, call BOTH providers in parallel (`asyncio.gather`, per-provider timeout 90s).
+
+> **Correction (2026-08-18, from M5.1) — the per-provider timeout is 150s, not 90s.**
+> M5 measured real Fable analyst calls at **47–85s** end to end (thinking included),
+> so a 90s budget leaves as little as 5s of headroom and would turn an ordinary slow
+> call into a discarded report. `config.llm.analyst_timeout_seconds` is **150**.
+> Running two providers in parallel does not change the per-provider budget, and
+> 150s still fits comfortably inside PRD F1's 15-minute cycle; it is worth
+> re-measuring at M10 before a *third* provider is ever added.
 - **Signals remain 100% Fable-driven.** GPT report stored in `analyst_reports` with `role=shadow`.
 - Deterministic comparer stores per pair: `direction_match`, `status_match`, `zone_overlap_pct` (entry-zone intersection / union), `stop_side_match`, `confidence_delta`.
 - Signal card gains one non-actionable footer line: `🔍 2nd opinion: agrees (long, conf 71)` or `🔍 2nd opinion: disagrees (NO_SETUP — "volume not confirming")` — informational only in this phase; the plan numbers never change.

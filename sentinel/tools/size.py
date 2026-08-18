@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -81,9 +82,12 @@ def _render_plan(plan: TradePlan) -> str:
         f"stop          {plan.stop}  (-{plan.stop_distance_pct}%)",
         "targets       "
         + "  ".join(
-            f"TP{i}: {t} ({rr}R)"
-            for i, (t, rr) in enumerate(zip(plan.targets, plan.rr_targets, strict=True), 1)
+            f"TP{i}: {t} ({net}R net · {gross}R gross)"
+            for i, (t, gross, net) in enumerate(
+                zip(plan.targets, plan.rr_targets, plan.rr_targets_net, strict=True), 1
+            )
         ),
+        *_cost_lines(plan),
         f"notional      €{plan.notional_eur}  ({plan.notional_usdt} USDT)",
         f"margin        €{plan.margin_eur}  ·  leverage {plan.suggested_leverage}x (isolated)",
         f"liq buffer    {'OK' if plan.liq_buffer_ok else 'FAIL'} "
@@ -93,6 +97,37 @@ def _render_plan(plan: TradePlan) -> str:
         f"expires       {plan.expires_at:%Y-%m-%d %H:%M UTC}",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _cost_lines(plan: TradePlan) -> list[str]:
+    """§4.2 — what the trade costs, before it is taken rather than after.
+
+    Funding is always labelled an estimate, and an unavailable rate says so
+    instead of rendering a reassuring €0.00.
+    """
+    costs = plan.costs
+    fees = costs.entry_fee_eur + costs.stop_exit_fee_eur
+    lines = [
+        f"costs         fees €{fees}  "
+        f"(maker {costs.maker_fee_pct}% in · taker {costs.taker_fee_pct}% out)",
+    ]
+    if not costs.funding_available:
+        lines.append("              funding n/a  (no funding rate in the snapshot)")
+    else:
+        # normalize() strips the trailing zeros a Decimal multiply leaves behind:
+        # 0.0019300% reads as false precision for a rate published to 6dp.
+        rate_pct = (costs.funding_rate or Decimal(0)) * Decimal("100")
+        sign = "credit " if costs.funding_eur < 0 else ""
+        lines.append(
+            f"              funding ~€{abs(costs.funding_eur)} {sign}est  "
+            f"({rate_pct.normalize():f}% x {costs.funding_settlements} settlement(s) "
+            f"@ {costs.funding_interval_hours}h)"
+        )
+    lines.append(
+        f"              round trip €{costs.round_trip_cost_eur} "
+        f"= {costs.cost_pct_of_risk}% of the €{plan.planned_risk_eur} risk budget"
+    )
+    return lines
 
 
 def _base(symbol: str) -> str:

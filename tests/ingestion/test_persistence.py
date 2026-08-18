@@ -168,17 +168,36 @@ def requires_db(func: Any) -> Any:
     )(func)
 
 
+async def _clean(session: AsyncSession) -> None:
+    """Empty the tables these tests count rows in.
+
+    Child-first, so the candle rows go before the snapshots they reference.
+    """
+    for table in (OhlcvCandleRow, MarketSnapshotRow, FxRateRow):
+        await session.execute(delete(table))
+    await session.commit()
+
+
 @pytest.fixture
 async def session() -> AsyncIterator[AsyncSession]:
+    """A session against a database these tests have emptied **first**.
+
+    Cleaning only on the way out was not enough (M4_REPORT §8): these tests assert
+    absolute row counts (``len(candles) == 4``), so anything already in the
+    database fails them — and the M1/M3 demos leave ~1,068 candles behind on the
+    very database the developer running these tests is most likely to have. A
+    fixture that only tidies up after itself is correct exactly once, on a database
+    nobody has used. Cleaning at setup as well makes the tests idempotent and
+    re-runnable, which is what a row-count assertion needs to mean anything.
+    """
     assert TEST_DB_URL is not None
     engine = create_async_engine(TEST_DB_URL)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as session:
+        await _clean(session)
         yield session
         await session.rollback()
-        for table in (OhlcvCandleRow, MarketSnapshotRow, FxRateRow):
-            await session.execute(delete(table))
-        await session.commit()
+        await _clean(session)
     await engine.dispose()
 
 

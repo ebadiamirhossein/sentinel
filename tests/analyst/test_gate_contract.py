@@ -39,7 +39,7 @@ def sol_payload(**overrides: object) -> AnalystReportPayload:
         "symbol": "SOLUSDT",
         "entry_zone": {"low": 82.10, "high": 83.10},
         "stop": 81.20,
-        "targets": [84.90, 86.60, 88.90],
+        "targets": [85.20, 86.60, 88.90],
         "invalidation_price": 81.20,
         "confidence": 78,
     }

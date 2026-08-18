@@ -12,7 +12,11 @@ Order of evaluation (fixed, so a rejection always names the first real problem):
 7. §4 sizing, collapsing the ladder while any rung is below the exchange minimum;
 8. rules 3-5 **again** on the final ladder — a collapse moves E, and the plan that
    ships must satisfy §2, not merely the plan that was first drafted;
-9. leverage, liquidation buffer and the margin guard.
+9. leverage, liquidation buffer and the margin guard;
+10. §4.2 costs, and rule 5 once more on the **net** RR — the figure the owner
+    actually collects. Costs need real quantities, so this cannot run before
+    sizing; it runs after the funding checks because a position that cannot be
+    funded is a harder blocker than a thin RR (see the note at the call site).
 
 No LLM anywhere in this module (rule zero). No floats.
 """
@@ -35,6 +39,7 @@ from sentinel.risk.coherence import (
     check_stop_distance,
     rr_multiples,
 )
+from sentinel.risk.costs import estimate_costs, net_rr_multiples
 from sentinel.risk.ladder import build_ladder
 from sentinel.risk.management import expires_at, management_plan_text
 from sentinel.risk.models import (
@@ -43,6 +48,7 @@ from sentinel.risk.models import (
     GateDecision,
     GateStatus,
     MarketContext,
+    PlanCosts,
     PortfolioState,
     RejectionReason,
     TradePlan,
@@ -76,6 +82,9 @@ MESSAGES: dict[RejectionReason, str] = {
     RejectionReason.STOP_TOO_TIGHT: "stop is inside the noise band (< min x ATR)",
     RejectionReason.STOP_TOO_WIDE: "stop is wider than the ATR ceiling",
     RejectionReason.RR_TOO_LOW: "reward-to-risk at TP1 is below the minimum",
+    RejectionReason.NET_RR_TOO_LOW: (
+        "reward-to-risk at TP1 is below the minimum once fees and funding are paid"
+    ),
     RejectionReason.LOW_CONFIDENCE: "confidence below the candidate threshold",
     RejectionReason.MAX_OPEN_RISK: "open risk budget would be exceeded",
     RejectionReason.MAX_POSITIONS: "maximum concurrent positions reached",
@@ -215,6 +224,56 @@ class RiskEngine:
                 report, now, GateStatus.REJECTED, RejectionReason.INSUFFICIENT_MARGIN
             )
 
+        # §4.2 — cost the round trip, then re-run rule 5 on what the owner keeps.
+        #
+        # This runs LAST, after the funding checks, and the order is load-bearing.
+        # Costs scale with notional while risk is fixed, so cost-as-a-share-of-risk
+        # is ~0.07% / stop_distance — the same quantity that drives leverage. Any
+        # plan failing the margin guard (notional > 10x capital) necessarily spends
+        # >90% of its risk budget on fees, so gating net RR earlier would make
+        # INSUFFICIENT_MARGIN and LIQ_BUFFER unreachable and report "thin RR" for
+        # a position the owner simply cannot fund. The harder blocker wins.
+        expiry = expires_at(
+            created_at=now,
+            timeframe_label=report.timeframe_label,
+            config=self._config.management,
+        )
+        risk_eur = money(sized.risk_usdt / account.eurusd_rate)
+        # Quantized before the net math, not after: the card shows 1.51R, so 1.51R
+        # is what net RR must be derived from. Otherwise the two figures on the
+        # same line cannot be reconciled by hand, which is how §8.1's goldens —
+        # and the owner reading a card — check the engine's arithmetic.
+        rr_gross = tuple(
+            ratio(value)
+            for value in rr_multiples(avg_entry=sized.avg_entry, stop=stop, targets=report.targets)
+        )
+        costs = estimate_costs(
+            entries=sized.rungs,
+            stop=stop,
+            targets=report.targets,
+            direction=report.direction,
+            notional_eur=sized.notional_eur,
+            planned_risk_eur=planned_risk_eur,
+            eurusd_rate=account.eurusd_rate,
+            funding_rate=market.funding_rate,
+            next_funding_time=market.next_funding_time,
+            created_at=now,
+            expires_at=expiry,
+            config=self._config.costs,
+        )
+        rr_net = net_rr_multiples(rr_gross=rr_gross, risk_eur=risk_eur, costs=costs)
+        if check_rr(rr=rr_net, min_rr_tp1=risk.min_rr_tp1) is not None:
+            return self._decide(
+                report,
+                now,
+                GateStatus.REJECTED,
+                RejectionReason.NET_RR_TOO_LOW,
+                detail=(
+                    f"{ratio(rr_net[0])}R net vs {ratio(rr_gross[0])}R gross — "
+                    f"€{costs.round_trip_cost_eur} of costs on a €{risk_eur} risk"
+                ),
+            )
+
         plan = self._build_plan(
             report=report,
             checked=checked,
@@ -224,6 +283,11 @@ class RiskEngine:
             leverage=leverage,
             margin_eur=margin_eur,
             planned_risk_eur=planned_risk_eur,
+            risk_eur=risk_eur,
+            rr_gross=rr_gross,
+            rr_net=rr_net,
+            costs=costs,
+            expiry=expiry,
             account=account,
             now=now,
         )
@@ -273,10 +337,14 @@ class RiskEngine:
         leverage: int,
         margin_eur: Decimal,
         planned_risk_eur: Decimal,
+        risk_eur: Decimal,
+        rr_gross: tuple[Decimal, ...],
+        rr_net: tuple[Decimal, ...],
+        costs: PlanCosts,
+        expiry: datetime,
         account: AccountState,
         now: datetime,
     ) -> TradePlan:
-        rr = rr_multiples(avg_entry=sized.avg_entry, stop=stop, targets=report.targets)
         return TradePlan(
             created_at=now,
             symbol=report.symbol,
@@ -290,10 +358,12 @@ class RiskEngine:
             avg_fill_price=sized.avg_fill_price,
             stop=stop,
             targets=report.targets,
-            rr_targets=tuple(ratio(value) for value in rr),
+            rr_targets=rr_gross,
+            rr_targets_net=rr_net,
+            costs=costs,
             stop_distance_pct=percent(stop_fraction * HUNDRED),
             planned_risk_eur=planned_risk_eur,
-            risk_eur=money(sized.risk_usdt / account.eurusd_rate),
+            risk_eur=risk_eur,
             notional_usdt=sized.notional_usdt,
             notional_eur=sized.notional_eur,
             margin_eur=margin_eur,
@@ -301,11 +371,7 @@ class RiskEngine:
             liq_distance_pct=percent(HUNDRED / leverage),
             liq_buffer_ok=True,
             management_plan=management_plan_text(self._config.management),
-            expires_at=expires_at(
-                created_at=now,
-                timeframe_label=report.timeframe_label,
-                config=self._config.management,
-            ),
+            expires_at=expiry,
             capital_eur=checked.capital_eur,
             risk_per_trade_pct=account.risk_per_trade_pct,
             eurusd_rate=account.eurusd_rate,

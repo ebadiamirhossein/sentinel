@@ -18,8 +18,25 @@ From runtime config (DB-overridable via Telegram):
 | `margin_budget_pct` | 10% | Target margin per trade as share of capital |
 | `daily_loss_limit_pct` | 3.0% | Realized loss (R-equivalent) → auto-pause 24h |
 | `max_positions` | 4 | Concurrent taken signals |
-| `min_rr_tp1` | 1.5 | Reject plans below this |
+| `min_rr_tp1` | 1.5 | Reject plans below this — **measured NET of costs** (§4.2) |
 | `eurusd_rate` | fetched hourly, cached | For USDT→EUR display conversion |
+| `maker_fee_pct` | 0.02% | Entry legs (the limit ladder) — §4.2 |
+| `taker_fee_pct` | 0.05% | Every exit leg: stop, TP, trail, manual — §4.2 |
+| `funding_interval_hours` | 8 | Settlements per day assumed when estimating funding — §4.2 |
+| `credit_favourable_funding` | false | Whether a funding *credit* may raise net RR — §4.2 |
+
+> **Correction (2026-08-18, from M5.1) — `min_rr_tp1` gates NET reward-to-risk.**
+> Through M4 and M5 it gated the gross figure, because this spec costed nothing.
+> The parameter's value is unchanged at 1.5, but **the quantity it measures is
+> not**: it is now reward-to-risk after fees and estimated funding (§4.2). This is
+> a real tightening — the four §8.1 golden cases all sat at 1.50–1.51 gross and
+> land at 1.25–1.44 net, so setups the system approved through M5 are now
+> rejected, with the distinct code `NET_RR_TOO_LOW`. Tighter-stopped setups lose
+> the most, because cost as a share of the risk budget is ≈ `0.07% / stop_distance`.
+> **When tuning this parameter during M9, tune it as a net threshold.** A gross
+> equivalent of the old behaviour does not exist as a single number: the gross-to-net
+> gap depends on the stop distance, from ~0.07R on a 2.3×ATR stop to ~0.25R on a
+> 0.6×ATR one.
 
 From the analyst (`AnalystReport`): direction, entry_zone {low, high}, stop, targets[], setup_type, confidence.
 
@@ -29,7 +46,10 @@ From the analyst (`AnalystReport`): direction, entry_zone {low, high}, stop, tar
 2. Entry zone within `max_entry_distance_pct` (default 3%) of last price — no chasing, no fantasy fills. **(Ruling 2026-08-18, from M4: measured on BOTH edges, so every rung is a plausible fill.)**
 3. Stop distance ≥ 0.6 × ATR(14, 1h) — rejects noise-level stops that guarantee stop-outs.
 4. Stop distance ≤ 3 × ATR(14, 1h) — rejects lazy wide stops that wreck RR.
-5. RR to TP1 (from weighted avg entry) ≥ `min_rr_tp1`.
+5. RR to TP1 (from weighted avg entry) ≥ `min_rr_tp1`. **(Correction 2026-08-18,
+   from M5.1: measured NET of fees and estimated funding — see §4.2. The gross
+   check remains as a cheap early reject, since net ≤ gross always; the gate that
+   ships a plan is the net one, and it rejects with `NET_RR_TOO_LOW`.)**
 6. Confidence ≥ 60 for CANDIDATE processing (below → downgrade to WATCHLIST).
 7. Portfolio: open risk + this trade ≤ `max_open_risk_pct`; positions < `max_positions`; symbol not on cooldown; not paused.
 
@@ -98,6 +118,78 @@ If violated, reduce leverage until satisfied; if leverage would fall below 1, re
 
 **Rounding:** qty down to symbol qty-step; prices to symbol tick-size (fetched from exchange info, cached daily). After rounding, recompute actual risk_eur and display the real number.
 
+## 4.2 Transaction costs
+
+> **Correction (2026-08-18, from M5.1) — this spec costed nothing, and that biased
+> every RR figure it produced.** Fees and funding were absent from §4 entirely, so
+> `rr_tp1` was gross and `min_rr_tp1` gated a number the owner never actually
+> collects. On M5's live ETHUSDT plan the gap was ~16% of the risk budget: a 0.45%
+> stop implies €17.3k of notional for a €75 risk, on which a maker-in / taker-out
+> round trip is ~€12. Left uncorrected the bias would have propagated into M9's
+> measured performance, not just the cards.
+
+**Rates.** Binance USDⓈ-M VIP 0, verified against the published schedule on
+2026-08-18 (<https://www.binance.com/en/fee/futureFee>): **maker 0.0200%**, **taker
+0.0500%**. The BNB discount (−10%) and the VIP volume tiers are deliberately not
+modelled — these are the worst-case rates actually paid, and a cost estimate that
+flatters the trade is worse than none. They live in `config.costs`, not in code.
+
+**Which leg is which.** Entries are the maker leg: the ladder is limit orders.
+**Every exit is priced as taker** — stop, TP, trail and manual alike (owner ruling
+2026-08-18). A TP may well rest as a limit and earn the maker rate, but assuming so
+would let net RR depend on a fill quality the plan cannot promise. Same conservative
+bias as flooring quantities and rounding stops away from the entry.
+
+```
+Q             = Σ qty_i
+entry_fee     = Σ (qty_i × p_i / rate) × maker_fee     # per rung, at its own price
+stop_exit_fee = (Q × stop / rate)      × taker_fee     # part of net RISK
+tp_exit_fee_i = (Q × TP_i / rate)      × taker_fee     # part of net REWARD
+```
+
+**Funding.** Estimated, never asserted — it is the one input here that changes
+under the plan. Settlements are counted in `(created_at, expires_at]` by stepping
+`funding_interval_hours` from the snapshot's published `next_funding_time`; without
+one, the window is divided by the interval.
+
+```
+funding = ±(notional_eur × funding_rate × settlements)     # + = paid, − = received
+```
+
+The sign follows the direction: a positive rate means longs pay shorts, so it is a
+cost for a long and a **credit** for a short. Both figures are kept, and they say
+different things on purpose — `funding_eur` is the honest signed estimate the card
+shows, `funding_charged_eur` is `max(0, funding_eur)` and is what net RR spends.
+A credit must never be the reason a plan clears `min_rr_tp1`; the behaviour is
+switchable via `costs.credit_favourable_funding` so the choice stays visible.
+
+`funding_interval_hours` defaults to **8**, which is Binance's setting for most
+USDⓈ-M perps — but some settle every 4h, and a contract at its funding cap drops to
+1h. ccxt's premiumIndex response does not carry the interval, so the real per-symbol
+value is unavailable without a second API call. This is an estimate on top of an
+estimate, and is labelled as one everywhere it is shown.
+
+**Degradation (DATA_SOURCES §4).** A snapshot with no funding rate yields
+`funding_available = false` and a zero funding estimate, and the card says
+`funding n/a` rather than rendering a reassuring €0.00. Fees are never optional.
+
+**Net reward-to-risk.** Computed on §2.5's `avg_entry` basis and derived from the
+*displayed* (2dp) gross multiple, so the two figures on a card reconcile by hand:
+
+```
+net_rr_i = (rr_i × risk_eur − entry_fee − tp_exit_fee_i − funding_charged)
+           ÷ (risk_eur      + entry_fee + stop_exit_fee + funding_charged)
+```
+
+`net_rr ≤ rr` holds by construction for non-negative costs.
+
+**Evaluation order.** The cost check runs **last**, after leverage, the liquidation
+buffer and the margin guard. Cost as a share of risk is ≈ `0.07% / stop_distance` —
+the same quantity that drives leverage — so any plan failing the margin guard
+(notional > 10× capital) necessarily spends >90% of its risk budget on fees.
+Gating net RR earlier would make `INSUFFICIENT_MARGIN` and `LIQ_BUFFER` unreachable
+and report "thin RR" for a position the owner simply cannot fund.
+
 ## 5. Targets & management plan (attached to card)
 
 - TP1/TP2/TP3 from analyst, validated ordered and beyond `min_rr_tp1`.
@@ -107,6 +199,17 @@ If violated, reduce leverage until satisfied; if leverage would fall below 1, re
 ## 6. Outputs (`TradePlan` additions)
 
 `entries[] {price, weight_pct, qty, notional_eur}`, `avg_entry`, `stop`, `targets[]`, `risk_eur (actual)`, `margin_eur`, `notional_eur`, `suggested_leverage`, `liq_buffer_ok: true`, `rr_tp1/tp2/tp3`, `management_plan`, `expires_at`, `gate_status`.
+
+> **Addition (2026-08-18, from M5.1) — §4.2 costs on the plan.** `schema_version`
+> is now **2**. `rr_targets` keeps both its name and its meaning (RR **gross** of
+> costs), so plans stored by M4 and M5 remain readable exactly as written; the new
+> fields are `rr_targets_net` and a `costs` block carrying `entry_fee_eur`,
+> `stop_exit_fee_eur`, `tp_exit_fees_eur[]`, `funding_rate`,
+> `funding_interval_hours`, `funding_settlements`, `funding_eur` (signed),
+> `funding_charged_eur`, `funding_available`, `round_trip_cost_eur` and
+> `cost_pct_of_risk`. The card shows the cost line and both RR figures — the owner
+> should see what a trade costs before taking it, not after. The bot renders; it
+> never computes (`gate_decisions` stores the whole block as JSONB, no migration).
 
 ## 7. Portfolio rails (checked before every signal AND on every tracker tick)
 
@@ -121,3 +224,11 @@ If violated, reduce leverage until satisfied; if leverage would fall below 1, re
 3. Rejection matrix: one test per coherence rule.
 4. Ladder-collapse tests around min-notional boundaries.
 5. Partial-fill R accounting: rung1-only + stop = −0.40R (±rounding); rung1+2 + TP1 math correct.
+6. **Costs (added 2026-08-18, from M5.1):** hand-calculated fee arithmetic per golden
+   case; settlement counting across the expiry window (none / one / many, stale and
+   absent `next_funding_time`); the funding sign in both directions; the
+   `credit_favourable_funding` floor; the no-funding-rate degrade path. Property
+   tests: **net RR ≤ gross RR for every target**, every cost component ≥ 0, and an
+   approved plan always clears `min_rr_tp1` on the net figure. The four §8.1 goldens
+   as M4 shipped them are retained as `NET_RR_TOO_LOW` rejection cases — the
+   behaviour change is asserted, not left to be discovered.

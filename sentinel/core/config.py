@@ -240,6 +240,31 @@ class RiskConfig(_Strict):
     signal_cooldown_hours: int = 4
 
 
+class CostsConfig(_Strict):
+    """specs/RISK_ENGINE.md §4.2 (correction 2026-08-18) — transaction costs.
+
+    Binance USDⓈ-M VIP 0, verified against the published schedule on 2026-08-18
+    (https://www.binance.com/en/fee/futureFee): maker 0.0200%, taker 0.0500%.
+    The BNB discount and the VIP tiers are deliberately not modelled — a cost
+    estimate that flatters the trade is worse than no estimate at all.
+
+    Entries are the maker leg (the ladder is limit orders); **every** exit is
+    priced as taker, including a TP that might well rest as a limit — the same
+    conservative bias as flooring quantities and rounding stops away from entry.
+    """
+
+    maker_fee_pct: Dec = Decimal("0.02")
+    taker_fee_pct: Dec = Decimal("0.05")
+    #: Most USDⓈ-M perps settle every 8h; some settle every 4h, and a contract at
+    #: its funding cap drops to 1h. ccxt's premiumIndex response does not carry
+    #: the interval, so this is an estimate — hence "est" on every funding line.
+    funding_interval_hours: int = 8
+    #: Funding is a cost for a long at a positive rate and a credit for a short.
+    #: False means the gate uses ``max(0, funding)``: a credit is displayed but is
+    #: never allowed to push a plan over ``min_rr_tp1``.
+    credit_favourable_funding: bool = False
+
+
 class LadderConfig(_Strict):
     """specs/RISK_ENGINE.md §3."""
 
@@ -291,9 +316,12 @@ class LLMConfig(_Strict):
     #: Transport-level only. Content failures use ``max_json_retries``.
     max_transport_retries: int = 2
     screener_timeout_seconds: float = 60.0
-    #: specs/ENSEMBLE.md §3 budgets 90s per provider. The analyst thinks before it
-    #: answers, so this is a whole-turn budget, not a connect timeout.
-    analyst_timeout_seconds: float = 90.0
+    #: specs/ENSEMBLE.md §3 budgets 90s per provider; raised to 150s by owner
+    #: ruling 2026-08-18 and recorded there as a dated correction. M5's live
+    #: analyst calls ran 47-85s — 90s left almost no headroom, and M10 runs two
+    #: providers in parallel. The analyst thinks before it answers, so this is a
+    #: whole-turn budget, not a connect timeout.
+    analyst_timeout_seconds: float = 150.0
     screener_max_tokens: int = 4096
     analyst_max_tokens: int = 16000
     #: 0 = one call for the whole watchlist (specs/PROMPTS.md §1 is a batch pass).
@@ -345,6 +373,7 @@ class AppConfig(_Strict):
     features: FeaturesConfig = FeaturesConfig()
     charts: ChartsConfig = ChartsConfig()
     risk: RiskConfig = RiskConfig()
+    costs: CostsConfig = CostsConfig()
     ladder: LadderConfig = LadderConfig()
     management: ManagementConfig = ManagementConfig()
     llm: LLMConfig = LLMConfig()
