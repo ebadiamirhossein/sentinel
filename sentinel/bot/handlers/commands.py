@@ -1,10 +1,9 @@
 """Commands — specs/TELEGRAM_UX.md §3.
 
-Shipped here: ``/capital /risk /status /positions /pause /resume /watchlist
-/settings`` (the M6 scope in docs/MILESTONES.md). ``/stats``, ``/pulse`` and
-``/analyze`` are not registered: the first needs outcomes the tracker measures
-from M7, and the other two are P1. An unregistered command is silent rather than
-answered with a promise.
+Shipped here: ``/capital /risk /status /positions /stats /pause /resume
+/watchlist /settings``. ``/stats`` joined at M7, when the tracker finally made
+outcomes exist; ``/pulse`` and ``/analyze`` are P1 and stay unregistered, because
+an unregistered command is silent rather than answered with a promise.
 
 Every handler writes through a repository and commits its own unit of work, then
 confirms back in words — §3 requires ``/capital`` and ``/risk`` to "confirm", and
@@ -13,17 +12,25 @@ a setting that changes sizing should never change quietly.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from sentinel.bot.cards import positions_card, settings_card, status_card, watchlist_card
+from sentinel.bot.cards import (
+    positions_card,
+    settings_card,
+    stats_card,
+    status_card,
+    watchlist_card,
+)
 from sentinel.bot.context import BotContext
 from sentinel.bot.formatting import escape
 from sentinel.bot.keyboards import resume_keyboard
 from sentinel.bot.models import SignalDecision
+from sentinel.bot.readmodels import position_view, spend_view, stats_view
 from sentinel.bot.runtime import (
     CAPITAL_EUR,
     RISK_PER_TRADE_PCT,
@@ -38,7 +45,9 @@ from sentinel.bot.runtime import (
 )
 from sentinel.bot.views import DataSourceView, SettingsView, StatusView
 from sentinel.core.logging import get_logger
-from sentinel.risk.models import PauseReason, PauseState
+from sentinel.risk.models import PauseReason, PauseState, TradePlan
+from sentinel.risk.rails import open_risk_pct
+from sentinel.stats.queries import build_report, parse_window
 
 log = get_logger(__name__)
 
@@ -119,6 +128,10 @@ async def risk(message: Message, command: CommandObject, ctx: BotContext) -> Non
 @commands_router.message(Command("status"))
 async def status(message: Message, ctx: BotContext) -> None:
     """§3 ``/status`` — assembled from state that exists, with the gaps named."""
+    now = ctx.clock.now()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start, _ = day_start, None
+
     async with ctx.database.session() as session:
         pause = await ctx.repositories.risk_state(session).load()
         stored = await ctx.repositories.settings(session).all()
@@ -128,6 +141,18 @@ async def status(message: Message, ctx: BotContext) -> None:
         taken = await signals_repo.with_decision(SignalDecision.TAKEN, limit=200)
         snapshots = await ctx.repositories.snapshots(session).latest_per_symbol()
         stuck = await ctx.repositories.messages(session).stuck()
+        # M7: the figures /status could only name as unmeasured through M6.
+        open_taken = await signals_repo.open_taken()
+        open_symbols = await signals_repo.open_symbols()
+        signals_today = await signals_repo.published_since(day_start)
+        cycles_repo = ctx.repositories.cycles(session)
+        last_cycle = await cycles_repo.latest()
+        completed, started = await cycles_repo.completion_since(now - timedelta(days=30))
+        totals = await ctx.repositories.llm_calls(session).spend_totals(
+            day_start=day_start,
+            month_start=month_start.replace(day=1),
+            priced_models=tuple(ctx.settings.config.llm.pricing),
+        )
 
     config = effective_config(ctx.settings, stored)
     capital = stored.get(CAPITAL_EUR)
@@ -154,16 +179,72 @@ async def status(message: Message, ctx: BotContext) -> None:
             )
             for row in snapshots
         ),
+        dry_run=config.dry_run,
+        last_cycle_at=None
+        if last_cycle is None
+        else (last_cycle.finished_at or last_cycle.started_at),
+        last_cycle_status=None if last_cycle is None else last_cycle.status,
+        cycles_completed=completed,
+        cycles_started=started,
+        open_risk_pct=open_risk_pct(
+            [TradePlan.model_validate(row.plan).risk_per_trade_pct for row in open_taken]
+        ),
+        max_open_risk_pct=config.risk.max_open_risk_pct,
+        open_positions=len(open_taken),
+        max_positions=config.risk.max_positions,
+        signals_today=signals_today,
+        max_signals_per_day=config.risk.max_signals_per_day,
+        signals_open=len(open_symbols),
+        spend=spend_view(totals, config.llm),
     )
     await message.answer(status_card(view, ctx.tz))
 
 
 @commands_router.message(Command("positions"))
 async def positions(message: Message, ctx: BotContext) -> None:
-    """§3 ``/positions`` — signals marked Taken (see ``positions_card`` on uPnL)."""
+    """§3 ``/positions`` — Taken signals with live uPnL in R and EUR.
+
+    M6 shipped the plan as issued and said in words that the mark-to-market needed
+    the tracker. It has it now: the mark is the tracker's last observed price for
+    the symbol, and the R figure comes from ``risk/accounting.py``.
+    """
     async with ctx.database.session() as session:
         rows = await ctx.repositories.signals(session).with_decision(SignalDecision.TAKEN)
-    await message.answer(positions_card(rows, ctx.tz))
+        fills = await ctx.repositories.fills(session).for_signals([row.id for row in rows])
+        exits = await ctx.repositories.exits(session).for_signals([row.id for row in rows])
+        marks = {
+            row.symbol: snapshot.last_price
+            for snapshot in await ctx.repositories.snapshots(session).latest_per_symbol()
+            for row in rows
+            if row.symbol == snapshot.symbol
+        }
+
+    views = [
+        position_view(
+            row,
+            TradePlan.model_validate(row.plan),
+            fills.get(row.id, []),
+            exits.get(row.id, []),
+            mark_price=marks.get(row.symbol),
+        )
+        for row in rows
+    ]
+    await message.answer(positions_card(views, ctx.tz))
+
+
+@commands_router.message(Command("stats"))
+async def stats(message: Message, command: CommandObject, ctx: BotContext) -> None:
+    """§3 ``/stats [30d|90d|all]`` — registered at last, now that outcomes exist.
+
+    Three populations, reported separately: real (✅ Taken), hypothetical
+    (👀 Watching + ❌ Skipped) and, when any exist, dry run. Merging them would be
+    the one thing PRD G2 cannot afford — "the system's real success rate is
+    *known*, not guessed".
+    """
+    window = parse_window(command.args)
+    async with ctx.database.session() as session:
+        report = await build_report(session, window=window, now=ctx.clock.now())
+    await message.answer(stats_card(stats_view(report), ctx.tz))
 
 
 @commands_router.message(Command("pause"))

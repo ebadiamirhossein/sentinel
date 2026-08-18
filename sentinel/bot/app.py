@@ -20,7 +20,7 @@ from aiogram.client.default import DefaultBotProperties
 from sentinel.bot.allowlist import AllowlistMiddleware
 from sentinel.bot.context import BotContext, Repositories
 from sentinel.bot.formatting import zone_info
-from sentinel.bot.handlers import callbacks_router, commands_router
+from sentinel.bot.handlers import callbacks_router, commands_router, replies_router
 from sentinel.bot.runtime import SymbolChecker
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import Settings
@@ -64,6 +64,9 @@ def build_dispatcher(ctx: BotContext) -> Dispatcher:
 
     dispatcher.include_router(commands_router)
     dispatcher.include_router(callbacks_router)
+    # Last: it matches any reply, so it must not shadow a command that happens to
+    # be sent as one.
+    dispatcher.include_router(replies_router)
     return dispatcher
 
 

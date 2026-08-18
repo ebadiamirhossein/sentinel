@@ -12,7 +12,16 @@ from decimal import Decimal
 import pytest
 
 from sentinel.analyst.models import Direction
-from sentinel.risk.accounting import Exit, Fill, avg_fill_price, open_qty, realized_r
+from sentinel.risk.accounting import (
+    Exit,
+    Fill,
+    avg_fill_price,
+    open_qty,
+    realized_r,
+    unrealized_pnl_usdt,
+    unrealized_r,
+)
+from sentinel.risk.rounding import ratio
 
 PLANNED_RISK = Decimal("86.9475")
 STOP = Decimal("81.20")
@@ -96,3 +105,74 @@ def test_nothing_filled_is_flat() -> None:
     ) == Decimal("0")
     assert open_qty((), ()) == Decimal("0")
     assert avg_fill_price(()) == Decimal("0")
+
+
+# --------------------------------------------------------------------------- #
+# Open PnL — what /positions marks to market (M7)
+# --------------------------------------------------------------------------- #
+
+
+def test_open_pnl_is_measured_on_the_size_still_open() -> None:
+    """A position with a target already banked marks only what remains.
+
+    filled  18.30 @ 83.10, of which 7.32 closed at TP1
+    open    10.98 @ 83.10, marked at 84.20
+    P&L     (84.20 - 83.10) x 10.98 = 1.10 x 10.98 = 12.078 USDT
+    R       12.078 / 86.9475        = 0.1389...  -> 0.14R
+    """
+    fills = (Fill(price=Decimal("83.10"), qty=Decimal("18.30")),)
+    exits = (Exit(price=Decimal("85.20"), qty=Decimal("7.32")),)
+    assert unrealized_pnl_usdt(
+        direction=Direction.LONG, fills=fills, exits=exits, mark_price=Decimal("84.20")
+    ) == Decimal("12.078")
+    # Unrounded here, exactly like ``realized_r``: the caller quantizes for the
+    # card, and the gate-adjacent math never rounds before it has to.
+    assert ratio(
+        unrealized_r(
+            direction=Direction.LONG,
+            fills=fills,
+            exits=exits,
+            mark_price=Decimal("84.20"),
+            planned_risk_usdt=Decimal("86.9475"),
+        )
+    ) == Decimal("0.14")
+
+
+def test_a_short_gains_when_the_mark_falls() -> None:
+    fills = (Fill(price=Decimal("83.70"), qty=Decimal("18.30")),)
+    assert unrealized_pnl_usdt(
+        direction=Direction.SHORT, fills=fills, exits=(), mark_price=Decimal("82.70")
+    ) == Decimal("18.300")
+
+
+def test_nothing_filled_has_no_open_pnl() -> None:
+    """An unfilled ladder is not a position, however far price has moved."""
+    assert unrealized_pnl_usdt(
+        direction=Direction.LONG, fills=(), exits=(), mark_price=Decimal("99")
+    ) == Decimal("0")
+    assert unrealized_r(
+        direction=Direction.LONG,
+        fills=(),
+        exits=(),
+        mark_price=Decimal("99"),
+        planned_risk_usdt=Decimal("86.9475"),
+    ) == Decimal("0")
+
+
+def test_a_fully_closed_position_has_no_open_pnl() -> None:
+    fills = (Fill(price=Decimal("83.10"), qty=Decimal("18.30")),)
+    exits = (Exit(price=Decimal("85.20"), qty=Decimal("18.30")),)
+    assert unrealized_pnl_usdt(
+        direction=Direction.LONG, fills=fills, exits=exits, mark_price=Decimal("90")
+    ) == Decimal("0")
+
+
+def test_open_r_without_a_risk_budget_is_zero_rather_than_a_division() -> None:
+    fills = (Fill(price=Decimal("83.10"), qty=Decimal("18.30")),)
+    assert unrealized_r(
+        direction=Direction.LONG,
+        fills=fills,
+        exits=(),
+        mark_price=Decimal("84.00"),
+        planned_risk_usdt=Decimal("0"),
+    ) == Decimal("0")

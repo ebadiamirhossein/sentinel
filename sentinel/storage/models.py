@@ -328,11 +328,48 @@ class SignalRow(Base):
     #: of the signal, so they live here rather than in a table of their own.
     chart_params: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
 
+    # ---- M7: the tracker's half (additive, as 0005 promised) ----------------
+    #: Produced by a cycle running with ``dry_run: true``. Never published, still
+    #: tracked, and reported by /stats as its own population — folding paper
+    #: results into the numbers the owner will later compare against would be the
+    #: exact dishonesty the milestone exists to prevent. Immutable: turning the
+    #: flag off does not retrospectively make these signals real.
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    #: Rolled up from ``signal_fills`` / ``signal_exits`` so the common reads
+    #: (/positions, /stats, the rails) need one row rather than three queries. The
+    #: leg tables stay the source of truth; these are derived and recomputed.
+    filled_qty: Mapped[Decimal] = mapped_column(PRICE, nullable=False, default=Decimal("0"))
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    #: Where the stop stands *now* — §5 moves it to breakeven after TP1, so the
+    #: plan's original stop is no longer the live one.
+    stop_price_current: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    tp_hits: Mapped[int] = mapped_column(nullable=False, default=0)
+
+    #: Realized R, gross of costs — the figure §4 of TELEGRAM_UX prints. Costs are
+    #: reported beside it rather than baked in, so a card reconciles by hand.
+    realized_r: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    realized_eur: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    #: What the trade actually cost (M5.1 §10) — not the plan's estimate.
+    realized_costs_eur: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+
+    #: TP1 | TP2 | TP3 | STOP | INVALIDATION | EXPIRY | MANUAL — how it ended.
+    outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    first_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: The instant the tracker last looked. Bounds the next tick's candle window,
+    #: and is what makes a restart resume rather than re-scan.
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     __table_args__ = (
         UniqueConstraint("plan_id", name="uq_signals_plan_id"),
         Index("ix_signals_symbol_created_at", "symbol", "created_at"),
         Index("ix_signals_status", "status"),
         Index("ix_signals_decision", "decision"),
+        #: The tracker's own query: everything not in a terminal state.
+        Index("ix_signals_status_expires_at", "status", "expires_at"),
+        #: /stats windows every population by when the signal resolved.
+        Index("ix_signals_closed_at", "closed_at"),
     )
 
 
@@ -350,8 +387,20 @@ class TelegramMessageRow(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     signal_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
-    #: charts | card | update — one of each per signal per chat.
+    #: charts | card | update — one of each per signal per chat, per ``event_key``.
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: M7. A signal's thread carries many updates — three fills, ladder-complete,
+    #: three TP hits, a stop, an expiry, a manual close — and ``kind`` alone allowed
+    #: exactly one. This is the event's identity within the kind ("fill:1", "tp:2",
+    #: "stop", "decision_ack").
+    #:
+    #: NOT NULL with a ``''`` default rather than nullable, and that is the whole
+    #: point: Postgres treats two NULLs as *distinct* in a unique index, so a
+    #: nullable column would have quietly un-guaranteed the card's own idempotency
+    #: — the guarantee this table exists for.
+    event_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     #: Null while the claim is PENDING; set when Telegram confirms the send.
     message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -361,7 +410,9 @@ class TelegramMessageRow(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("signal_id", "kind", "chat_id", name="uq_telegram_messages_signal_id"),
+        UniqueConstraint(
+            "signal_id", "kind", "chat_id", "event_key", name="uq_telegram_messages_signal_id"
+        ),
         Index("ix_telegram_messages_status", "status"),
     )
 
@@ -405,3 +456,144 @@ class ConfigChangeRow(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (Index("ix_config_changes_key_changed_at", "key", "changed_at"),)
+
+
+# --------------------------------------------------------------------------- #
+# M7 — the cycle, and the tracker's legs
+# --------------------------------------------------------------------------- #
+
+
+class CycleRow(Base):
+    """One run of the 15-minute scan (ARCHITECTURE.md §3's cycle orchestrator).
+
+    Two jobs. It makes ``/health``'s ``last_cycle_age_seconds`` survive a restart —
+    an in-memory timestamp reports "never ran" after every deploy, which is the
+    one moment the figure matters most. And it gives PRD G4 ("≥99% scan-cycle
+    completion over 30 days; no missed cycles longer than 2 consecutive
+    intervals") something countable: a reliability target with no row per attempt
+    is an aspiration.
+
+    A cycle that dies mid-flight leaves ``status='RUNNING'`` with no
+    ``finished_at``. That is deliberate evidence, not a defect — the same posture
+    as ``telegram_messages``' stuck PENDING claim.
+    """
+
+    __tablename__ = "cycles"
+
+    cycle_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: RUNNING | OK | FAILED
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    symbols_requested: Mapped[int] = mapped_column(nullable=False, default=0)
+    symbols_scanned: Mapped[int] = mapped_column(nullable=False, default=0)
+    #: Ingestion failures plus the dedup/cooldown/cap skips, so a quiet cycle is
+    #: explicable from the row rather than only from the logs.
+    symbols_skipped: Mapped[int] = mapped_column(nullable=False, default=0)
+    candidates: Mapped[int] = mapped_column(nullable=False, default=0)
+    analyzed: Mapped[int] = mapped_column(nullable=False, default=0)
+    approved: Mapped[int] = mapped_column(nullable=False, default=0)
+    published: Mapped[int] = mapped_column(nullable=False, default=0)
+
+    #: What this cycle's LLM calls cost, by the same estimate the spend guard gates.
+    spend_usd_estimate: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), nullable=False, default=Decimal("0")
+    )
+    #: True when the spend guard held the deep analyst back. The screener still ran.
+    analysis_suspended: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    suspended_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    __table_args__ = (Index("ix_cycles_started_at", "started_at"),)
+
+
+class SignalFillRow(Base):
+    """One entry rung that actually filled (RISK_ENGINE §3's "ladder metadata").
+
+    §3 promises the card and the tracker that a rung-1-only stop-out is -0.40R.
+    That promise is only keepable if the tracker knows *which* rungs filled, which
+    is what this table is. Unique on ``(signal_id, rung_index)``: a rung fills once,
+    and a tick re-run after a crash must not double it.
+    """
+
+    __tablename__ = "signal_fills"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    signal_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: 0-based index into ``TradePlan.entries``.
+    rung_index: Mapped[int] = mapped_column(nullable=False)
+    price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    qty: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    #: When the market reached it (the candle's close time), not when we noticed.
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: tracker | manual
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="tracker")
+
+    __table_args__ = (
+        UniqueConstraint("signal_id", "rung_index", name="uq_signal_fills_rung"),
+        Index("ix_signal_fills_signal_id", "signal_id"),
+    )
+
+
+class SignalExitRow(Base):
+    """One close: a target, the stop, an invalidation, an expiry, or a manual exit.
+
+    Unique on ``(signal_id, kind)`` — TP1 happens once. A manual close is one event
+    too: the owner reports the price they actually got, and a second report of the
+    same close would double-count the realized R it produces.
+    """
+
+    __tablename__ = "signal_exits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    signal_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: TP1 | TP2 | TP3 | STOP | INVALIDATION | EXPIRY | MANUAL
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    qty: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    exited_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("signal_id", "kind", name="uq_signal_exits_kind"),
+        Index("ix_signal_exits_signal_id", "signal_id"),
+    )
+
+
+class SignalEventRow(Base):
+    """The tracker's append-only journal, and the only source of its notifications.
+
+    Recording the event and posting it are separate steps on purpose, and the
+    unique ``(signal_id, event_key)`` is what makes a mid-tick crash safe: the
+    event is written once, and the notifier later posts every event that has no
+    ``telegram_messages`` row yet. Neither half can duplicate the other's work,
+    and a restart between them resolves forward rather than re-deciding.
+
+    ``event_key`` is the same string ``telegram_messages.event_key`` carries.
+    """
+
+    __tablename__ = "signal_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    signal_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: Stable identity of *this* event for this signal: "fill:1", "tp:2", "stop".
+    event_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    price: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    realized_r: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    realized_eur: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    #: Everything the notification renders that is not a number — already-rendered
+    #: fragments, never arithmetic for the card to perform (TELEGRAM_UX §1).
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    detail: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+
+    __table_args__ = (
+        UniqueConstraint("signal_id", "event_key", name="uq_signal_events_key"),
+        Index("ix_signal_events_signal_id_at", "signal_id", "at"),
+    )

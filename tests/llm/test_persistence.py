@@ -166,7 +166,11 @@ async def test_recent_for_symbol_returns_newest_first(session: AsyncSession) -> 
 
     assert len(verdicts) == 3
     assert [v.confidence for v in verdicts] == [73, 72, 71]
-    assert all(v.outcome is None for v in verdicts), "no outcomes exist until M7"
+    # These reports carry no ``cycle_id``, so there is no signal or gate decision
+    # to match them to and the block renders "outcome not resolved yet". The
+    # populated path is exercised in tests/analyst/test_history.py and against
+    # real rows in tests/tracker/test_persistence.py.
+    assert all(v.outcome is None for v in verdicts), "an unmatched report has no outcome"
 
 
 @requires_db

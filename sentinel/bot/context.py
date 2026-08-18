@@ -22,9 +22,14 @@ from sentinel.core.clock import Clock
 from sentinel.core.config import Settings
 from sentinel.storage.db import Database
 from sentinel.storage.repositories import (
+    CycleRepository,
     InstrumentMetaRepository,
+    LLMCallRepository,
     RiskStateRepository,
     RuntimeSettingsRepository,
+    SignalEventRepository,
+    SignalExitRepository,
+    SignalFillRepository,
     SignalRepository,
     SnapshotRepository,
     TelegramMessageRepository,
@@ -41,6 +46,12 @@ class Repositories:
     risk_state: type[RiskStateRepository] = RiskStateRepository
     snapshots: type[SnapshotRepository] = SnapshotRepository
     instruments: type[InstrumentMetaRepository] = InstrumentMetaRepository
+    # M7: the tracker's tables, read by /positions and by the notifier.
+    fills: type[SignalFillRepository] = SignalFillRepository
+    exits: type[SignalExitRepository] = SignalExitRepository
+    events: type[SignalEventRepository] = SignalEventRepository
+    cycles: type[CycleRepository] = CycleRepository
+    llm_calls: type[LLMCallRepository] = LLMCallRepository
 
 
 @dataclass(frozen=True)

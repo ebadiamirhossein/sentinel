@@ -163,3 +163,46 @@ def test_rails_reject_before_any_sizing_happens(config: AppConfig, clock: Frozen
     assert decision.status is GateStatus.REJECTED
     assert decision.reason is RejectionReason.MAX_POSITIONS
     assert decision.plan is None
+
+
+# --------------------------------------------------------------------------- #
+# Daily signal cap (specs/TELEGRAM_UX.md §6)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_last_signal_allowed_by_the_daily_cap_still_passes(config: AppConfig) -> None:
+    """The cap is 5, so the fifth signal of the day is allowed and the sixth is not.
+
+    Stated as "signals already published today", which is why the boundary sits at
+    ``>=`` rather than ``>``: with four published, this one is the fifth.
+    """
+    assert config.risk.max_signals_per_day == 5
+    assert rails(config, pf=portfolio(signals_today=4)) is None
+
+
+def test_the_daily_signal_cap_rejects_once_it_is_reached(config: AppConfig) -> None:
+    assert rails(config, pf=portfolio(signals_today=5)) is RejectionReason.DAILY_SIGNAL_CAP
+
+
+def test_a_quiet_day_never_trips_the_cap(config: AppConfig) -> None:
+    assert rails(config, pf=portfolio(signals_today=0)) is None
+
+
+def test_the_cap_is_reported_after_the_budget_rails_and_before_cooldown(
+    config: AppConfig,
+) -> None:
+    """Rejection order is the order that makes a rejection most explainable, and
+    the harder blocker wins. An account that is out of risk budget is out of it
+    whatever the signal count says, and a symbol on cooldown would have been
+    skipped even on a quiet day — so the cap sits between them.
+    """
+    both = portfolio(open_risk_pct="1.6", signals_today=5)
+    assert rails(config, pf=both) is RejectionReason.MAX_OPEN_RISK
+
+    capped_and_cooled = portfolio(signals_today=5, cooldowns={"SOLUSDT": NOW + timedelta(hours=1)})
+    assert rails(config, pf=capped_and_cooled) is RejectionReason.DAILY_SIGNAL_CAP
+
+
+def test_a_pause_still_outranks_the_cap(config: AppConfig) -> None:
+    paused = portfolio(signals_today=5, pause=PauseState(paused=True, reason=PauseReason.MANUAL))
+    assert rails(config, pf=paused) is RejectionReason.PAUSED

@@ -36,7 +36,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InputMediaPho
 
 from sentinel.bot.cards import signal_card
 from sentinel.bot.keyboards import decision_keyboard
-from sentinel.bot.models import MessageKind, SignalRecord
+from sentinel.bot.models import MessageKind, PostedMessage, SignalRecord
 from sentinel.charts.models import ChartImage
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import TelegramConfig
@@ -67,7 +67,13 @@ class MessageStore(Protocol):
     """
 
     async def claim(
-        self, signal_id: UUID, kind: MessageKind, chat_id: int, *, at: datetime
+        self,
+        signal_id: UUID,
+        kind: MessageKind,
+        chat_id: int,
+        *,
+        at: datetime,
+        event_key: str = "",
     ) -> bool: ...
 
     async def confirm(
@@ -78,11 +84,22 @@ class MessageStore(Protocol):
         *,
         message_id: int,
         at: datetime,
+        event_key: str = "",
     ) -> None: ...
 
     async def fail(
-        self, signal_id: UUID, kind: MessageKind, chat_id: int, *, error: str
+        self,
+        signal_id: UUID,
+        kind: MessageKind,
+        chat_id: int,
+        *,
+        error: str,
+        event_key: str = "",
     ) -> None: ...
+
+    async def get(
+        self, signal_id: UUID, kind: MessageKind, chat_id: int, event_key: str = ""
+    ) -> PostedMessage | None: ...
 
 
 class SupportsSending(Protocol):

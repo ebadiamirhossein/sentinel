@@ -72,6 +72,30 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 > the three decision buttons and the persisted state behind them; adding a
 > manual-close button now would mean either a button that can never appear or one
 > that appears on a signal the system cannot tell is filled.
+>
+> **Shipped (2026-08-18, M7).** The row is appended to the decision row — not
+> instead of it — once `signals.filled_qty > 0`. The decisions stay correctable
+> after a fill, which is when the owner is tapping fastest and a mis-tap costs the
+> most (M6 decision 3).
+>
+> **How the manual close asks, and why there is no FSM.** aiogram's usual answer to
+> "ask a question and wait" is a state machine keyed on the user and held in memory.
+> For a trading system that means a restart mid-question silently swallows the next
+> thing the owner types — or reads it as an answer to a question nobody remembers
+> asking. Instead the prompt is sent with `ForceReply`, its message id is claimed in
+> `telegram_messages` with an `event_key` naming the signal and the action, and the
+> reply is matched back through that row. The question is as durable as the database.
+> `✏️ Note` uses the same mechanism and stores a `NOTE` event.
+>
+> **Addition (2026-08-18, M7, owner requirement) — a decision replies in words.**
+> The keyboard marker (`» ✅ Taken «`) is easy to miss on a phone, and this is the
+> single most consequential input in the system: it decides whether an outcome lands
+> in the real statistics or the hypothetical ones. Pressing a button now posts a
+> short confirmation as a reply under the card, saying what that decision *means*
+> (real stats and the risk budget, hypothetical only, or archived-but-still-resolved).
+> There is **one** acknowledgement per signal per chat, **edited** when the decision
+> changes: a fresh reply per press would bury the card, and leaving the first one in
+> place would leave a stale "marked Taken" under a signal the owner later skipped.
 
 ## 3. Commands
 
@@ -113,6 +137,41 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 > outcomes the tracker measures, the other two are P1. An unregistered command is
 > silent rather than answered with a promise.
 
+> **Scope at M7 (2026-08-18) — the three gaps above are closed.**
+>
+> * **`/positions`** marks each Taken signal to market: filled %, the tracker's last
+>   observed price, open PnL in R and EUR, what is already banked, and the stop's
+>   current level once §5's TP1 rule has moved it to breakeven. Every figure is
+>   computed in `risk/accounting.py` and arrives on a view object — §1's rule is
+>   unchanged, the bot still renders and never computes.
+> * **`/status`** adds what it could only name before: the last cycle and the 30-day
+>   completion ratio (PRD G4), open risk against the budget, positions against the
+>   cap, signals published today against `max_signals_per_day`, and the LLM spend
+>   line described below. It leads with a **DRY RUN** banner when the system is
+>   rehearsing, because a silent phone must never be ambiguous between "no setups"
+>   and "not talking".
+> * **`/stats [30d|90d|all]`** is registered. Three populations, reported separately
+>   and never merged: **REAL** (✅ Taken), **HYPOTHETICAL** (👀 Watching + ❌ Skipped)
+>   and **DRY RUN**. A win is realized R > 0 over signals that filled at least one
+>   rung; a signal that expired or invalidated before entry is counted on its own
+>   line and excluded from the win rate, the average, the profit factor and the
+>   drawdown, because it was not a trade. A breakeven exit is a *scratch* — neither
+>   a win nor a loss, and reported. Profit factor with no losses is rendered
+>   "n/a (no losses yet)", not a number. PRD G3's "reached TP1 or breakeven" is
+>   reported beside the win rate rather than instead of it. Breakdowns by
+>   `setup_type` and `prompt_version` (specs/PROMPTS.md §5 step 3) run over real +
+>   hypothetical, largest sample first.
+>
+> **Addition (2026-08-18, M7) — the LLM spend line on `/status`.** Pulled forward
+> from M8 at the owner's request, because M7 is the first milestone that runs
+> unattended: today's and this month's estimated spend, the daily limit, and whether
+> deep analysis is currently suspended. It gates `cost_usd_estimate`, which is an
+> estimate and not a bill — and because `llm/pricing.py` prices an *unknown* model at
+> 0 with a warning, calls with no configured price are counted separately and the
+> figure is reported as a floor ("at least $4.00") rather than as a total. Reaching
+> the limit suspends **new deep analysis only**: the screener keeps triaging and the
+> tracker keeps managing open positions, which it can do without an LLM at all.
+
 ## 4. Tracker notifications (replies to the original card)
 
 - `📥 Entry 1 filled @ 83.10 (40%)` … `📥 Ladder complete, avg 82.68`
@@ -121,6 +180,22 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 - `❌ Invalidation triggered (1h close 81.05 < 81.40) before entry → signal cancelled`
 - `⌛ Expired unfilled after 12h`
 - `⏸️ Daily loss limit reached (−3.1%). New signals paused 24h. /resume to override.`
+
+> **Implemented (2026-08-18, M7).** Each bullet is one `EventKind`, rendered by
+> `bot/cards.tracker_update_card` from a stored `signal_events` row — every number
+> on the reply was computed by the tracker, because the renderer is forbidden
+> arithmetic (§1) and re-deriving realized R here would be a second implementation
+> of specs/RISK_ENGINE.md §8.5's math.
+>
+> The chat-level notices — the daily-loss pause, and M7's two spend notices (warn
+> level crossed, limit reached) — are not tied to a signal, and
+> `telegram_messages.signal_id` is `NOT NULL`. They claim a deterministic
+> `uuid5(<kind>, UTC date)` instead, so each is sent once per day and a restart
+> never repeats it. No column was made nullable to achieve that.
+>
+> **Dry-run signals are never posted at all.** The tracker resolves them exactly as
+> it would a real one and the notifier skips them, so a rehearsal day produces a
+> measured record and a completely silent phone.
 
 ## 5. Digest (P1)
 
@@ -143,6 +218,32 @@ Daily 08:00 (owner timezone, config): yesterday's signals & outcomes, running we
 > second setup. Every stuck claim is logged and counted in `/status`, so the gap is
 > visible rather than silent.
 - No signal spam: hard cap `max_signals_per_day` (default 5) and per-symbol cooldown.
+
+> **Implemented (2026-08-18, M7).** The cap had no config key and no rejection code
+> until now. It is `risk.max_signals_per_day`, enforced in `check_portfolio_rails`
+> as `RejectionReason.DAILY_SIGNAL_CAP` — its own code and not folded into
+> `MAX_POSITIONS`, because "the account is full" and "the system has said enough for
+> one day" are different findings and M9 cannot separate them if they share a code.
+> The orchestrator also stops before the deep analyst once the cap is reached, and
+> counts what the current cycle would add, so one cycle cannot publish three more
+> and overshoot by two. Dry-run signals count: the cap is part of what a rehearsal
+> day is meant to rehearse.
+>
+> **Correction (2026-08-18, from M7) — the message key is four columns.** §6's
+> unique `(signal_id, kind, chat_id)` allows exactly **one** update per signal, and
+> §4 describes a thread of a dozen: three fills, ladder-complete, three TP hits, a
+> stop, an expiry, a manual close. `telegram_messages` gains `event_key` and the
+> constraint becomes `(signal_id, kind, chat_id, event_key)`.
+>
+> The column is `NOT NULL DEFAULT ''`, and that is the load-bearing detail:
+> Postgres treats two NULLs as **distinct** inside a unique index, so a nullable
+> column would have silently un-guaranteed the *card's* own idempotency — the exact
+> promise this table exists to make. Existing rows backfill to `''` and keep it.
+>
+> Recording an event and posting it stay separate steps, each idempotent on its own
+> key (`signal_events` on `(signal_id, event_key)`). A crash between them therefore
+> resolves forward: the event is written and not yet posted, and the next tick posts
+> it. There is no state in which an event is both lost and believed sent.
 - Language: English v1 (Farsi toggle listed as P2).
 
 > **Timestamps (2026-08-18, from M6).** specs/DATA_SOURCES.md §4 says the owner's

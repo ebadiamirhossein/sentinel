@@ -43,8 +43,37 @@ Cycle orchestrator wiring M1–M6 on APScheduler; tracker state machine with lad
 **Tests:** state-machine transition table tests; R accounting fixtures (incl. partial fills); restart-recovery test.
 **Demo:** system runs 24h locally in "watch mode", produces signals, tracks a manually-marked one.
 
+> **Added at M7 (2026-08-18, owner request), two guards that belong with the first
+> unattended run rather than after it:**
+>
+> * **LLM spend guard — moved here from M8.** M8's "spend guard (daily Anthropic
+>   cost log + alert threshold)" now ships in M7, because M7 is the milestone that
+>   starts the scheduler: a bug, or a market event that makes every symbol look
+>   interesting, can spend real money between midnight and breakfast. Daily and
+>   monthly accumulators, `llm.daily_spend_limit_usd` (10) and
+>   `daily_spend_warn_usd` (7), a Telegram notice when either trips, spend on
+>   `/status`, and an auto-suspension of **new deep analysis only** — the screener
+>   and the tracker keep running. M8 verifies it in the runbook instead of building
+>   it.
+> * **`dry_run` — first-cycle safety.** A top-level config flag that runs the whole
+>   cycle (LLM calls, gate, persistence) and publishes nothing, logging the card it
+>   would have sent. The signal is stored with `dry_run=true` and the tracker
+>   resolves it silently, so 24 hours of it produces a *measured* paper record
+>   rather than only an absence of crashes; `/stats` reports it as its own
+>   population, never merged into real or hypothetical.
+>
+> **Demo, in the intended order:** 24h with `dry_run: true` and a silent phone,
+> read `/stats`' DRY RUN population, then flip the flag and let the scheduler post
+> the first real card.
+
+> **Process change (2026-08-18, from M6.2 via M7) — packaging is in the gate.**
+> `make check` now ends with `check-wheel` and `check-image`; the latter builds the
+> Docker image **and imports the app inside it**. journal/M6_REPORT.md §12 found the
+> image unbuildable for two milestones because tests, ruff and mypy all run from a
+> source checkout. `make check-fast` is the old gate, for mid-edit runs.
+
 ## M8 — Hardening & deploy (1 day)
-VPS deploy runbook (`docs/DEPLOY.md`); pg_dump backup cron; failure alerts to Telegram; log rotation; spend guard (daily Anthropic cost log + alert threshold); README polish.
+VPS deploy runbook (`docs/DEPLOY.md`); pg_dump backup cron; failure alerts to Telegram; log rotation; ~~spend guard (daily Anthropic cost log + alert threshold)~~ **→ shipped in M7, verify it in the runbook**; README polish.
 **Demo:** fresh VPS → running system in < 30 min following the runbook only.
 
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)

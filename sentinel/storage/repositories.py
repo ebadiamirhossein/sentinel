@@ -8,28 +8,33 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel.analyst.history import PastVerdict
 from sentinel.analyst.models import AnalystReport, CandidateStatus, SetupType
 from sentinel.bot.models import (
+    OPEN_STATUSES,
     MessageKind,
     MessageStatus,
     PostedMessage,
     SignalDecision,
     SignalRecord,
+    SignalStatus,
 )
 from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
 from sentinel.llm.models import LLMCall
-from sentinel.risk.models import GateDecision, PauseReason, PauseState, TradePlan
+from sentinel.llm.spend import SpendTotals
+from sentinel.risk.models import GateDecision, GateStatus, PauseReason, PauseState, TradePlan
 from sentinel.storage.models import (
     AnalystReportRow,
     ConfigChangeRow,
+    CycleRow,
     FxRateRow,
     GateDecisionRow,
     IngestionFailureRow,
@@ -39,6 +44,9 @@ from sentinel.storage.models import (
     OhlcvCandleRow,
     RiskStateRow,
     RuntimeSettingRow,
+    SignalEventRow,
+    SignalExitRow,
+    SignalFillRow,
     SignalRow,
     TelegramMessageRow,
 )
@@ -422,6 +430,36 @@ class LLMCallRepository:
             await self.record(call)
         return len(calls)
 
+    async def spend_totals(
+        self, *, day_start: datetime, month_start: datetime, priced_models: Sequence[str]
+    ) -> SpendTotals:
+        """Estimated spend over the current UTC day and month (M7's spend guard).
+
+        ``unpriced_calls`` counts calls whose model has no entry in
+        ``config.llm.pricing``. ``pricing.estimate_cost`` records those at 0 with a
+        warning — right for keeping the audit row, and a hole in a spend guard, so
+        they are counted here rather than quietly treated as free.
+        """
+
+        async def total(since: datetime) -> Decimal:
+            statement = select(func.coalesce(func.sum(LLMCallRow.cost_usd_estimate), 0)).where(
+                LLMCallRow.started_at >= since
+            )
+            return Decimal((await self._session.execute(statement)).scalar_one())
+
+        counts = select(
+            func.count(),
+            func.count().filter(LLMCallRow.model.not_in(priced_models)),
+        ).where(LLMCallRow.started_at >= day_start)
+        calls, unpriced = (await self._session.execute(counts)).one()
+
+        return SpendTotals(
+            day_usd=await total(day_start),
+            month_usd=await total(month_start),
+            calls=int(calls),
+            unpriced_calls=int(unpriced),
+        )
+
     async def recent(self, limit: int = 50) -> list[LLMCallRow]:
         result = await self._session.execute(
             select(LLMCallRow).order_by(LLMCallRow.started_at.desc()).limit(limit)
@@ -466,8 +504,15 @@ class AnalystReportRepository:
     ) -> list[PastVerdict]:
         """Last N verdicts for one symbol, newest first (specs/PROMPTS.md §3).
 
-        ``outcome`` stays ``None``: nothing measures outcomes until M7's tracker,
-        and the history block says so in words rather than implying a result.
+        §3 asks for "status + one-line thesis + **what happened**", and from M7
+        what happened is knowable. Each report is matched to its cycle's outcome
+        for the same symbol — the tracked result if it became a signal, otherwise
+        the gate's own verdict, because "the analyst proposed this and the gate
+        rejected it for thin net RR" is exactly the feedback §3 exists to give.
+
+        ``(cycle_id, symbol)`` is the join, and it is a LEFT join in effect: a
+        report with neither is left ``None``, and the block renders "outcome not
+        resolved yet" rather than inventing one.
         """
         result = await self._session.execute(
             select(AnalystReportRow)
@@ -475,6 +520,8 @@ class AnalystReportRepository:
             .order_by(AnalystReportRow.created_at.desc())
             .limit(limit)
         )
+        rows = list(result.scalars().all())
+        outcomes = await self._outcomes_for(rows)
         return [
             PastVerdict(
                 created_at=row.created_at,
@@ -484,10 +531,78 @@ class AnalystReportRepository:
                 confidence=row.confidence,
                 thesis=row.thesis,
                 prompt_version=row.prompt_version,
-                outcome=None,
+                outcome=None if row.cycle_id is None else outcomes.get(row.cycle_id),
             )
-            for row in result.scalars().all()
+            for row in rows
         ]
+
+    async def _outcomes_for(self, rows: Sequence[AnalystReportRow]) -> dict[UUID, str]:
+        """What became of each report, keyed by cycle id."""
+        cycles = [row.cycle_id for row in rows if row.cycle_id is not None]
+        if not cycles:
+            return {}
+        symbols = {row.symbol for row in rows}
+
+        found: dict[UUID, str] = {}
+
+        signals = await self._session.execute(
+            select(SignalRow).where(SignalRow.cycle_id.in_(cycles), SignalRow.symbol.in_(symbols))
+        )
+        for signal in signals.scalars():
+            if signal.cycle_id is None:  # pragma: no cover — filtered by the query
+                continue
+            found[signal.cycle_id] = describe_outcome(
+                status=signal.status,
+                outcome=signal.outcome,
+                realized_r=signal.realized_r,
+                decision=signal.decision,
+                dry_run=signal.dry_run,
+            )
+
+        gates = await self._session.execute(
+            select(GateDecisionRow).where(
+                GateDecisionRow.cycle_id.in_(cycles), GateDecisionRow.symbol.in_(symbols)
+            )
+        )
+        for gate in gates.scalars():
+            if gate.cycle_id is None or gate.cycle_id in found:  # pragma: no cover
+                continue
+            if gate.gate_status == GateStatus.REJECTED.value and gate.reason:
+                found[gate.cycle_id] = f"rejected at the gate [{gate.reason}]"
+            elif gate.gate_status == GateStatus.DOWNGRADED_WATCHLIST.value:
+                found[gate.cycle_id] = "downgraded to watchlist at the gate"
+        return found
+
+
+def describe_outcome(
+    *,
+    status: str,
+    outcome: str | None,
+    realized_r: Decimal | None,
+    decision: str | None,
+    dry_run: bool,
+) -> str:
+    """One line of "what happened" for the analyst's history block.
+
+    Deliberately terse and deliberately labelled. A dry-run result says so, so the
+    model is never told a rehearsal was a trade; and an open signal says it is
+    open rather than reporting the R it happens to be showing right now, which
+    would teach the analyst to read an unrealised number as a result.
+    """
+    from sentinel.bot.models import OPEN_STATUSES, SignalStatus
+
+    prefix = "dry run: " if dry_run else ""
+    if SignalStatus(status) in OPEN_STATUSES:
+        return f"{prefix}signal open ({status.lower().replace('_', ' ')})"
+
+    taken = " (taken)" if decision == SignalDecision.TAKEN.value else ""
+    if outcome in {"EXPIRY", "INVALIDATION"}:
+        word = "expired unfilled" if outcome == "EXPIRY" else "invalidated before entry"
+        return f"{prefix}{word}{taken}"
+    if realized_r is None:
+        return f"{prefix}closed{taken}"
+    label = (outcome or "closed").lower()
+    return f"{prefix}{label}, {realized_r:+.2f}R{taken}"
 
 
 def signal_row(record: SignalRecord, plan: TradePlan) -> dict[str, Any]:
@@ -509,6 +624,7 @@ def signal_row(record: SignalRecord, plan: TradePlan) -> dict[str, Any]:
         "decided_by_user_id": record.decided_by_user_id,
         "plan": plan.model_dump(mode="json"),
         "chart_params": list(record.chart_params),
+        "dry_run": record.dry_run,
     }
 
 
@@ -585,6 +701,119 @@ class SignalRepository:
         statement = select(func.count()).select_from(SignalRow).where(SignalRow.decision.is_(None))
         return int((await self._session.execute(statement)).scalar_one())
 
+    # ---- M7 ----------------------------------------------------------------
+
+    async def open_signals(self) -> list[SignalRow]:
+        """Every signal the tracker is still following, oldest first.
+
+        Every decision, including none at all: specs/TELEGRAM_UX.md §2 resolves a
+        skipped signal's outcome too, "because what skipping costs is itself a
+        measurement", and a signal the owner has not answered yet still fills and
+        still stops.
+
+        This is also the whole of crash recovery. The tracker keeps no state
+        between ticks, so a restart simply asks this question again.
+        """
+        statement = (
+            select(SignalRow)
+            .where(SignalRow.status.in_([status.value for status in OPEN_STATUSES]))
+            .order_by(SignalRow.created_at)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def open_symbols(self) -> set[str]:
+        """Symbols with a live signal — PRD F11's "max 1 active signal per symbol"."""
+        statement = select(SignalRow.symbol).where(
+            SignalRow.status.in_([status.value for status in OPEN_STATUSES])
+        )
+        return set((await self._session.execute(statement)).scalars())
+
+    async def open_taken(self) -> list[SignalRow]:
+        """Live signals the owner actually took — the open-risk budget (§2 rule 7).
+
+        Watched, skipped and dry-run signals are tracked but commit nothing, so
+        they cannot occupy a budget the owner never spent.
+        """
+        statement = select(SignalRow).where(
+            SignalRow.status.in_([status.value for status in OPEN_STATUSES]),
+            SignalRow.decision == SignalDecision.TAKEN.value,
+            SignalRow.dry_run.is_(False),
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def published_since(self, since: datetime) -> int:
+        """Signals created since an instant — specs/TELEGRAM_UX.md §6's daily cap.
+
+        Dry-run signals count. The cap exists to stop the system talking too much,
+        and a rehearsal day that ignored it would not rehearse the guard.
+        """
+        statement = select(func.count()).select_from(SignalRow).where(SignalRow.created_at >= since)
+        return int((await self._session.execute(statement)).scalar_one())
+
+    async def resolutions_since(self, since: datetime) -> list[tuple[str, datetime]]:
+        """``(symbol, closed_at)`` for signals that resolved since an instant.
+
+        Feeds ``rails.cooldown_until``. Only outcomes that *arm* a cooldown are
+        returned: a stop-out, an expiry and an invalidation. A signal that reached
+        its targets is not a reason to stay away from the symbol.
+        """
+        armed = (
+            SignalStatus.STOPPED.value,
+            SignalStatus.EXPIRED.value,
+            SignalStatus.INVALIDATED.value,
+        )
+        statement = select(SignalRow.symbol, SignalRow.closed_at).where(
+            SignalRow.status.in_(armed),
+            SignalRow.closed_at.is_not(None),
+            SignalRow.closed_at >= since,
+        )
+        rows = (await self._session.execute(statement)).all()
+        return [(row.symbol, row.closed_at) for row in rows if row.closed_at is not None]
+
+    async def realized_eur_since(self, since: datetime) -> list[Decimal]:
+        """Signed realized P&L for taken signals closed since an instant (§7).
+
+        Dry-run excluded: a paper loss cannot pause a real account.
+        """
+        statement = select(SignalRow.realized_eur).where(
+            SignalRow.decision == SignalDecision.TAKEN.value,
+            SignalRow.dry_run.is_(False),
+            SignalRow.closed_at.is_not(None),
+            SignalRow.closed_at >= since,
+            SignalRow.realized_eur.is_not(None),
+        )
+        return [
+            value
+            for value in (await self._session.execute(statement)).scalars()
+            if value is not None
+        ]
+
+    async def resolved_since(self, since: datetime | None = None) -> list[SignalRow]:
+        """Signals with a measured outcome — the /stats population."""
+        statement = select(SignalRow).where(SignalRow.closed_at.is_not(None))
+        if since is not None:
+            statement = statement.where(SignalRow.closed_at >= since)
+        return list(
+            (await self._session.execute(statement.order_by(SignalRow.closed_at))).scalars()
+        )
+
+    async def advance(self, signal_id: UUID, **fields: Any) -> SignalRow | None:
+        """Write the tracker's roll-up columns onto a signal.
+
+        Deliberately a field bag rather than a fixed signature: which columns a
+        tick touches depends on what the market did, and enumerating every
+        combination here would be a worse contract than one the caller states at
+        the call site. Unknown keys raise rather than being silently dropped.
+        """
+        row = await self._session.get(SignalRow, signal_id)
+        if row is None:
+            return None
+        for key, value in fields.items():
+            if not hasattr(row, key):
+                raise AttributeError(f"signals has no column {key!r}")
+            setattr(row, key, value)
+        return row
+
 
 class TelegramMessageRepository:
     """specs/TELEGRAM_UX.md §6 — message ids stored, restarts never double-post.
@@ -598,7 +827,13 @@ class TelegramMessageRepository:
         self._session = session
 
     async def claim(
-        self, signal_id: UUID, kind: MessageKind, chat_id: int, *, at: datetime
+        self,
+        signal_id: UUID,
+        kind: MessageKind,
+        chat_id: int,
+        *,
+        at: datetime,
+        event_key: str = "",
     ) -> bool:
         """Reserve ``(signal, kind, chat)``. ``False`` means someone already has it.
 
@@ -614,10 +849,11 @@ class TelegramMessageRepository:
                 signal_id=signal_id,
                 kind=kind.value,
                 chat_id=chat_id,
+                event_key=event_key,
                 status=MessageStatus.PENDING.value,
                 claimed_at=at,
             )
-            .on_conflict_do_nothing(index_elements=["signal_id", "kind", "chat_id"])
+            .on_conflict_do_nothing(index_elements=["signal_id", "kind", "chat_id", "event_key"])
             .returning(TelegramMessageRow.id)
         )
         return (await self._session.execute(statement)).first() is not None
@@ -630,8 +866,9 @@ class TelegramMessageRepository:
         *,
         message_id: int,
         at: datetime,
+        event_key: str = "",
     ) -> None:
-        row = await self._row(signal_id, kind, chat_id)
+        row = await self._row(signal_id, kind, chat_id, event_key)
         if row is None:  # pragma: no cover — confirm always follows a successful claim
             return
         row.message_id = message_id
@@ -639,25 +876,50 @@ class TelegramMessageRepository:
         row.sent_at = at
         row.error = None
 
-    async def fail(self, signal_id: UUID, kind: MessageKind, chat_id: int, *, error: str) -> None:
-        row = await self._row(signal_id, kind, chat_id)
+    async def fail(
+        self,
+        signal_id: UUID,
+        kind: MessageKind,
+        chat_id: int,
+        *,
+        error: str,
+        event_key: str = "",
+    ) -> None:
+        row = await self._row(signal_id, kind, chat_id, event_key)
         if row is None:  # pragma: no cover — fail always follows a successful claim
             return
         row.status = MessageStatus.FAILED.value
         row.error = error[:512]
 
-    async def get(self, signal_id: UUID, kind: MessageKind, chat_id: int) -> PostedMessage | None:
-        row = await self._row(signal_id, kind, chat_id)
+    async def get(
+        self, signal_id: UUID, kind: MessageKind, chat_id: int, event_key: str = ""
+    ) -> PostedMessage | None:
+        row = await self._row(signal_id, kind, chat_id, event_key)
         if row is None:
             return None
         return PostedMessage(
             signal_id=row.signal_id,
             kind=MessageKind(row.kind),
             chat_id=row.chat_id,
+            event_key=row.event_key,
             message_id=row.message_id,
             status=MessageStatus(row.status),
             error=row.error,
         )
+
+    async def claimed_message(self, chat_id: int, message_id: int) -> tuple[UUID, str] | None:
+        """Which signal and event a delivered message belongs to.
+
+        The reverse lookup behind the manage prompts: a reply carries the id of the
+        message it answers, and that is enough to recover the question without any
+        in-memory conversation state to lose on restart.
+        """
+        statement = select(TelegramMessageRow).where(
+            TelegramMessageRow.chat_id == chat_id,
+            TelegramMessageRow.message_id == message_id,
+        )
+        row = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if row is None else (row.signal_id, row.event_key)
 
     async def stuck(self) -> list[TelegramMessageRow]:
         """Claims that never reached ``SENT`` — surfaced by ``/status``."""
@@ -667,12 +929,13 @@ class TelegramMessageRepository:
         return list((await self._session.execute(statement)).scalars())
 
     async def _row(
-        self, signal_id: UUID, kind: MessageKind, chat_id: int
+        self, signal_id: UUID, kind: MessageKind, chat_id: int, event_key: str = ""
     ) -> TelegramMessageRow | None:
         statement = select(TelegramMessageRow).where(
             TelegramMessageRow.signal_id == signal_id,
             TelegramMessageRow.kind == kind.value,
             TelegramMessageRow.chat_id == chat_id,
+            TelegramMessageRow.event_key == event_key,
         )
         return (await self._session.execute(statement)).scalar_one_or_none()
 
@@ -723,4 +986,259 @@ class RuntimeSettingsRepository:
 
     async def changes(self, limit: int = 50) -> list[ConfigChangeRow]:
         statement = select(ConfigChangeRow).order_by(ConfigChangeRow.changed_at.desc()).limit(limit)
+        return list((await self._session.execute(statement)).scalars())
+
+
+class CycleRepository:
+    """One row per scan cycle (ARCHITECTURE.md §3, PRD G4).
+
+    ``start`` commits nothing on its own — the caller owns the transaction, as
+    everywhere else here — but the orchestrator commits it immediately, because a
+    cycle row written only at the end would be missing for exactly the cycles that
+    matter: the ones that crashed.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def start(self, cycle_id: UUID, *, at: datetime, dry_run: bool, symbols: int) -> None:
+        self._session.add(
+            CycleRow(
+                cycle_id=cycle_id,
+                started_at=at,
+                status="RUNNING",
+                dry_run=dry_run,
+                symbols_requested=symbols,
+            )
+        )
+
+    async def finish(
+        self, cycle_id: UUID, *, at: datetime, status: str = "OK", **counts: Any
+    ) -> CycleRow | None:
+        row = await self._session.get(CycleRow, cycle_id)
+        if row is None:  # pragma: no cover — finish always follows start
+            return None
+        row.finished_at = at
+        row.status = status
+        for key, value in counts.items():
+            if not hasattr(row, key):
+                raise AttributeError(f"cycles has no column {key!r}")
+            setattr(row, key, value)
+        return row
+
+    async def latest(self) -> CycleRow | None:
+        """The newest cycle — how ``/health`` and ``/status`` survive a restart."""
+        statement = select(CycleRow).order_by(CycleRow.started_at.desc()).limit(1)
+        return (await self._session.execute(statement)).scalars().first()
+
+    async def latest_completed_at(self) -> datetime | None:
+        statement = (
+            select(CycleRow.finished_at)
+            .where(CycleRow.finished_at.is_not(None))
+            .order_by(CycleRow.finished_at.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(statement)).scalars().first()
+
+    async def completion_since(self, since: datetime) -> tuple[int, int]:
+        """``(completed, started)`` — the ratio PRD G4 sets at ≥99%."""
+        started = select(func.count()).select_from(CycleRow).where(CycleRow.started_at >= since)
+        completed = started.where(CycleRow.status == "OK")
+        return (
+            int((await self._session.execute(completed)).scalar_one()),
+            int((await self._session.execute(started)).scalar_one()),
+        )
+
+
+class SignalFillRepository:
+    """Entry rungs that actually filled (RISK_ENGINE §3's ladder metadata)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        signal_id: UUID,
+        *,
+        rung_index: int,
+        price: Decimal,
+        qty: Decimal,
+        filled_at: datetime,
+        detected_at: datetime,
+        source: str = "tracker",
+    ) -> bool:
+        """Record a fill once. ``False`` means this rung was already recorded.
+
+        The insert is conflict-tolerant rather than checked-then-inserted: a tick
+        re-run after a crash replays the same detection, and the constraint is a
+        better guarantee than a read the next tick could race.
+        """
+        statement = (
+            insert(SignalFillRow)
+            .values(
+                signal_id=signal_id,
+                rung_index=rung_index,
+                price=price,
+                qty=qty,
+                filled_at=filled_at,
+                detected_at=detected_at,
+                source=source,
+            )
+            .on_conflict_do_nothing(index_elements=["signal_id", "rung_index"])
+            .returning(SignalFillRow.id)
+        )
+        return (await self._session.execute(statement)).first() is not None
+
+    async def for_signal(self, signal_id: UUID) -> list[SignalFillRow]:
+        statement = (
+            select(SignalFillRow)
+            .where(SignalFillRow.signal_id == signal_id)
+            .order_by(SignalFillRow.rung_index)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def for_signals(self, signal_ids: Sequence[UUID]) -> dict[UUID, list[SignalFillRow]]:
+        """One query for a whole tick, rather than one per signal."""
+        if not signal_ids:
+            return {}
+        statement = (
+            select(SignalFillRow)
+            .where(SignalFillRow.signal_id.in_(signal_ids))
+            .order_by(SignalFillRow.rung_index)
+        )
+        grouped: dict[UUID, list[SignalFillRow]] = {}
+        for row in (await self._session.execute(statement)).scalars():
+            grouped.setdefault(row.signal_id, []).append(row)
+        return grouped
+
+
+class SignalExitRepository:
+    """Closes: a target, the stop, an invalidation, an expiry, a manual exit."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        signal_id: UUID,
+        *,
+        kind: str,
+        price: Decimal,
+        qty: Decimal,
+        exited_at: datetime,
+        detected_at: datetime,
+    ) -> bool:
+        statement = (
+            insert(SignalExitRow)
+            .values(
+                signal_id=signal_id,
+                kind=kind,
+                price=price,
+                qty=qty,
+                exited_at=exited_at,
+                detected_at=detected_at,
+            )
+            .on_conflict_do_nothing(index_elements=["signal_id", "kind"])
+            .returning(SignalExitRow.id)
+        )
+        return (await self._session.execute(statement)).first() is not None
+
+    async def for_signal(self, signal_id: UUID) -> list[SignalExitRow]:
+        statement = (
+            select(SignalExitRow)
+            .where(SignalExitRow.signal_id == signal_id)
+            .order_by(SignalExitRow.exited_at)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def for_signals(self, signal_ids: Sequence[UUID]) -> dict[UUID, list[SignalExitRow]]:
+        if not signal_ids:
+            return {}
+        statement = (
+            select(SignalExitRow)
+            .where(SignalExitRow.signal_id.in_(signal_ids))
+            .order_by(SignalExitRow.exited_at)
+        )
+        grouped: dict[UUID, list[SignalExitRow]] = {}
+        for row in (await self._session.execute(statement)).scalars():
+            grouped.setdefault(row.signal_id, []).append(row)
+        return grouped
+
+
+class SignalEventRepository:
+    """The tracker's journal, and the queue its notifier drains.
+
+    ``record`` is idempotent on ``(signal_id, event_key)``; ``unposted`` returns
+    the events with no ``telegram_messages`` row for a chat yet. Between them, a
+    crash anywhere in a tick resolves forward: the event is either not recorded
+    (and will be re-derived from the same market data next tick) or recorded and
+    not yet posted (and will be posted next tick). There is no third state in
+    which it is both lost and believed sent.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        signal_id: UUID,
+        *,
+        event_key: str,
+        kind: str,
+        at: datetime,
+        from_status: str | None = None,
+        to_status: str | None = None,
+        price: Decimal | None = None,
+        realized_r: Decimal | None = None,
+        realized_eur: Decimal | None = None,
+        payload: dict[str, Any] | None = None,
+        detail: str = "",
+    ) -> bool:
+        statement = (
+            insert(SignalEventRow)
+            .values(
+                signal_id=signal_id,
+                event_key=event_key,
+                kind=kind,
+                at=at,
+                from_status=from_status,
+                to_status=to_status,
+                price=price,
+                realized_r=realized_r,
+                realized_eur=realized_eur,
+                payload=payload or {},
+                detail=detail[:512],
+            )
+            .on_conflict_do_nothing(index_elements=["signal_id", "event_key"])
+            .returning(SignalEventRow.id)
+        )
+        return (await self._session.execute(statement)).first() is not None
+
+    async def for_signal(self, signal_id: UUID) -> list[SignalEventRow]:
+        statement = (
+            select(SignalEventRow)
+            .where(SignalEventRow.signal_id == signal_id)
+            .order_by(SignalEventRow.at, SignalEventRow.id)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def unposted(self, chat_id: int, *, limit: int = 100) -> list[SignalEventRow]:
+        """Events with no delivered-or-claimed message for this chat, oldest first.
+
+        A LEFT JOIN rather than a status column on the event: the event is a fact
+        about the market and the message is a fact about Telegram, and a chat added
+        later should receive the events it missed without the event row changing.
+        """
+        posted = select(TelegramMessageRow.signal_id, TelegramMessageRow.event_key).where(
+            TelegramMessageRow.chat_id == chat_id,
+            TelegramMessageRow.kind == MessageKind.UPDATE.value,
+        )
+        statement = (
+            select(SignalEventRow)
+            .where(
+                tuple_(SignalEventRow.signal_id, SignalEventRow.event_key).not_in(posted),
+            )
+            .order_by(SignalEventRow.at, SignalEventRow.id)
+            .limit(limit)
+        )
         return list((await self._session.execute(statement)).scalars())

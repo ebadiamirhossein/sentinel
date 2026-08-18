@@ -23,7 +23,7 @@ from sentinel.bot.cards import (
     watchlist_card,
 )
 from sentinel.bot.models import SignalDecision, SignalRecord
-from sentinel.bot.views import DataSourceView, SettingsView, StatusView
+from sentinel.bot.views import DataSourceView, SettingsView, SpendView, StatusView
 from sentinel.core.config import AppConfig
 from sentinel.risk.models import GateStatus
 from tests.risk_double import PLAN_NOW, account, analyst_report, approved_plan, decide
@@ -165,13 +165,100 @@ def _status(**overrides: object) -> StatusView:
     return StatusView(**base)  # type: ignore[arg-type]
 
 
-def test_status_names_what_it_cannot_measure_yet(tz: ZoneInfo) -> None:
-    """Ruling 1: degrade explicitly. No fabricated cycle time, no zeroed uPnL."""
+def test_status_degrades_explicitly_where_nothing_has_run(tz: ZoneInfo) -> None:
+    """Ruling 1: degrade explicitly. Through M6 this card named cycle timing and
+    open risk as "not measured yet"; M7 measures them, so what is left to state in
+    words is a database where nothing has happened."""
     card = status_card(_status(), tz)
     assert "▶️ Active — not paused." in card
     assert "capital: €10000" in card
     assert "no snapshot stored yet" in card
-    assert "arrive with the orchestrator and tracker at M7" in card
+    assert "no cycle has completed yet on this database." in card
+    assert "M7" not in card, "the milestone placeholder must be gone, not reworded"
+
+
+def test_status_reports_cycle_risk_and_spend_once_they_exist(tz: ZoneInfo) -> None:
+    """The three figures M6 deferred, now shown from real measurements."""
+    card = status_card(
+        _status(
+            last_cycle_at=datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
+            last_cycle_status="OK",
+            cycles_completed=95,
+            cycles_started=96,
+            open_risk_pct=Decimal("1.50"),
+            max_open_risk_pct=Decimal("2.25"),
+            open_positions=2,
+            max_positions=4,
+            signals_today=3,
+            max_signals_per_day=5,
+            signals_open=2,
+            spend=SpendView(
+                day_usd=Decimal("2.31"),
+                month_usd=Decimal("41.02"),
+                limit_usd=Decimal("10"),
+                warn_usd=Decimal("7"),
+                state="OK",
+            ),
+        ),
+        tz,
+    )
+    assert "open risk: 1.50% of 2.25%" in card
+    assert "positions: 2 of 4" in card
+    assert "completed: 95 of 96 in 30d" in card
+    assert "today: $2.31 of $10 · OK" in card
+    assert "month to date: $41.02" in card
+    assert "estimate, not a bill" in card
+
+
+def test_status_says_the_spend_figure_is_a_floor_when_a_model_was_unpriced(
+    tz: ZoneInfo,
+) -> None:
+    """``pricing.estimate_cost`` records an unknown model at 0 with a warning. A
+    spend guard that reported that as free would have a hole in exactly the case
+    that matters, so the card says the total is a floor."""
+    card = status_card(
+        _status(
+            spend=SpendView(
+                day_usd=Decimal("4.00"),
+                month_usd=Decimal("9.00"),
+                limit_usd=Decimal("10"),
+                warn_usd=Decimal("7"),
+                state="OK",
+                is_floor=True,
+                unpriced_calls=3,
+            )
+        ),
+        tz,
+    )
+    assert "today: at least $4.00" in card
+    assert "3 call(s) used a model with no price in config" in card
+    assert "not zero" in card
+
+
+def test_status_says_when_deep_analysis_is_suspended(tz: ZoneInfo) -> None:
+    """And says what keeps running, because "paused" and "not analysing" are very
+    different states to wake up to."""
+    card = status_card(
+        _status(
+            spend=SpendView(
+                day_usd=Decimal("10.40"),
+                month_usd=Decimal("60.00"),
+                limit_usd=Decimal("10"),
+                warn_usd=Decimal("7"),
+                state="LIMIT_REACHED",
+            )
+        ),
+        tz,
+    )
+    assert "new deep analysis is suspended until 00:00 UTC" in card
+    assert "The screener and the tracker keep running." in card
+
+
+def test_status_shouts_when_the_system_is_only_rehearsing(tz: ZoneInfo) -> None:
+    """A silent phone must never be ambiguous between "no setups" and "dry run"."""
+    card = status_card(_status(dry_run=True), tz)
+    assert "DRY RUN" in card
+    assert "nothing is published" in card
 
 
 def test_status_shouts_when_capital_is_unset(tz: ZoneInfo) -> None:

@@ -52,6 +52,47 @@ def realized_pnl_usdt(
     return sum(((exit_.price - entry) * exit_.qty * sign for exit_ in exits), Decimal(0))
 
 
+def unrealized_pnl_usdt(
+    *,
+    direction: Direction,
+    fills: tuple[Fill, ...],
+    exits: tuple[Exit, ...],
+    mark_price: Decimal,
+) -> Decimal:
+    """Open P&L on the size still held — the mirror of ``realized_pnl_usdt``.
+
+    M7's ``/positions`` marks a live position to market (specs/TELEGRAM_UX.md §3).
+    It lives here rather than in the bot for the reason M6 gave when it deferred
+    the figure: the renderer must not compute, and this is the same ladder-aware
+    basis every other R figure on the card uses.
+
+    It is a mark, not a fill. Nothing is closed, so nothing here is realized.
+    """
+    open_size = open_qty(fills, exits)
+    if open_size <= 0:
+        return Decimal(0)
+    entry = avg_fill_price(fills)
+    sign = Decimal(1) if direction is Direction.LONG else Decimal(-1)
+    return (mark_price - entry) * open_size * sign
+
+
+def unrealized_r(
+    *,
+    direction: Direction,
+    fills: tuple[Fill, ...],
+    exits: tuple[Exit, ...],
+    mark_price: Decimal,
+    planned_risk_usdt: Decimal,
+) -> Decimal:
+    """Open P&L in R, on the same 1R basis as everything else on the card."""
+    if planned_risk_usdt <= 0 or not fills:
+        return Decimal(0)
+    return (
+        unrealized_pnl_usdt(direction=direction, fills=fills, exits=exits, mark_price=mark_price)
+        / planned_risk_usdt
+    )
+
+
 def realized_r(
     *,
     direction: Direction,

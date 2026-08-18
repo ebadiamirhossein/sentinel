@@ -24,6 +24,7 @@ from sentinel.core.config import Secrets, Settings, load_config
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.models import PauseReason, PauseState
 from tests.bot_double import FakeDatabase, FakeStore, _SignalRow, _SnapshotRow, fake_repositories
+from tests.risk_double import approved_plan
 
 OWNER = 111
 
@@ -244,27 +245,27 @@ async def test_positions_lists_only_taken_signals(ctx: BotContext, store: FakeSt
     empty = await run(commands.positions, ctx)
     assert "Nothing marked" in empty.last
 
-    row = _SignalRow(_uuid(1), _uuid(2), number=7)
+    # A real gate-approved plan, not a hand-built dict: /positions validates the
+    # stored plan now, and a fixture that skipped the gate would let a renderer
+    # bug hide behind a shape no engine ever produced.
+    plan = approved_plan(load_config())
+    row = _SignalRow(_uuid(1), plan.plan_id, number=7)
     row.decision = SignalDecision.TAKEN.value
+    row.plan = plan.model_dump(mode="json")
+    row.symbol = "SOLUSDT"
+    row.direction = "long"
+    row.setup_type = "trend_pullback"
+    row.status = "PENDING_ENTRY"
+    row.expires_at = datetime(2026, 8, 19, tzinfo=UTC)
     store.signals[_uuid(1)] = row
-    # The card reads plan fields off the row; the fake row carries the shape it needs.
-    row.plan = {  # type: ignore[attr-defined]
-        "avg_fill_price": "82.55",
-        "stop": "81.20",
-        "risk_eur": "74.98",
-        "suggested_leverage": 5,
-        "targets": ["85.20"],
-    }
-    row.symbol = "SOLUSDT"  # type: ignore[attr-defined]
-    row.direction = "long"  # type: ignore[attr-defined]
-    row.setup_type = "trend_pullback"  # type: ignore[attr-defined]
-    row.status = "PENDING_ENTRY"  # type: ignore[attr-defined]
-    row.expires_at = datetime(2026, 8, 19, tzinfo=UTC)  # type: ignore[attr-defined]
 
     message = await run(commands.positions, ctx)
     assert "#7 SOLUSDT LONG" in message.last
     assert "risk €74.98" in message.last
-    assert "tracker at M7" in message.last, "the uPnL gap must be stated, not zeroed"
+    # Nothing has filled, so there is no mark to show — and the card says that
+    # rather than printing 0.00R, which would read as a flat trade.
+    assert "unfilled — the ladder is still resting" in message.last
+    assert "M7" not in message.last, "the deferral note must be gone, not reworded"
 
 
 async def test_settings_shows_the_source_of_every_value(ctx: BotContext, store: FakeStore) -> None:

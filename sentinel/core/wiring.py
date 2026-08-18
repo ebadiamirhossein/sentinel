@@ -35,6 +35,22 @@ LastKnownGoodFx = Callable[[], Coroutine[Any, Any, FxRate | None]]
 
 
 @asynccontextmanager
+async def market_adapter(settings: Settings) -> AsyncIterator[BinanceCryptoAdapter]:
+    """Just the exchange adapter, closed after use.
+
+    M7's tracker needs candles and nothing else — no news, no sentiment, no FX. It
+    gets its own entry point rather than reaching into ``snapshot_assembler``'s
+    internals, which would also spin up four HTTP clients a price check never
+    touches.
+    """
+    adapter = BinanceCryptoAdapter(settings.config.ingestion)
+    try:
+        yield adapter
+    finally:
+        await adapter.close()
+
+
+@asynccontextmanager
 async def snapshot_assembler(
     settings: Settings,
     *,

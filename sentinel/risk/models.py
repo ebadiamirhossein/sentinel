@@ -71,6 +71,11 @@ class RejectionReason(StrEnum):
     # §2 rule 7 / §7
     MAX_OPEN_RISK = "MAX_OPEN_RISK"
     MAX_POSITIONS = "MAX_POSITIONS"
+    #: specs/TELEGRAM_UX.md §6's anti-spam cap. Deliberately its own code rather
+    #: than folded into MAX_POSITIONS: "the account is full" and "the system has
+    #: said enough for one day" are different findings, and M9 cannot separate
+    #: them if they share a code.
+    DAILY_SIGNAL_CAP = "DAILY_SIGNAL_CAP"
     SYMBOL_COOLDOWN = "SYMBOL_COOLDOWN"
     PAUSED = "PAUSED"
     # §4 sizing
@@ -124,6 +129,8 @@ class PortfolioState(Frozen):
     pause: PauseState = PauseState()
     #: Realized loss today as a positive percentage of capital (§7).
     realized_loss_today_pct: Decimal = Decimal("0")
+    #: Signals already published today, UTC (specs/TELEGRAM_UX.md §6's cap).
+    signals_today: int = 0
 
 
 class MarketContext(Frozen):
@@ -233,6 +240,33 @@ class PlanCosts(Frozen):
     round_trip_cost_eur: Decimal = Decimal("0")
     #: ``round_trip_cost_eur`` as a percentage of the planned risk budget.
     cost_pct_of_risk: Decimal = Decimal("0")
+
+
+class RealizedCosts(Frozen):
+    """What a signal's costs turned out to be, once the tracker knows the legs.
+
+    ``PlanCosts`` prices the round trip the plan *intends*; this prices the one
+    that *happened*. They differ whenever the ladder fills partially, which is the
+    normal case — M5.1 §10 flagged that carrying the estimate forward into M9's
+    statistics would measure a cost the owner never paid.
+
+    Same conventions as §4.2 throughout: entries maker, every exit taker, funding
+    signed with ``funding_charged_eur`` spending only ``max(0, funding)`` unless
+    ``credit_favourable_funding`` says otherwise.
+    """
+
+    maker_fee_pct: Decimal
+    taker_fee_pct: Decimal
+    entry_fee_eur: Decimal
+    exit_fee_eur: Decimal
+    filled_notional_eur: Decimal
+    funding_rate: Decimal | None = None
+    funding_settlements: int = 0
+    #: Signed: positive is paid, negative is received.
+    funding_eur: Decimal = Decimal("0")
+    funding_charged_eur: Decimal = Decimal("0")
+    funding_available: bool = False
+    total_eur: Decimal = Decimal("0")
 
 
 class TradePlan(Frozen):

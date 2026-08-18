@@ -4,7 +4,7 @@ BIN := $(VENV)/bin
 COMPOSE ?= docker compose
 
 .DEFAULT_GOAL := help
-.PHONY: help install test lint format typecheck coverage-risk check run up down restart logs ps migrate revision shell clean require-env
+.PHONY: help install test lint format typecheck coverage-risk check-wheel check-image check-fast check run up down restart logs ps migrate revision shell clean require-env
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -36,7 +36,44 @@ typecheck: install ## mypy --strict
 coverage-risk: install ## Risk engine: 100% branch coverage or fail (specs/RISK_ENGINE.md)
 	$(BIN)/pytest tests/risk --cov=sentinel.risk --cov-branch --cov-fail-under=100
 
-check: test lint typecheck coverage-risk ## Everything the milestone gate requires
+# ── Packaging (M7) ───────────────────────────────────────────────────────────
+#
+# journal/M6_REPORT.md §12: the Docker image was unbuildable from M5 until M6.2
+# and no milestone gate caught it, because tests, ruff and mypy all run from a
+# source checkout where prompt files resolve by path whether or not the wheel is
+# correct. Only building the artifact exercises packaging. Both targets below are
+# in `check` and neither ever skips silently — a skipped packaging check is
+# exactly how the break stayed hidden for two milestones.
+
+check-wheel: install ## Build the wheel — catches a broken package in ~2s
+	@rm -rf .build-wheel
+	$(BIN)/python -m pip wheel --no-deps -q -w .build-wheel .
+	@echo "wheel builds cleanly"
+
+check-image: ## Build the image AND import the app inside it
+	@docker version >/dev/null 2>&1 || { \
+		printf '\033[31mERROR: Docker is not available.\033[0m\n'; \
+		printf 'Building the image is part of the milestone gate — see\n'; \
+		printf 'journal/M6_REPORT.md §12, where a packaging break hid for two\n'; \
+		printf 'milestones because `make check` only ever ran from a source tree.\n'; \
+		printf 'Start Docker, or run `make check-fast` if you are mid-edit.\n'; \
+		exit 1; \
+	}
+	docker build -t sentinel:check .
+	@# Building is not enough. `pip install` never imports the package, so a
+	@# dependency someone forgot to declare — present in .venv, absent from the
+	@# image — builds perfectly and dies at boot. So the gate imports the app and
+	@# loads a prompt file from the installed wheel, which is the packaging M5's
+	@# force-include was trying to guarantee in the first place.
+	docker run --rm --entrypoint python sentinel:check -c \
+		"import sentinel.main; \
+		 from sentinel.analyst.prompts.loader import load_prompt; \
+		 assert load_prompt('fable_v1').strip(), 'prompt text missing from the wheel'; \
+		 from sentinel.core.config import load_config; load_config(); \
+		 print('image imports, prompts ship, config loads')"
+
+check-fast: test lint typecheck coverage-risk ## The gate without the image build
+check: check-fast check-wheel check-image ## Everything the milestone gate requires
 
 run: install require-env ## Run the app locally (no Docker)
 	$(BIN)/python -m sentinel.main

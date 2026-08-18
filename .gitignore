@@ -27,3 +27,6 @@ sentinel/**/*.png
 
 # OS
 .DS_Store
+
+# `make check-wheel` output — a build artifact, never committed.
+.build-wheel/

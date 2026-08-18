@@ -33,7 +33,8 @@ from decimal import Decimal
 
 from sentinel.analyst.models import Direction
 from sentinel.core.config import CostsConfig
-from sentinel.risk.models import EntryRung, PlanCosts
+from sentinel.risk.accounting import Exit, Fill
+from sentinel.risk.models import EntryRung, PlanCosts, RealizedCosts
 from sentinel.risk.rounding import money, percent, ratio
 
 HUNDRED = Decimal("100")
@@ -158,6 +159,66 @@ def estimate_costs(
     )
 
 
+def realized_costs_eur(
+    *,
+    direction: Direction,
+    fills: tuple[Fill, ...],
+    exits: tuple[Exit, ...],
+    eurusd_rate: Decimal,
+    funding_rate: Decimal | None,
+    settlements: int,
+    config: CostsConfig,
+) -> RealizedCosts:
+    """Price the legs that actually happened (M5.1 §10 — M7's tracker calls this).
+
+    ``estimate_costs`` prices the plan; this prices the trade. A ladder that filled
+    one rung of three paid one rung of entry fees, and a position still running has
+    paid to get in and not yet to get out — both fall out of iterating the real
+    fills and exits rather than the intended ones.
+
+    Two deliberate conservatisms, both in the direction of over-stating cost:
+
+    * funding is charged on the **whole** filled notional for the whole window,
+      ignoring that a partial close reduces the size being funded. Modelling that
+      exactly would need a position-size timeline the tracker does not keep, and a
+      cost estimate that flatters the trade is worse than none (§4.2).
+    * ``settlements`` is supplied by the caller from the real holding window, and
+      the 8h interval it is counted with is itself an estimate (§4.2) — which is
+      why it is reported next to the figure everywhere it is shown.
+
+    A signal that never filled costs nothing at all: it was not a trade, and a fee
+    charged against it would put a loss in the statistics for an order that never
+    existed.
+    """
+    filled_notional_eur = sum((fill.price * fill.qty for fill in fills), Decimal(0)) / eurusd_rate
+    exit_notional_eur = sum((exit_.price * exit_.qty for exit_ in exits), Decimal(0)) / eurusd_rate
+
+    entry_fee = fee_eur(filled_notional_eur, config.maker_fee_pct)
+    exit_fee = fee_eur(exit_notional_eur, config.taker_fee_pct)
+
+    funding = estimate_funding_eur(
+        notional_eur=filled_notional_eur,
+        funding_rate=funding_rate,
+        settlements=settlements,
+        direction=direction,
+    )
+    charged = funding if config.credit_favourable_funding else max(Decimal(0), funding)
+
+    return RealizedCosts(
+        maker_fee_pct=config.maker_fee_pct,
+        taker_fee_pct=config.taker_fee_pct,
+        entry_fee_eur=money(entry_fee),
+        exit_fee_eur=money(exit_fee),
+        filled_notional_eur=money(filled_notional_eur),
+        funding_rate=funding_rate,
+        funding_settlements=settlements if funding_rate is not None else 0,
+        funding_eur=money(funding),
+        funding_charged_eur=money(charged),
+        funding_available=funding_rate is not None,
+        total_eur=money(entry_fee + exit_fee + charged),
+    )
+
+
 def net_rr_multiples(
     *, rr_gross: tuple[Decimal, ...], risk_eur: Decimal, costs: PlanCosts
 ) -> tuple[Decimal, ...]:
@@ -189,4 +250,5 @@ __all__ = [
     "fee_eur",
     "funding_settlements",
     "net_rr_multiples",
+    "realized_costs_eur",
 ]

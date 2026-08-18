@@ -3,15 +3,18 @@
 Assembled deterministically from Postgres and appended to the analyst's user
 message. Two halves:
 
-* **Last N verdicts for this symbol** — available now, from ``analyst_reports``.
-* **Rolling 30-day stats per setup_type** — needs outcomes, which need the
-  tracker. That is M7.
+* **Last N verdicts for this symbol** — from ``analyst_reports``, each with what
+  actually happened to it: the tracked outcome, or the gate's verdict for a
+  report that never became a signal.
+* **Rolling 30-day stats per setup_type** — from ``sentinel/stats/``, over every
+  signal the pipeline produced for a human (real and hypothetical, never the
+  dry-run book: the model should calibrate on signals someone judged).
 
-The M7 halves are rendered as explicit "not tracked yet" text rather than
-omitted or filled with plausible zeros. A 0% win rate reads as "this setup never
-works"; a missing section reads as "no setups have ever run". Both are lies the
-analyst would act on, and CLAUDE.md forbids inventing data. Saying "measurement
-starts at M7" is the only honest option, and it costs about twenty tokens.
+Both halves were stubbed through M5 and M6 because outcomes did not exist yet.
+Where either is still empty — a fresh database, a symbol never analysed — it says
+so in words. A 0% win rate reads as "this setup never works" and a missing
+section reads as "no setups have ever run"; both are lies the analyst would act
+on, and CLAUDE.md forbids inventing data.
 
 Pure and snapshot-tested: no DB access here, no clock. The caller fetches.
 """
@@ -30,7 +33,9 @@ STATS_GUIDANCE = (
     "strictness, not to force or forbid setups."
 )
 
-OUTCOME_PENDING = "outcome not tracked yet (outcome tracking begins at M7)"
+#: A verdict whose signal is still open, or which never became one. The tracker
+#: resolves every signal eventually, so this is a "not yet", not a "never".
+OUTCOME_PENDING = "outcome not resolved yet"
 
 
 @dataclass(frozen=True)
@@ -44,7 +49,8 @@ class PastVerdict:
     confidence: int
     thesis: str
     prompt_version: str | None = None
-    #: What actually happened. Populated by M7's tracker; ``None`` until then.
+    #: What actually happened — "TP2 hit, +2.50R", "stopped, -0.40R", "expired
+    #: unfilled", or the gate's own verdict for a report that never shipped.
     outcome: str | None = None
 
     def one_line(self) -> str:
@@ -63,7 +69,7 @@ class PastVerdict:
 
 @dataclass(frozen=True)
 class SetupStat:
-    """Rolling 30-day performance for one setup type. Filled by M7's stats module."""
+    """Rolling 30-day performance for one setup type, from ``sentinel/stats/``."""
 
     setup_type: SetupType
     count: int
@@ -101,8 +107,8 @@ def build_history_block(
         lines.extend(["", STATS_GUIDANCE])
     else:
         lines.append(
-            "- no data yet. Outcome tracking and per-setup statistics begin at M7; "
-            "no win rate has been measured, in either direction. Do not read this "
-            "absence as either encouragement or discouragement for any setup type."
+            "- no outcomes resolved yet in the last 30 days, so no win rate has "
+            "been measured in either direction. Do not read this absence as "
+            "either encouragement or discouragement for any setup type."
         )
     return "\n".join(lines)

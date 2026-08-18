@@ -219,6 +219,29 @@ class ChartsConfig(_Strict):
     output_dir: str = "charts_out"
 
 
+class TrackerConfig(_Strict):
+    """M7's outcome tracker — how it looks at price (ARCHITECTURE.md §3).
+
+    Fills and stop-outs are detected from **1m candle high/low since the last
+    tick**, not from the mark price polled every 60s. A poll misses the wick that
+    actually filled the rung or hit the stop, and that error is not symmetric: it
+    under-reports stop-outs, which flatters the measured win rate the whole system
+    exists to produce. Candles are also replayable, so a detection bug can be
+    reproduced from stored OHLCV instead of from a moment that has passed.
+
+    Invalidation is the exception and stays on **closed 1h candles**, because
+    specs/TELEGRAM_UX.md §4 words it as a close ("1h close 81.05 < 81.40") and
+    specs/PROMPTS.md §2 rule e tells the analyst to treat wick-only breaches as
+    noise. A tick is not an invalidation.
+    """
+
+    fill_timeframe: str = "1m"
+    #: How far back a tick may look. Bounds the request when a tick was missed;
+    #: a longer gap is covered by ``last_checked_at`` up to this ceiling.
+    fill_lookback_candles: int = 5
+    invalidation_timeframe: str = "1h"
+
+
 class RiskConfig(_Strict):
     """specs/RISK_ENGINE.md sections 1-4. ``capital_eur`` is not here: set via /capital."""
 
@@ -238,6 +261,10 @@ class RiskConfig(_Strict):
     min_rung_notional_usdt: Dec = Decimal("20")
     liq_buffer_multiple: Dec = Decimal("2.0")
     signal_cooldown_hours: int = 4
+    #: specs/TELEGRAM_UX.md §6 — "hard cap max_signals_per_day (default 5)". The
+    #: spec named it from the start; M7 is the first milestone with a scheduler
+    #: that could exceed it, so it becomes a rail here rather than a promise.
+    max_signals_per_day: int = 5
 
 
 class CostsConfig(_Strict):
@@ -329,6 +356,20 @@ class LLMConfig(_Strict):
     #: specs/PROMPTS.md §3 — last N verdicts per symbol in the history block.
     history_verdicts: int = 3
 
+    #: Spend guard (M7, pulled forward from M8's "spend guard" item). Once the
+    #: scheduler runs unattended every 15 minutes, a bug or a market event that
+    #: makes many symbols look interesting can spend real money while nobody is
+    #: watching. Reaching the daily limit suspends **new deep analysis only** —
+    #: the screener keeps triaging and the tracker keeps managing open positions,
+    #: which it can do without an LLM at all.
+    #:
+    #: Both figures gate ``cost_usd_estimate``, which is an estimate and not
+    #: billing truth (journal/M5_REPORT.md §7). Sizing the default: the screener
+    #: alone is ~$0.023 per cycle, so ~$2.2/day at 96 cycles, leaving ~$7.8 for
+    #: deep analysis — roughly 24 analyst calls at M5's measured ~$0.32.
+    daily_spend_limit_usd: Dec = Decimal("10")
+    daily_spend_warn_usd: Dec = Decimal("7")
+
     pricing: dict[str, ModelPricing] = {
         "claude-sonnet-4-6": ModelPricing(
             input_per_mtok=Decimal("3"),
@@ -366,6 +407,15 @@ class TelegramConfig(_Strict):
 class AppConfig(_Strict):
     """The whole non-secret runtime configuration."""
 
+    #: Run the whole cycle — ingestion, screener, charts, analyst, gate,
+    #: persistence — and publish **nothing** to Telegram. The would-be card is
+    #: rendered through the same renderer and logged verbatim, the signal is
+    #: stored with ``dry_run=true``, and the tracker resolves it silently, so a
+    #: day in this mode produces a measured paper record rather than only an
+    #: absence of crashes. The first unattended run is the riskiest moment in the
+    #: project; this is how it is made observable before it can talk.
+    dry_run: bool = False
+
     watchlist: tuple[str, ...] = (
         "BTCUSDT",
         "ETHUSDT",
@@ -385,6 +435,7 @@ class AppConfig(_Strict):
     features: FeaturesConfig = FeaturesConfig()
     charts: ChartsConfig = ChartsConfig()
     risk: RiskConfig = RiskConfig()
+    tracker: TrackerConfig = TrackerConfig()
     costs: CostsConfig = CostsConfig()
     ladder: LadderConfig = LadderConfig()
     management: ManagementConfig = ManagementConfig()

@@ -24,7 +24,11 @@ def test_health_ok_when_db_and_scheduler_are_up(settings: Settings) -> None:
     assert body["status"] == "ok"
     assert body["checks"] == {"database": "ok", "scheduler": "running"}
     assert body["version"] == __version__
-    assert body["last_cycle_age_seconds"] is None  # no orchestrator until M7
+    # ``None`` means "no cycle has ever completed", which is true of a freshly
+    # built app with no scheduler run behind it. Once the orchestrator has run,
+    # this is a real age — tests/core/test_orchestrator.py asserts that, and the
+    # value survives a restart because it is seeded from the ``cycles`` table.
+    assert body["last_cycle_age_seconds"] is None
     assert body["uptime_seconds"] >= 0
     assert database.disposed is True  # lifespan shutdown ran
 

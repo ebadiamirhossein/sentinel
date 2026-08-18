@@ -182,12 +182,14 @@ def portfolio(
     open_positions: int = 0,
     cooldowns: dict[str, datetime] | None = None,
     pause: PauseState | None = None,
+    signals_today: int = 0,
 ) -> PortfolioState:
     return PortfolioState(
         open_risk_pct=Decimal(open_risk_pct),
         open_positions=open_positions,
         cooldown_until=cooldowns or {},
         pause=pause or PauseState(),
+        signals_today=signals_today,
     )
 
 

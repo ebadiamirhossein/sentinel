@@ -34,17 +34,51 @@ def test_empty_history_says_so_explicitly() -> None:
     assert "SOLUSDT" in block
 
 
-def test_missing_stats_state_that_measurement_has_not_started() -> None:
-    """A fabricated 0% win rate is a lie the analyst would act on (CLAUDE.md)."""
+def test_missing_stats_say_nothing_was_measured_rather_than_zero() -> None:
+    """A fabricated 0% win rate is a lie the analyst would act on (CLAUDE.md).
+
+    Through M5 and M6 this branch said "measurement begins at M7". It does now, so
+    the wording is about the *window* — a fresh database, or thirty quiet days —
+    and no longer about a milestone.
+    """
     block = build_history_block("SOLUSDT", [verdict()], [])
-    assert "Outcome tracking and per-setup statistics begin at M7" in block
-    assert "neither encouragement or discouragement" in block or "either encouragement" in block
+    assert "no outcomes resolved yet in the last 30 days" in block
+    assert "either encouragement or discouragement" in block
     assert "0%" not in block
+    assert "M7" not in block, "the milestone stub must be gone, not reworded"
 
 
-def test_outcome_is_marked_pending_not_invented() -> None:
+def test_an_unresolved_outcome_is_marked_pending_not_invented() -> None:
+    """A signal still running has no result to report, and reporting the R it
+    happens to be showing would teach the analyst to read an unrealised number as
+    a measurement."""
     block = build_history_block("SOLUSDT", [verdict()], [])
     assert OUTCOME_PENDING in block
+    assert "M7" not in OUTCOME_PENDING
+
+
+def test_a_resolved_outcome_is_rendered_on_the_verdict_line() -> None:
+    """specs/PROMPTS.md §3 asks for "status + one-line thesis + what happened".
+    From M7 the third part is real — this is the learning loop closing."""
+    block = build_history_block("SOLUSDT", [verdict(outcome="stop, -0.40R")], [])
+    assert "stop, -0.40R" in block
+    assert OUTCOME_PENDING not in block
+
+
+def test_real_setup_stats_render_with_the_calibration_instruction() -> None:
+    """§3 requires the guidance sentence to travel *with* the numbers: statistics
+    calibrate strictness, they do not force or forbid a setup."""
+    block = build_history_block(
+        "SOLUSDT",
+        [verdict()],
+        [SetupType_stat()],
+    )
+    assert "trend_pullback: 12 signals, 58% win rate, avg +0.31R" in block
+    assert STATS_GUIDANCE in block
+
+
+def SetupType_stat() -> SetupStat:
+    return SetupStat(setup_type=SetupType.TREND_PULLBACK, count=12, win_rate_pct=58.0, avg_r=0.31)
 
 
 def test_verdict_line_carries_status_setup_and_thesis() -> None:

@@ -144,7 +144,9 @@ async def test_a_claim_that_never_confirmed_is_not_re_sent(
     assert result.record is not None
 
     # Simulate the crash: the claim exists, the confirmation never landed.
-    key = (result.record.signal_id, MessageKind.CARD.value, CHAT_ID)
+    # The card claims the empty ``event_key``; M7 widened the key so a signal's
+    # thread can carry many updates without colliding with the card itself.
+    key = (result.record.signal_id, MessageKind.CARD.value, CHAT_ID, "")
     store.messages[key].status = "PENDING"
     store.messages[key].message_id = None
 
@@ -189,7 +191,7 @@ async def test_a_failed_send_is_recorded_and_does_not_raise(
     result = await publisher(FakeDatabase(store), bot, bot_config, tz, clock).publish(plan)
 
     assert result.published is False
-    key = (next(iter(store.signals)), MessageKind.CARD.value, CHAT_ID)
+    key = (next(iter(store.signals)), MessageKind.CARD.value, CHAT_ID, "")
     assert store.messages[key].status == "FAILED"
     assert "telegram is down" in (store.messages[key].error or "")
 

@@ -88,12 +88,50 @@ sentinel/
 5. Gate-approved plans → Telegram signal card. Everything persisted at every step.
 6. Dedup guard: no new signal for a symbol while one is ACTIVE or within cooldown (default 4h) of a rejected/expired one, unless direction flips with strong evidence.
 
+> **Ruling (2026-08-18, from M7) — cooldown scope, and the flip exception deferred.**
+> The cooldown also arms after a **stop-out**: re-entering the same failing idea on
+> the next 15-minute cycle is exactly what the rail is for. "Unless direction flips
+> with strong evidence" is **not implemented** — the spec never defines strong
+> evidence, and an undefined threshold in a rail that governs money is a guess, not
+> a feature. Deferred until the owner sets a number, ideally from M9's data.
+>
+> The guard runs **before** the deep analyst (an analyst call is ~$0.32), and the
+> risk gate re-checks the same rails afterwards. The early check is an
+> optimisation and never the only one. `core/orchestrator.select_symbols` is the
+> pure function; it returns the reason each symbol was dropped, so a cycle that
+> analysed nothing explains itself from its own row.
+
 ### Tracker loop (every 60s, only when active/taken signals exist)
 
 - Pulls mark price; state machine per signal: `PENDING_ENTRY → PARTIALLY_FILLED → FILLED → (TP1_HIT → …) | STOPPED | INVALIDATED | EXPIRED`.
 - Ladder-aware R accounting: realized R computed from actually-filled entries only.
 - Posts threaded updates under the original Telegram message.
 - Feeds `stats` tables; enforces daily-loss auto-pause.
+
+> **Correction (2026-08-18, from M7) — TP hits are events, not statuses.** The
+> `SignalStatus` enum shipped at M6 and `signals.status` has stored its values
+> since; it has no `TP*_HIT` member and it does have `CLOSED`. Owner ruling: a
+> signal stays **FILLED** while any size is open and becomes **CLOSED** when the
+> last unit closes, and each target hit is a row in `signal_exits` and
+> `signal_events`. Keeping the status a *state* rather than a partly-ordered
+> history is what lets `tracker/machine.py` be one function of (status, event) —
+> and lets the transition table cover every cell of `SignalStatus × EventKind`
+> exhaustively, which docs/MILESTONES.md M7 asks for.
+>
+> **Correction (2026-08-18, from M7) — the price source is candles, not a poll.**
+> "Pulls mark price" is what this section says; the tracker reads **1m high/low
+> since the last tick** instead. A price sampled once a minute misses the wick
+> that filled the rung or hit the stop, and that error is not symmetric — it
+> under-reports stop-outs, so the measured win rate comes out better than the
+> market was. Candles are also stored, so a detection dispute can be replayed.
+> Invalidation is the exception and reads **closed 1h candles**, because
+> specs/TELEGRAM_UX.md §4 words it as a close.
+>
+> **Ruling (2026-08-18, from M7) — a signal's first tick covers its whole life.**
+> Found by the first live run: a signal published before the tracker existed had
+> no `last_checked_at`, the window fell back to its floor, and the tracker judged
+> the signal on its aftermath. The window now runs from `last_checked_at` **or**
+> the signal's `created_at`.
 
 ## 4. LLM boundary rules (enforced in code)
 

@@ -27,9 +27,14 @@ from zoneinfo import ZoneInfo
 from sentinel.analyst.models import Direction
 from sentinel.bot.formatting import DISCLAIMER, escape, local_and_utc, local_date_time
 from sentinel.bot.models import SignalDecision, SignalRecord
-from sentinel.bot.views import SettingsView, StatusView
+from sentinel.bot.views import (
+    PositionView,
+    SettingsView,
+    StatsView,
+    StatusView,
+    TrackerEventView,
+)
 from sentinel.risk.models import GateDecision, TradePlan
-from sentinel.storage.models import SignalRow
 
 #: specs/TELEGRAM_UX.md §2 — what each button says once it has been pressed.
 DECISION_LABEL = {
@@ -176,8 +181,16 @@ def rejection_card(decision: GateDecision, tz: ZoneInfo, moment: datetime) -> st
 
 
 def status_card(view: StatusView, tz: ZoneInfo) -> str:
-    """§3 ``/status`` — pipeline health, honestly scoped to what M6 can know."""
+    """§3 ``/status`` — pipeline health, from what the pipeline actually measures."""
     lines = ["🩺 <b>Status</b>", ""]
+
+    if view.dry_run:
+        lines.append(
+            "⚠️ <b>DRY RUN</b> — the full cycle runs and <b>nothing is published</b>. "
+            "Signals are stored and tracked silently; /stats reports them as their "
+            "own population."
+        )
+        lines.append("")
 
     if view.paused:
         until = "no expiry" if view.paused_until is None else local_date_time(view.paused_until, tz)
@@ -216,6 +229,9 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
         f"  delivered: {view.signals_total} · awaiting your call: {view.signals_undecided}"
     )
     lines.append(f"  marked taken: {view.signals_taken}")
+    lines.append(
+        f"  open now: {view.signals_open} · today: {view.signals_today}/{view.max_signals_per_day}"
+    )
     if view.stuck_messages:
         lines.append(
             f"  ⚠️ {view.stuck_messages} message(s) claimed but never confirmed — "
@@ -223,47 +239,210 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
         )
 
     lines.append("")
-    lines.append(
-        "<i>Cycle timing, open-risk usage and live position tracking arrive with the "
-        "orchestrator and tracker at M7. Nothing above is estimated: what is not "
-        "measured yet is not shown.</i>"
-    )
+    lines.append("<b>Risk in use</b>")
+    lines.append(f"  open risk: {view.open_risk_pct}% of {view.max_open_risk_pct}%")
+    lines.append(f"  positions: {view.open_positions} of {view.max_positions}")
+
+    lines.append("")
+    lines.append("<b>Cycle</b>")
+    if view.last_cycle_at is None:
+        lines.append("  no cycle has completed yet on this database.")
+    else:
+        lines.append(
+            f"  last: {local_date_time(view.last_cycle_at, tz)} · {view.last_cycle_status}"
+        )
+        lines.append(f"  completed: {view.cycles_completed} of {view.cycles_started} in 30d")
+
+    if view.spend is not None:
+        spend = view.spend
+        at_least = "at least " if spend.is_floor else ""
+        lines.append("")
+        lines.append("<b>LLM spend</b> <i>(estimate, not a bill)</i>")
+        lines.append(f"  today: {at_least}${spend.day_usd} of ${spend.limit_usd} · {spend.state}")
+        lines.append(f"  month to date: {at_least}${spend.month_usd}")
+        if spend.is_floor:
+            lines.append(
+                f"  ⚠️ {spend.unpriced_calls} call(s) used a model with no price in "
+                "config — their cost is missing from the figures above, not zero."
+            )
+        if spend.state == "LIMIT_REACHED":
+            lines.append(
+                "  ⛔ new deep analysis is suspended until 00:00 UTC. The screener "
+                "and the tracker keep running."
+            )
     return "\n".join(lines)
 
 
-def positions_card(signals: Sequence[SignalRow], tz: ZoneInfo) -> str:
-    """§3 ``/positions`` — every signal marked Taken, with its plan as issued.
+def positions_card(positions: Sequence[PositionView], tz: ZoneInfo) -> str:
+    """§3 ``/positions`` — Taken signals, marked to market.
 
-    The spec asks for live uPnL in R and EUR. That needs a mark price and the
-    ladder-aware R accounting in ``risk/accounting.py``, which the tracker runs
-    from M7; computing it here would put arithmetic in the renderer and duplicate
-    math that already exists. So the plan's own numbers are shown and the gap is
-    stated rather than filled with a zero.
+    M6 shipped this showing the plan as issued and said in words that live uPnL
+    needed the tracker. It has it now, and every figure below was computed in
+    ``risk/accounting.py`` before it reached this function — §1's rule is
+    unchanged, the bot still renders and never computes.
     """
-    if not signals:
+    if not positions:
         return "📭 <b>Positions</b>\n\nNothing marked ✅ Taken yet."
 
     lines = ["📈 <b>Positions</b> (marked ✅ Taken)", ""]
-    for row in signals:
-        plan = row.plan
+    for position in positions:
         lines.append(
-            f"<b>#{row.number} {escape(row.symbol)} {row.direction.upper()}</b> · "
-            f"{escape(row.setup_type)} · {row.status}"
+            f"<b>#{position.number} {escape(position.symbol)} "
+            f"{position.direction.upper()}</b> · {escape(position.setup_type)} · "
+            f"{position.status}"
         )
         lines.append(
-            f"  entry {plan['avg_fill_price']} · stop {plan['stop']} · "
-            f"risk €{plan['risk_eur']} · {plan['suggested_leverage']}x"
+            f"  entry {position.avg_entry} · stop {position.stop} · "
+            f"risk €{position.risk_eur} · {position.leverage}x"
         )
-        lines.append(f"  targets {' / '.join(str(t) for t in plan['targets'])}")
-        lines.append(f"  expires {local_date_time(row.expires_at, tz)}")
+        lines.append(f"  targets {' / '.join(position.targets)}")
+
+        if position.mark_price is None:
+            lines.append("  unfilled — the ladder is still resting")
+        else:
+            lines.append(f"  filled {position.filled_pct}% · mark {position.mark_price}")
+            if position.unrealized_r is not None:
+                lines.append(f"  open: {position.unrealized_r}R (€{position.unrealized_eur})")
+            if position.realized_r is not None:
+                taken = f" · {position.tp_hits} target(s) taken" if position.tp_hits else ""
+                lines.append(f"  banked: {position.realized_r}R (€{position.realized_eur}){taken}")
+            if position.stop_moved_to is not None:
+                lines.append(f"  🛡️ stop moved to {position.stop_moved_to} (breakeven)")
+
+        lines.append(f"  expires {local_date_time(position.expires_at, tz)}")
         lines.append("")
 
     lines.append(
-        "<i>Live unrealised PnL in R and EUR needs the price-watch loop and the "
-        "ladder-aware R accounting that land with the tracker at M7. The figures "
-        "above are the plan as issued, not a mark-to-market.</i>"
+        "<i>Open PnL is marked at the tracker's last observed price and is not a "
+        "fill. Banked figures are realized and gross of costs.</i>"
     )
     return "\n".join(lines)
+
+
+def tracker_update_card(view: TrackerEventView) -> str:
+    """§4's threaded replies. One function, one line per event kind.
+
+    Every number arrives already computed by the tracker, including the realized R
+    — recomputing it here would be a second implementation of the math §8.5
+    specifies, in the one module that is forbidden arithmetic.
+    """
+    kind = view.kind
+    tag = f"<b>#{view.number} {escape(view.symbol)}</b>"
+
+    if kind == "ENTRY_FILLED":
+        rung = view.payload.get("rung", "?")
+        weight = view.payload.get("weight_pct", "?")
+        return f"📥 {tag} Entry {rung} filled @ {view.price} ({weight}% of risk)"
+
+    if kind == "LADDER_COMPLETE":
+        return f"📥 {tag} Ladder complete, avg {view.price}"
+
+    if kind == "TP_HIT":
+        target = view.payload.get("target", "?")
+        breakeven = view.payload.get("breakeven", "")
+        plan = view.payload.get("management", "")
+        parts = [f"🎯 {tag} TP{target} hit @ {view.price} → {view.realized_r}R banked"]
+        if breakeven:
+            parts.append(f"🛡️ Stop moved to breakeven {breakeven} (per plan)")
+        if plan:
+            parts.append(f"📋 {escape(plan)}")
+        return "\n".join(parts)
+
+    if kind == "STOPPED":
+        partial = view.payload.get("partial_ladder", "")
+        note = f" (partial ladder: only rung(s) {partial} filled)" if partial else ""
+        return f"🛑 {tag} Stopped @ {view.price} → {view.realized_r}R{note} · €{view.realized_eur}"
+
+    if kind == "CLOSED_MANUALLY":
+        return (
+            f"🔚 {tag} Closed manually @ {view.price} → {view.realized_r}R · €{view.realized_eur}"
+        )
+
+    if kind == "INVALIDATED":
+        close = view.payload.get("close", "")
+        level = view.payload.get("level", "")
+        return (
+            f"❌ {tag} Invalidation triggered (close {close} vs {level}) before "
+            "entry → signal cancelled"
+        )
+
+    if kind == "EXPIRED":
+        return f"⌛ {tag} Expired unfilled"
+
+    if kind == "NOTE":
+        return f"✏️ {tag} {escape(view.detail)}"
+
+    return f"📌 {tag} {escape(view.detail)}"  # pragma: no cover — every kind is above
+
+
+def decision_ack_card(decision: SignalDecision, number: int, symbol: str) -> str:
+    """The confirmation reply under a card when a decision button is pressed.
+
+    Owner requirement (M7): the keyboard marker alone is easy to miss on a phone,
+    and this is the input that decides whether an outcome lands in the real
+    statistics or the hypothetical ones. One message per signal, edited when the
+    decision changes, so a corrected mis-tap does not leave a stale claim sitting
+    under the card.
+    """
+    tag = f"<b>#{number} {escape(symbol)}</b>"
+    if decision is SignalDecision.TAKEN:
+        return (
+            f"✅ {tag} marked <b>Taken</b> — it counts toward your real stats and "
+            "the open-risk budget. Fills, targets and the stop will be posted here."
+        )
+    if decision is SignalDecision.WATCHING:
+        return (
+            f"👀 {tag} marked <b>Watching</b> — tracked for hypothetical stats only. "
+            "No risk budget is used, and the outcome will still be posted here."
+        )
+    return (
+        f"❌ {tag} marked <b>Skipped</b> — archived. The outcome is still resolved "
+        "in the background, so you can see what skipping cost or saved."
+    )
+
+
+def stats_card(view: StatsView, tz: ZoneInfo) -> str:
+    """§3 ``/stats [30d|90d|all]`` — three populations, then the breakdowns."""
+    since = "all time" if view.since is None else f"since {local_date_time(view.since, tz)}"
+    lines = [f"📊 <b>Stats</b> ({view.window} · {since})", ""]
+
+    for group in view.groups:
+        lines.append(f"<b>{group.label}</b> <i>{group.note}</i>")
+        if not group.measured:
+            lines.append(
+                f"  nothing measured yet — {group.count} signal(s), {group.unfilled} never filled."
+            )
+            lines.append("")
+            continue
+        scratch = f" / {group.scratches} scratch" if group.scratches else ""
+        lines.append(
+            f"  {group.filled} trade(s): {group.wins}W / {group.losses}L{scratch} · "
+            f"win rate {group.win_rate_pct}%"
+        )
+        lines.append(f"  avg {group.avg_r}R · total {group.total_r}R (€{group.total_eur})")
+        lines.append(f"  profit factor {group.profit_factor} · max DD {group.max_drawdown_r}R")
+        lines.append(
+            f"  reached TP1+: {group.reached_tp1}/{group.filled} ({group.reached_tp1_pct}%)"
+        )
+        if group.unfilled:
+            lines.append(f"  never filled: {group.unfilled} (excluded above)")
+        lines.append(f"  costs paid: €{group.costs_eur}")
+        lines.append("")
+
+    if view.by_setup:
+        lines.append("<b>By setup type</b> <i>(taken + watched + skipped)</i>")
+        for row in view.by_setup:
+            lines.append(f"  {escape(row.key)}: {row.count} · {row.win_rate_pct}% · {row.avg_r}R")
+        lines.append("")
+
+    if view.by_prompt_version:
+        lines.append("<b>By prompt version</b>")
+        for row in view.by_prompt_version:
+            lines.append(f"  {escape(row.key)}: {row.count} · {row.win_rate_pct}% · {row.avg_r}R")
+        lines.append("")
+
+    lines.append(f"<i>{DISCLAIMER}</i>")
+    return "\n".join(lines).rstrip()
 
 
 def settings_card(view: SettingsView) -> str:
@@ -294,10 +473,13 @@ def watchlist_card(symbols: Sequence[str], source: str) -> str:
 
 __all__ = [
     "DECISION_LABEL",
+    "decision_ack_card",
     "positions_card",
     "rejection_card",
     "settings_card",
     "signal_card",
+    "stats_card",
     "status_card",
+    "tracker_update_card",
     "watchlist_card",
 ]

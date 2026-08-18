@@ -260,6 +260,25 @@ and report "thin RR" for a position the owner simply cannot fund.
 ## 7. Portfolio rails (checked before every signal AND on every tracker tick)
 
 - Daily realized loss ≥ limit → `PAUSED_LOSS_LIMIT` for 24h; Telegram notice; `/resume` requires explicit confirmation.
+
+> **Ruling (2026-08-18, from M7) — "daily" is the UTC calendar day.** The spec never
+> said, and the owner is in Europe/Vilnius. UTC wins because it is the instant every
+> stored row and every log line is stamped against, so a pause can always be
+> reconciled with the audit trail by eye; the Telegram notice prints local **and**
+> UTC like every other timestamp (specs/TELEGRAM_UX.md §6).
+>
+> Wins and losses net off within the day: §7 limits the *realized* loss, and an
+> afternoon that gives most of a bad morning back is not a 3% day. A net profit is
+> reported as 0, never as a negative loss. Without `capital_eur` there is no
+> denominator and the figure is 0 — the gate already rejects everything with
+> `NO_CAPITAL` in that state, so there is nothing a pause would add.
+>
+> An already-active loss pause is **not re-raised** on the next tick. The tick
+> recomputes the day's loss every 60 seconds, so a bad day keeps producing the same
+> verdict; re-saving it would slide the 24h window forward forever and re-post the
+> §4 notice every minute. `tracker/loop.already_paused_for_loss` is that check.
+>
+> Dry-run signals are excluded: a paper loss cannot pause a real account.
 - `/pause` manual pause any time; pause state persisted in DB (survives restart).
 - Capital changes via `/capital` apply to **new** signals only; open signals keep their original sizing (stored, immutable).
 
@@ -277,6 +296,30 @@ and report "thin RR" for a position the owner simply cannot fund.
    moves `avg_entry`. Property tests: every stored percentage re-derives from the
    `last_price`/`avg_entry` on the same plan, and target distances are positive and
    ordered with the targets.
+8. **Tracker inputs (added 2026-08-18, from M7):** `open_risk_pct`,
+   `cooldown_until` and `realized_loss_pct` in `risk/rails.py` — the three
+   conversions that build a `PortfolioState` from database rows, which M4 left as a
+   plain input. Tests: the risk percentage each open signal was *issued* with
+   (§7 keeps open signals on their original sizing); the latest resolution per
+   symbol winning regardless of arrival order; a zero-hour cooldown disabling the
+   rail rather than pinning every symbol to "expires now"; and the loss-percentage
+   cases above. Plus `RejectionReason.DAILY_SIGNAL_CAP` against
+   `risk.max_signals_per_day` (specs/TELEGRAM_UX.md §6's cap, which had no config
+   key until M7), asserted for its position in the rejection order.
+
+9. **Realized costs (added 2026-08-18, from M7, closing M5.1 §10):**
+   `costs.realized_costs_eur` prices the legs that actually happened rather than
+   the ones the plan intended — hand-calculated per case on the §8.1 golden ladder:
+   a full ladder stopped out costs the plan's estimated €3.16, a rung-1-only
+   stop-out costs €0.90, a signal that never filled costs nothing at all, and an
+   open position has paid its entry fee and not yet its exit. Funding keeps §4.2's
+   sign convention and its `credit_favourable_funding` floor.
+
+10. **Open PnL (added 2026-08-18, from M7):** `accounting.unrealized_pnl_usdt` /
+    `unrealized_r` mark the size still held, for `/positions` (specs/TELEGRAM_UX.md
+    §3's "live uPnL in R and EUR", deferred at M6 because the math did not exist).
+    Measured on the open quantity only, on the same 1R basis as every other figure.
+
 6. **Costs (added 2026-08-18, from M5.1):** hand-calculated fee arithmetic per golden
    case; settlement counting across the expiry window (none / one / many, stale and
    absent `next_funding_time`); the funding sign in both directions; the

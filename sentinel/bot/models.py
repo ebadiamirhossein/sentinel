@@ -53,6 +53,21 @@ class SignalStatus(StrEnum):
     CLOSED = "CLOSED"
 
 
+#: The states the tracker never leaves. Everything else is still being followed.
+#: Named here, beside the enum, so "is this signal still open?" has exactly one
+#: definition — the tracker's loop, the dedup guard and /stats all ask it.
+TERMINAL_STATUSES = frozenset(
+    {
+        SignalStatus.STOPPED,
+        SignalStatus.INVALIDATED,
+        SignalStatus.EXPIRED,
+        SignalStatus.CLOSED,
+    }
+)
+
+OPEN_STATUSES = frozenset(SignalStatus) - TERMINAL_STATUSES
+
+
 class MessageKind(StrEnum):
     """Which message of a signal's thread this is (§6 idempotency key)."""
 
@@ -75,6 +90,8 @@ class PostedMessage(Frozen):
     signal_id: UUID
     kind: MessageKind
     chat_id: int
+    #: Which event within the kind (M7). ``""`` for the charts album and the card.
+    event_key: str = ""
     message_id: int | None = None
     status: MessageStatus = MessageStatus.PENDING
     error: str | None = None
@@ -94,9 +111,16 @@ class SignalRecord(Frozen):
     decided_by_user_id: int | None = None
     #: ``ChartRenderParams.to_json_dict()`` per attached chart (M3 §7).
     chart_params: tuple[dict[str, Any], ...] = ()
+    #: Produced by a cycle running with ``dry_run: true`` (M7). Persisted and
+    #: tracked exactly like a real signal, and never published: the tracker's
+    #: notifier skips it, so a rehearsal day is completely silent while still
+    #: producing a measured record. /stats keeps it in its own population.
+    dry_run: bool = False
 
 
 __all__ = [
+    "OPEN_STATUSES",
+    "TERMINAL_STATUSES",
     "MessageKind",
     "MessageStatus",
     "PostedMessage",
