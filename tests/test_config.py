@@ -43,13 +43,19 @@ def test_money_values_are_decimal_not_float(repo_config: AppConfig) -> None:
 def test_watchlist_and_timeframes_match_specs(repo_config: AppConfig) -> None:
     assert repo_config.watchlist[:3] == ("BTCUSDT", "ETHUSDT", "SOLUSDT")
     assert len(repo_config.watchlist) == 10
-    # DATA_SOURCES §2.1 specifies 200/200/200/100 as the tail lengths the
-    # indicators consume. We request one extra bar per timeframe because the last
-    # candle is still in progress and the feature engine drops it, so these are
-    # the spec's lengths in *closed* candles.
+    # Every tail is one more than its closed-candle requirement (the last candle
+    # is in progress and gets dropped). Chart timeframes carry 320 closed rather
+    # than the spec's 200 so EMA200 has enough valid points to span the
+    # 120-candle chart window — see DATA_SOURCES §2.1.
     tails = {spec.timeframe: spec.candles for spec in repo_config.market_data.timeframes}
-    assert tails == {"15m": 201, "1h": 201, "4h": 201, "1d": 101}
-    assert {tf: n - 1 for tf, n in tails.items()} == {"15m": 200, "1h": 200, "4h": 200, "1d": 100}
+    closed = {tf: n - 1 for tf, n in tails.items()}
+
+    assert closed == {"15m": 320, "1h": 320, "4h": 320, "1d": 100}
+    chart_window = repo_config.charts.candle_window
+    longest_ema = max(repo_config.charts.ema_periods)
+    for timeframe in repo_config.charts.timeframes:
+        # Valid EMA200 points across the window: closed - (period - 1).
+        assert closed[timeframe] - (longest_ema - 1) >= chart_window, timeframe
 
 
 def test_defaults_apply_when_yaml_omits_keys(tmp_path: Path) -> None:

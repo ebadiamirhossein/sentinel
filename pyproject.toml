@@ -28,6 +28,13 @@ dependencies = [
   "ccxt>=4.4",
   "pandas>=2.2",
   "feedparser>=6.0",
+  # M3 — chart renderer (owner-approved 2026-08-18).
+  # PINNED EXACTLY, not >=: charts must be byte-reproducible for any stored
+  # signal, and a rasterisation change in a future matplotlib would break that
+  # silently — no error, just different pixels. Bump these deliberately and
+  # regenerate the golden hashes in tests/charts/ when you do.
+  "mplfinance==0.12.10b0",
+  "matplotlib==3.11.1",
 ]
 
 [project.optional-dependencies]
@@ -82,7 +89,7 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # Third-party packages that ship no type information.
-module = ["apscheduler.*", "ccxt.*", "feedparser.*"]
+module = ["apscheduler.*", "ccxt.*", "feedparser.*", "mplfinance.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

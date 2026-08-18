@@ -33,10 +33,16 @@ market_data:
   # engine drops it — without the +1, only 199 closed candles remain and EMA200
   # could never be computed (PRD F3). The spec's tail lengths are preserved as
   # *closed* candles, which is what the indicators actually consume.
+  # The chart timeframes request 321 (= 320 closed) rather than 201. An EMA200
+  # is first defined at candle 200, so a 200-closed-candle tail yields exactly
+  # ONE valid EMA200 point — nothing to draw a line between, and M3 requires
+  # EMA200 on the chart. 320 closed gives 121 valid points, enough to span the
+  # 120-candle chart window. Still one API call per timeframe; the extra rows
+  # dedupe away on upsert. 1d keeps its 100-closed tail (see features.ema200).
   timeframes:
-    - { timeframe: 15m, candles: 201 }
-    - { timeframe: 1h, candles: 201 }
-    - { timeframe: 4h, candles: 201 }
+    - { timeframe: 15m, candles: 321 }
+    - { timeframe: 1h, candles: 321 }
+    - { timeframe: 4h, candles: 321 }
     - { timeframe: 1d, candles: 101 }
 
 # specs/DATA_SOURCES.md §2–§3 — client behaviour and endpoints. Keys stay in .env.
@@ -98,6 +104,21 @@ features:
   level_cluster_atr_multiple: 0.5
   max_levels_per_side: 3
   level_timeframes: [1h, 4h]
+
+# M3 chart renderer. Sized for the analyst's vision input, not for a screen:
+# 1600px long edge stays under claude-fable-5's 2576px high-resolution limit, so
+# nothing is downscaled server-side (downscaling is what blurs axis numbers and
+# level labels). ~1.6MP ≈ 2,130 visual tokens per chart, ~6.4k for the album.
+charts:
+  width_px: 1600
+  height_px: 1000
+  dpi: 100                        # figsize inches map 1:1 to pixels
+  volume_panel_ratio: 0.22
+  candle_window: 120              # legibility: 200 candles is ~7px each, 120 is ~12px
+  ema_periods: [20, 50, 200]
+  max_levels: 6
+  timeframes: [15m, 1h, 4h]       # PRD F4 — the analyst's chart album
+  output_dir: charts_out
 
 # specs/RISK_ENGINE.md §1 — risk defaults. capital_eur is intentionally absent:
 # it is required before the first signal and set by the owner via /capital.

@@ -112,12 +112,14 @@ class TimeframeSpec(_Strict):
 class MarketDataConfig(_Strict):
     exchange: str = "binance_usdm"
     orderbook_depth: int = 50
-    #: One more than DATA_SOURCES §2.1's tail lengths: the last candle is still
-    #: in progress and gets dropped, so this yields 200/200/200/100 *closed* bars.
+    #: Always one more than the closed-candle requirement: the last candle is
+    #: still in progress and gets dropped. Chart timeframes carry 320 closed so
+    #: EMA200 has enough valid points to span the 120-candle chart window (M3);
+    #: 1d keeps DATA_SOURCES §2.1's 100.
     timeframes: tuple[TimeframeSpec, ...] = (
-        TimeframeSpec(timeframe="15m", candles=201),
-        TimeframeSpec(timeframe="1h", candles=201),
-        TimeframeSpec(timeframe="4h", candles=201),
+        TimeframeSpec(timeframe="15m", candles=321),
+        TimeframeSpec(timeframe="1h", candles=321),
+        TimeframeSpec(timeframe="4h", candles=321),
         TimeframeSpec(timeframe="1d", candles=101),
     )
 
@@ -195,6 +197,28 @@ class FeaturesConfig(_Strict):
     level_timeframes: tuple[str, ...] = ("1h", "4h")
 
 
+class ChartsConfig(_Strict):
+    """M3 chart renderer. Sized for the analyst's vision input, not for a screen.
+
+    1600x1000 keeps the long edge under the 2576px high-resolution limit for
+    claude-fable-5, so nothing is downscaled server-side (downscaling is what
+    blurs axis numbers and level labels). ~1.6MP is roughly 2,130 visual tokens
+    per chart, ~6.4k for the three-chart album.
+    """
+
+    width_px: int = 1600
+    height_px: int = 1000
+    dpi: int = 100
+    volume_panel_ratio: float = 0.22
+    #: Legibility, not data: 200 candles across the plot area is ~7px each and
+    #: bodies merge; 120 gives ~12px and a doji stays distinguishable.
+    candle_window: int = 120
+    ema_periods: tuple[int, ...] = (20, 50, 200)
+    max_levels: int = 6
+    timeframes: tuple[str, ...] = ("15m", "1h", "4h")
+    output_dir: str = "charts_out"
+
+
 class RiskConfig(_Strict):
     """specs/RISK_ENGINE.md sections 1-4. ``capital_eur`` is not here: set via /capital."""
 
@@ -268,6 +292,7 @@ class AppConfig(_Strict):
     ingestion: IngestionConfig = IngestionConfig()
     data_quality: DataQualityConfig = DataQualityConfig()
     features: FeaturesConfig = FeaturesConfig()
+    charts: ChartsConfig = ChartsConfig()
     risk: RiskConfig = RiskConfig()
     ladder: LadderConfig = LadderConfig()
     management: ManagementConfig = ManagementConfig()

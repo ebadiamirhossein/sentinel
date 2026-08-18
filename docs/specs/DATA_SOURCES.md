@@ -20,7 +20,22 @@
 ## 2. Per-source detail
 
 ### 2.1 Binance USDT-M Futures (primary market data — via `ccxt` + raw endpoints)
-- **OHLCV:** 15m/1h/4h/1d, tail lengths 200/200/200/100 candles per symbol per cycle.
+- **OHLCV:** 15m/1h/4h/1d, tail lengths **200/200/200/100 _closed_ candles** per symbol per cycle.
+  - **The +1 rule (added 2026-08-18, from M2):** Binance returns the in-progress
+    candle as the last row, and the feature engine drops it (indicators must not
+    repaint mid-candle). So the ingestion layer requests **201/201/201/101** in
+    order to yield the closed-candle tails above. Without the +1 only 199 closed
+    candles remain and **EMA200 can never be computed** — which silently forced
+    every trend regime onto a reduced EMA20/50 basis until it was caught. The
+    numbers in `config.yaml` are therefore intentionally one higher than the
+    tails specified here; this is not a typo.
+  - **Chart timeframes carry more history (added 2026-08-18, from M3):** 15m/1h/4h
+    request **321 (= 320 closed)**. An EMA200 is first defined at the 200th
+    candle, so a 200-closed tail produces exactly **one** valid EMA200 point —
+    nothing to draw a line between, while M3 requires EMA200 on the chart. 320
+    closed yields 121 valid points, enough to span the 120-candle chart window.
+    Still one API call per timeframe, and the extra rows dedupe away on upsert.
+    `1d` keeps its 100-closed tail, so its EMA200 stays `null` by design.
 - **Order book:** top-50 depth snapshot → computed bid/ask imbalance ratio (deterministic feature; raw book NOT sent to LLM).
 - **Funding rate:** current + next; **Open interest:** current + 24h series; **Long/short account ratio:** top-trader ratio.
 - **Exchange info:** tick size, qty step, min notional per symbol (cached 24h) — consumed by risk engine.
