@@ -9,10 +9,8 @@ the M1 ingestion tests:
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from datetime import timedelta
-from typing import Any
 
 import pytest
 from sqlalchemy import delete
@@ -30,10 +28,9 @@ from sentinel.risk.models import (
 )
 from sentinel.storage.models import GateDecisionRow, RiskStateRow
 from sentinel.storage.repositories import GateDecisionRepository, RiskStateRepository
+from tests.db_guard import TEST_DB_URL, requires_db
 
 from .conftest import NOW, account, market, portfolio, report
-
-TEST_DB_URL = os.getenv("SENTINEL_TEST_DATABASE_URL")
 
 
 def decisions(config: AppConfig, clock: FrozenClock) -> list[GateDecision]:
@@ -76,14 +73,6 @@ def test_decision_rows_are_json_safe(config: AppConfig, clock: FrozenClock) -> N
 
 
 # ── Postgres round-trip (opt-in) ─────────────────────────────────────────────
-
-
-def requires_db(func: Any) -> Any:
-    func = pytest.mark.allow_socket(func)
-    return pytest.mark.skipif(
-        TEST_DB_URL is None,
-        reason="set SENTINEL_TEST_DATABASE_URL to run DB round-trip tests",
-    )(func)
 
 
 @pytest.fixture

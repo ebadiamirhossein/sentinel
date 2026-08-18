@@ -58,12 +58,12 @@ def plan_for(
 
 def test_distance_pct_is_a_signed_percentage_of_the_reference() -> None:
     """(83.10 - 83.40) / 83.40 = -0.00359712... -> -0.3597%."""
-    assert distance_pct(Decimal("83.40"), Decimal("83.10"), signed=True) == Decimal("-0.3597")
+    assert distance_pct(Decimal("83.40"), Decimal("83.10"), signed=True) == Decimal("-0.36")
 
 
 def test_distance_pct_unsigned_returns_the_magnitude() -> None:
     """The same pair, as a magnitude — what a target distance reports."""
-    assert distance_pct(Decimal("83.40"), Decimal("83.10"), signed=False) == Decimal("0.3597")
+    assert distance_pct(Decimal("83.40"), Decimal("83.10"), signed=False) == Decimal("0.36")
 
 
 def test_distance_pct_of_the_reference_itself_is_zero() -> None:
@@ -74,7 +74,7 @@ def test_distance_pct_quantizes_to_four_places_like_every_other_percentage() -> 
     """Same ``percent()`` as ``stop_distance_pct``: a card must not mix precisions."""
     value = distance_pct(Decimal("82.675"), Decimal("85.20"), signed=False)
     assert value == percent(value)
-    assert value == Decimal("3.0541")
+    assert value == Decimal("3.05")
 
 
 def test_distance_pct_rejects_a_non_positive_reference() -> None:
@@ -102,9 +102,9 @@ def test_rung_distances_are_measured_from_the_last_price(
     plan = plan_for(config, clock, report())
     assert plan.last_price == Decimal("83.40")
     assert [entry.distance_pct for entry in plan.entries] == [
-        Decimal("-0.3597"),
-        Decimal("-0.9592"),
-        Decimal("-1.5588"),
+        Decimal("-0.36"),
+        Decimal("-0.96"),
+        Decimal("-1.56"),
     ]
 
 
@@ -114,9 +114,9 @@ def test_target_distances_are_measured_from_the_weighted_average_entry(
     plan = plan_for(config, clock, report())
     assert plan.avg_entry == Decimal("82.675")
     assert plan.target_distances_pct == (
-        Decimal("3.0541"),
-        Decimal("4.7475"),
-        Decimal("7.5295"),
+        Decimal("3.05"),
+        Decimal("4.75"),
+        Decimal("7.53"),
     )
 
 
@@ -207,7 +207,7 @@ def test_a_single_entry_plan_has_one_rung_distance(config: AppConfig, clock: Fro
     assert len(plan.entries) == 1
     assert plan.entries[0].price == Decimal("83.00")
     #: (83.00 - 83.40) / 83.40 = -0.40 / 83.40 = -0.00479616 -> -0.4796%
-    assert plan.entries[0].distance_pct == Decimal("-0.4796")
+    assert plan.entries[0].distance_pct == Decimal("-0.48")
 
 
 def test_distances_are_recomputed_after_a_collapse_moves_the_average_entry(

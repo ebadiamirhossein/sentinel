@@ -118,6 +118,25 @@ If violated, reduce leverage until satisfied; if leverage would fall below 1, re
 
 **Rounding:** qty down to symbol qty-step; prices to symbol tick-size (fetched from exchange info, cached daily). After rounding, recompute actual risk_eur and display the real number.
 
+> **Correction (2026-08-18, from M6) — human-facing percentages are 2dp.**
+> `stop_distance_pct`, `liq_distance_pct`, `cost_pct_of_risk` and the M6 distance
+> fields were quantized to 4dp. Owner ruling: **2dp, trailing zeros trimmed** — a
+> percentage on a card is read, not typed into an order field, so `+3.0541%` offers
+> four digits nobody can act on and `20.0000%` implies the liquidation estimate was
+> measured rather than derived from `1/leverage`. It now renders `+3.05%`, `20%`,
+> `4.45%`.
+>
+> **Prices, euro amounts and quantities are unchanged.** Those *do* go into order
+> fields, and their precision is the exchange's tick and step grid (above), not a
+> display choice.
+>
+> This changes what is shown and never what is approved: every caller of `percent()`
+> is a display field, and the liquidation-buffer rule, the ATR bounds and both RR
+> checks all run on unrounded fractions. One consequence is asserted rather than
+> assumed — §8.2's `liq_distance_pct >= 2 x stop_distance_pct` invariant now compares
+> two 2dp figures, so it carries a one-quantum tolerance; the underlying inequality
+> is still exact.
+
 ## 4.2 Transaction costs
 
 > **Correction (2026-08-18, from M5.1) — this spec costed nothing, and that biased
@@ -215,7 +234,7 @@ and report "thin RR" for a position the owner simply cannot fund.
 > is now **3**. A number the signal card needs and the plan lacks is a gap in this
 > spec, not a line to drop from the card: reading `TP1: 85.20` at 3am without a
 > percentage means doing mental arithmetic against a moving price. Three additive
-> fields, all `Decimal`, all quantized with the same 4dp `percent()` as
+> fields, all `Decimal`, all quantized with the same 2dp `percent()` as
 > `stop_distance_pct`, so one card never mixes precisions:
 >
 > * `last_price` — the market price the plan was built against. Stored so the rung

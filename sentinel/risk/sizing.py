@@ -61,7 +61,7 @@ def stop_distance_fraction(avg_entry: Decimal, stop: Decimal) -> Decimal:
 
 
 def distance_pct(reference: Decimal, price: Decimal, *, signed: bool) -> Decimal:
-    """``(price - reference) / reference`` as a human percentage, 4dp.
+    """``(price - reference) / reference`` as a human percentage, 2dp.
 
     Added 2026-08-18 (owner directive, from M6). The signal card shows how far a
     target sits from the weighted entry and how far each rung sits from the last
@@ -75,7 +75,8 @@ def distance_pct(reference: Decimal, price: Decimal, *, signed: bool) -> Decimal
     and the sign carries information no renderer could re-derive.
 
     Quantized with the same ``percent()`` as ``stop_distance_pct`` — a card that
-    mixes precisions invites the owner to think one figure is more exact than it is.
+    mixes precisions invites the owner to think one figure is more exact than it
+    is, and four decimals of a percentage is precision nobody can act on.
     """
     if reference <= 0:
         raise ValueError(f"distance_pct needs a positive reference price, got {reference}")

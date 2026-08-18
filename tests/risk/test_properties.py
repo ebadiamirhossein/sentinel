@@ -179,9 +179,26 @@ def test_liquidation_is_always_at_least_twice_the_stop_distance(case: Scenario) 
         return
 
     assert 1 <= plan.suggested_leverage <= CONFIG.risk.max_leverage
-    assert plan.liq_distance_pct >= CONFIG.risk.liq_buffer_multiple * plan.stop_distance_pct
     assert plan.liq_buffer_ok is True
     assert plan.margin_eur <= plan.capital_eur
+
+    # The invariant, asserted on the EXACT quantities the engine reasoned about
+    # rather than on their 2dp display forms: liquidation sits 1/leverage away, and
+    # the stop distance is |E - stop| / E. Both are reconstructible from exact
+    # stored fields, so this is stronger than comparing the rounded percentages.
+    liq_fraction = Decimal(1) / plan.suggested_leverage
+    stop_fraction = abs(plan.avg_entry - plan.stop) / plan.avg_entry
+    assert liq_fraction >= CONFIG.risk.liq_buffer_multiple * stop_fraction
+
+    # The displayed pair must still agree, to within the rounding that produced it.
+    # Percentages are quantized to 2dp (owner ruling 2026-08-18), so each figure can
+    # move half a quantum and the doubled one a full quantum — a displayed near-miss
+    # at the boundary is a rounding artefact, never a buffer the engine let through.
+    quantum = Decimal("0.01")
+    assert (
+        plan.liq_distance_pct
+        >= CONFIG.risk.liq_buffer_multiple * plan.stop_distance_pct - quantum - quantum
+    )
 
 
 @given(scenario())

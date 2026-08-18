@@ -23,6 +23,14 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # The container reaches Postgres by its Compose service name; the host
+      # cannot resolve "postgres" at all. Setting it here rather than in .env is
+      # what lets .env carry the URL that works everywhere *else* — `make run`,
+      # alembic, and every sentinel.tools.* CLI — so the app and the CLI resolve
+      # the same database by default instead of only when someone remembers an
+      # override. `environment:` wins over `env_file:` in Compose.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sentinel}
     depends_on:
       postgres:
         condition: service_healthy

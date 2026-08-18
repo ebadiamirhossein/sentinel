@@ -10,11 +10,9 @@ agrees with a wrong assumption is worse than no fake at all.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -34,17 +32,8 @@ from sentinel.storage.repositories import (
     SignalRepository,
     TelegramMessageRepository,
 )
+from tests.db_guard import TEST_DB_URL, requires_db
 from tests.risk_double import PLAN_NOW, approved_plan
-
-TEST_DB_URL = os.getenv("SENTINEL_TEST_DATABASE_URL")
-
-
-def requires_db(func: Any) -> Any:
-    func = pytest.mark.allow_socket(func)
-    return pytest.mark.skipif(
-        TEST_DB_URL is None,
-        reason="set SENTINEL_TEST_DATABASE_URL to run DB round-trip tests",
-    )(func)
 
 
 async def _clean(session: AsyncSession) -> None:
@@ -89,8 +78,8 @@ async def test_a_signal_round_trips_with_its_whole_plan(
     # Decimals land as strings inside JSONB, as everywhere else in this codebase.
     assert row.plan["risk_eur"] == "74.98"
     assert row.plan["schema_version"] == 3
-    assert row.plan["target_distances_pct"] == ["3.0541", "4.7475", "7.5295"]
-    assert row.plan["entries"][0]["distance_pct"] == "-0.3597"
+    assert row.plan["target_distances_pct"] == ["3.05", "4.75", "7.53"]
+    assert row.plan["entries"][0]["distance_pct"] == "-0.36"
 
 
 @requires_db

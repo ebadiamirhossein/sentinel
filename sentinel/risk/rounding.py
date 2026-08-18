@@ -62,8 +62,32 @@ def money(value: Decimal) -> Decimal:
 
 
 def percent(value: Decimal) -> Decimal:
-    """Quantize a human-facing percentage to 4dp (1.7841%)."""
-    return value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    """Quantize a human-facing percentage to 2dp, trailing zeros trimmed.
+
+    **2dp, not 4 (owner ruling 2026-08-18, from M6).** A percentage on a signal
+    card is read, not typed into an order field: `+3.0541%` offers four digits of
+    precision the owner cannot act on, and 20.0000% reads as though the liquidation
+    estimate were measured rather than `1/leverage`. Prices, euro amounts and
+    quantities are untouched — those *do* go into order fields, and their precision
+    is the exchange's tick and step grid.
+
+    Trailing zeros are stripped so a round number reads as one (`20%`, not
+    `20.00%`), which is why this is done here rather than in the renderer: the card
+    shows plan fields verbatim, so the plan has to hold the value the owner should
+    see. ``normalize()`` alone would turn 20.00 into ``2E+1`` — which is the same
+    number but renders as scientific notation in a card and in JSONB — so an
+    integral result is re-quantized to a zero exponent instead.
+
+    Every caller is a display field (`stop_distance_pct`, `liq_distance_pct`,
+    `cost_pct_of_risk`, `distance_pct`). No gate decision reads a quantized
+    percentage — the liquidation-buffer rule, the ATR bounds and the RR checks all
+    run on unrounded fractions, so this changes what is shown and never what is
+    approved.
+    """
+    quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if quantized == quantized.to_integral_value():
+        return quantized.quantize(Decimal(1))
+    return quantized.normalize()
 
 
 def ratio(value: Decimal) -> Decimal:

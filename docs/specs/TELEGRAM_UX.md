@@ -30,22 +30,22 @@ fable_v1 · Signal #1 · 2026-08-18 15:00 EEST (12:00 UTC)
 
 🎯 Plan (capital €10000 · risk 0.75% = €75.00 · EURUSD 1.1593)
 Entry ladder (limit orders) — last price 83.40:
-  1) 83.10 (-0.3597%) — 40% of risk — 18.30 SOL (€1311.77)
-  2) 82.60 (-0.9592%) — 35% of risk — 21.73 SOL (€1548.26)
-  3) 82.10 (-1.5588%) — 25% of risk — 24.15 SOL (€1710.27)
+  1) 83.10 (-0.36%) — 40% of risk — 18.30 SOL (€1311.77)
+  2) 82.60 (-0.96%) — 35% of risk — 21.73 SOL (€1548.26)
+  3) 82.10 (-1.56%) — 25% of risk — 24.15 SOL (€1710.27)
   Weighted entry 82.675 · avg fill 82.55
 
-🛑 Stop: 81.20 (-1.7841%)
+🛑 Stop: 81.20 (-1.78%)
 ❌ Invalidation: 81.40 — 1h close below 81.40
-🥅 TP1: 85.20 (+3.0541%) — 1.59R net (1.71R gross)
-🥅 TP2: 86.60 (+4.7475%) — 2.50R net (2.66R gross)
-🥅 TP3: 88.90 (+7.5295%) — 3.99R net (4.22R gross)
+🥅 TP1: 85.20 (+3.05%) — 1.59R net (1.71R gross)
+🥅 TP2: 86.60 (+4.75%) — 2.50R net (2.66R gross)
+🥅 TP3: 88.90 (+7.53%) — 3.99R net (4.22R gross)
 
 💶 Notional €4570.30 (5298.3430 USDT) · Margin €914.06 · Leverage 5x (isolated)
-🧾 Costs: round trip €3.34 = 4.4533% of the €75.00 risk budget
+🧾 Costs: round trip €3.34 = 4.45% of the €75.00 risk budget
     fees maker 0.02% in · taker 0.05% out
     funding ~€0.18 est · 2 settlement(s) @ 8h
-✅ Liq. buffer OK (liq ≈ 20.0000% vs stop 1.7841%)
+✅ Liq. buffer OK (liq ≈ 20% vs stop 1.78%)
 ⚖️ Actual risk €74.98 (planned €75.00)
 📋 TP1: close 40%, move stop to breakeven. TP2: close 35%. TP3: close remainder or trail by 1xATR.
 ⏳ Expires if unfilled: 2026-08-19 03:00 EEST (2026-08-19 00:00 UTC)

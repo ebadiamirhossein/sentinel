@@ -10,11 +10,9 @@ so ``make test`` stays hermetic:
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 import pytest
 from sqlalchemy import delete, select
@@ -40,9 +38,9 @@ from sentinel.storage.repositories import (
     snapshot_context,
     snapshot_sources,
 )
+from tests.db_guard import TEST_DB_URL, requires_db
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
-TEST_DB_URL = os.getenv("SENTINEL_TEST_DATABASE_URL")
 
 
 def candle(minute: int) -> Candle:
@@ -157,15 +155,6 @@ def test_context_is_json_serializable() -> None:
 
 
 # ── Postgres round-trip (opt-in) ─────────────────────────────────────────────
-
-
-def requires_db(func: Any) -> Any:
-    """Opt-in: needs a real Postgres, and is allowed to reach localhost for it."""
-    func = pytest.mark.allow_socket(func)
-    return pytest.mark.skipif(
-        TEST_DB_URL is None,
-        reason="set SENTINEL_TEST_DATABASE_URL to run DB round-trip tests",
-    )(func)
 
 
 async def _clean(session: AsyncSession) -> None:

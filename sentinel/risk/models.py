@@ -1,8 +1,9 @@
 """Risk-engine contracts (specs/RISK_ENGINE.md §1, §6, §7).
 
 All money is ``Decimal``. Percentages that a human reads (``stop_distance_pct``,
-``liq_distance_pct``, ``weight_pct``) are stored as **percent** — 1.7841 means
-1.7841%. The internal math uses fractions and says so at each call site.
+``liq_distance_pct``, ``weight_pct``) are stored as **percent** — 1.78 means
+1.78%. The internal math uses fractions and says so at each call site, and the
+stored figure is the 2dp one the owner reads (see ``rounding.percent``).
 """
 
 from __future__ import annotations

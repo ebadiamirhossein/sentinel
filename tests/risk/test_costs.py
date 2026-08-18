@@ -25,6 +25,7 @@ from sentinel.risk.costs import (
 )
 from sentinel.risk.engine import RiskEngine
 from sentinel.risk.models import EntryRung, GateStatus, PlanCosts, RejectionReason
+from sentinel.risk.rounding import percent
 
 from .conftest import NOW, account, market, portfolio, report
 
@@ -370,9 +371,9 @@ def test_the_cost_line_is_a_share_of_the_planned_budget(
 
     assert decision.plan is not None
     plan = decision.plan
-    expected = (plan.costs.round_trip_cost_eur / plan.planned_risk_eur * Decimal("100")).quantize(
-        Decimal("0.0001")
-    )
+    # Recomputed independently, then quantized the way every human-facing
+    # percentage is (2dp, owner ruling 2026-08-18 — see risk/rounding.percent).
+    expected = percent(plan.costs.round_trip_cost_eur / plan.planned_risk_eur * Decimal("100"))
     assert plan.costs.cost_pct_of_risk == expected
 
 

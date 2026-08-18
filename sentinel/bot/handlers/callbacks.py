@@ -54,6 +54,9 @@ async def decision(query: CallbackQuery, callback_data: DecisionCallback, ctx: B
         signal_id=str(callback_data.signal_id),
         decision=chosen.value,
         user_id=query.from_user.id,
+        # A re-press writes nothing. Without this flag the audit trail shows two
+        # "recorded" lines for one decision, which M9 would have to disentangle.
+        changed=changed,
     )
     await query.answer(f"Recorded: {DECISION_LABEL[chosen]}")
 

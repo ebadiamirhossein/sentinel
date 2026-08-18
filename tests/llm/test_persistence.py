@@ -6,7 +6,6 @@ are opt-in via ``SENTINEL_TEST_DATABASE_URL``, matching M1 and M4.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -25,10 +24,9 @@ from sentinel.storage.repositories import (
     analyst_report_row,
     llm_call_row,
 )
+from tests.db_guard import TEST_DB_URL, requires_db
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
-DB_URL = os.getenv("SENTINEL_TEST_DATABASE_URL")
-requires_db = pytest.mark.skipif(DB_URL is None, reason="set SENTINEL_TEST_DATABASE_URL")
 
 
 def a_call(**overrides: object) -> LLMCall:
@@ -125,7 +123,7 @@ def test_request_audit_holds_image_references_not_bytes() -> None:
 
 @pytest.fixture
 async def session() -> AsyncGenerator[AsyncSession]:
-    engine = create_async_engine(DB_URL or "", future=True)
+    engine = create_async_engine(TEST_DB_URL or "", future=True)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as session:
         yield session

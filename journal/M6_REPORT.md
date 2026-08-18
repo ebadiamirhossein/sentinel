@@ -4,7 +4,7 @@
 **Status:** DONE — `make check` green (732 tests hermetic, 752 with the DB suite enabled),
 **100% branch coverage on `sentinel/risk/`** including the new distance code, migration
 `0005_signals_and_telegram` applied and reversed, `TELEGRAM_UX.md` §1 regenerated from real
-engine output, live card delivered to Telegram (§10).
+engine output, live card delivered to Telegram and the button round-trip verified end to end (§10).
 
 ---
 
@@ -262,6 +262,9 @@ Verified on this machine (2026-08-18):
 - The suite makes **no live Telegram calls**: no aiogram `Bot` or HTTP session is constructed
   anywhere in `tests/`, and M1's autouse `no_network` fixture fails any test that tries.
 - `--doc` output is byte-identical to `TELEGRAM_UX.md` §1, asserted by a test.
+- The opt-in suite runs against a scratch `sentinel_test` database and refuses to run
+  against the app's own (§10). `make run`, `alembic` and every CLI tool resolve the same
+  database from `.env` with no override.
 
 ## 10. Live delivery — the card on the phone
 
@@ -347,11 +350,108 @@ Postgres and behaved correctly — `status='FAILED'`, the reason stored, no cras
 narrated it as a success. Correct behaviour reported wrongly is still a defect, and only a live
 run with a real failure surfaced it.
 
-### Still unverified
+### The callback round-trip, verified live
 
-The button **callback** round-trip through Telegram needs the polling app running
-(`make run`, or `docker compose up`), which is M7's deployment step. The buttons render and
-their handlers are covered by `tests/bot/test_callbacks.py` (11 tests: persistence, the
-double-press no-op, mis-tap correction, a failed keyboard edit not losing the decision), but
-nobody has yet pressed one against a live dispatcher. Worth doing as the first act of M7, when
-the orchestrator makes the app long-running anyway.
+Signal **#41** posted, ✅ Taken pressed on the phone, keyboard redrew as `» ✅ Taken «`.
+
+```
+bot.decision_recorded  decision=TAKEN signal_id=7d79d9bf-... user_id=7222549221 changed=True
+bot.decision_recorded  decision=TAKEN signal_id=7d79d9bf-... user_id=7222549221 changed=False
+```
+
+```
+-[ RECORD 1 ]------+------------------------------
+number             | 41
+symbol             | SOLUSDT
+status             | PENDING_ENTRY
+decision           | TAKEN
+decided_at         | 2026-08-18 18:15:10.405901+00
+decided_by_user_id | 7222549221
+```
+
+`decided_by_user_id` is the allowlisted owner, and `status` is still `PENDING_ENTRY` —
+correct, because advancing the state machine is the tracker's job at M7.
+
+**The double press is the more interesting line.** The button was pressed twice, sixteen
+seconds apart, and `decided_at` is still the *first* press: `record_decision` returned
+`changed=False` the second time and wrote nothing. That is `test_pressing_the_same_button
+_twice_changes_nothing` happening in production rather than in a fake.
+
+It also exposed a small defect in the audit trail: `bot.decision_recorded` was logged on both
+presses regardless of whether anything changed, so one decision produced two "recorded" lines
+for M9 to disentangle. The line now carries `changed=`.
+
+Finally, the decision feeds the command that consumes it — `/positions` against the live row:
+
+```
+📈 Positions (marked ✅ Taken)
+
+#41 SOLUSDT LONG · trend_pullback · PENDING_ENTRY
+  entry 82.55 · stop 81.20 · risk €74.98 · 5x
+  targets 85.20 / 86.60 / 88.90
+  expires 2026-08-19 03:00 EEST (2026-08-19 00:00 UTC)
+```
+
+Card → Telegram → callback → allowlist → handler → Postgres → command output, end to end.
+
+### The bug this hunt actually found
+
+The first attempt answered **"That signal is no longer in the database."** The handler was
+right: the row was gone. Not a `DATABASE_URL` mismatch — the app and the CLI were both on
+`localhost:5432/sentinel`. **The opt-in Postgres suite had deleted it.** Its fixtures truncate
+`signals`, `telegram_messages`, `config_changes` and `runtime_settings` at setup *and*
+teardown (M5.1 §5 made cleanup run at both ends), and it was pointed at the development
+database while finalising this milestone. Demonstrated rather than reasoned about:
+
+```
+1 rows before      # canary row inserted
+0 rows after       # after running tests/bot/test_persistence.py
+```
+
+At M9 the same mistake deletes measured trading history — the thing the whole system exists to
+produce. Three fixes:
+
+1. **`tests/db_guard.py`** — one guarded entry point, now shared by all four DB modules
+   (`ingestion`, `llm`, `risk`, `bot`), which previously each carried their own copy of the
+   skip logic. It still skips without `SENTINEL_TEST_DATABASE_URL`, and now **refuses** when
+   that URL resolves to the same database as `DATABASE_URL`, compared after stripping
+   credentials so a differing password cannot fool it. The suite runs against a scratch
+   database: `docker compose exec postgres createdb -U sentinel sentinel_test`.
+2. **`DATABASE_URL` now resolves the same database for the app and the CLI by default.** `.env`
+   had the Compose-internal `@postgres:5432`, which the host cannot resolve at all — so every
+   CLI invocation needed an override and `alembic upgrade` failed outright. `docker-compose.yml`
+   supplies the container's URL through `environment:` (which beats `env_file:`), and `.env`
+   carries the host-facing one. Signal #41 was posted with no override at all. This was not the
+   cause of the missing row, but it was a real defect sitting next to it.
+3. `.env.example` documents both, including the destructive-test warning.
+
+## 11. Percentages at 2dp (owner ruling, 2026-08-18)
+
+`percent()` now quantizes to **2dp with trailing zeros trimmed**: `+3.05%`, `liq ≈ 20%`,
+`4.45% of the €75.00 risk budget`, `stop 81.20 (-1.78%)`. Four decimals of a percentage is
+precision the owner cannot act on, and `20.0000%` implies the liquidation figure was measured
+rather than derived from `1/leverage`.
+
+**Prices, euro amounts and quantities are untouched** — those go into order fields, and their
+precision is the exchange's tick and step grid.
+
+Done in the engine, not the renderer, because the card shows plan fields verbatim: trimming on
+the way out would have put a number on the card that was not on the plan and broken the
+traceability test that exists to catch exactly that. Nothing about what gets *approved*
+changed — every caller of `percent()` is a display field, and the liquidation rule, the ATR
+bounds and both RR checks run on unrounded fractions.
+
+One consequence was worth chasing. §8.2's invariant compared the two *rounded* percentages,
+and at 2dp that sits about one rounding boundary from a false failure (a stop at 1.785 rounds
+up, its doubled value does not). It now asserts the invariant on the **exact** quantities —
+`1/leverage` against `|E − stop| / E`, both reconstructible from stored fields — and allows the
+displayed pair one quantum of slack. Strictly stronger than what it replaced.
+
+`TELEGRAM_UX.md` §1 was regenerated, and `RISK_ENGINE.md` §4 carries the ruling as a dated
+correction.
+
+## 12. Still unverified
+
+Nothing in M6's scope. Two things belong to M7 and are named so they are not mistaken for
+gaps here: the tracker state machine (`signals.status` never leaves `PENDING_ENTRY` at M6) and
+live uPnL in `/positions`.

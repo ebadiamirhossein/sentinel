@@ -90,7 +90,7 @@ def test_long_three_rung_ladder(config: AppConfig, clock: FrozenClock) -> None:
     assert plan.avg_entry == Decimal("82.675")
     assert plan.avg_fill_price == Decimal("82.55")
     assert plan.stop == Decimal("81.20")
-    assert plan.stop_distance_pct == Decimal("1.7841")
+    assert plan.stop_distance_pct == Decimal("1.78")
     assert plan.notional_usdt == Decimal("5298.343")
     assert plan.notional_eur == Decimal("4570.30")
     assert plan.planned_risk_eur == Decimal("75.00")
@@ -107,7 +107,7 @@ def test_long_three_rung_ladder(config: AppConfig, clock: FrozenClock) -> None:
     assert costs.stop_exit_fee_eur == Decimal("2.25")
     assert costs.tp_exit_fees_eur == (Decimal("2.36"), Decimal("2.40"), Decimal("2.46"))
     assert costs.round_trip_cost_eur == Decimal("3.16")
-    assert costs.cost_pct_of_risk == Decimal("4.2133")
+    assert costs.cost_pct_of_risk == Decimal("4.21")
     # No funding rate in the baseline market → estimated, absent, and labelled so.
     assert costs.funding_available is False
     assert costs.funding_eur == Decimal("0.00")
@@ -152,7 +152,7 @@ def test_long_single_entry(config: AppConfig, clock: FrozenClock) -> None:
     assert plan.entries[0].weight_pct == Decimal("100")
     assert plan.entries[0].qty == Decimal("161.01")
     assert plan.avg_entry == Decimal("82.10")
-    assert plan.stop_distance_pct == Decimal("0.6577")
+    assert plan.stop_distance_pct == Decimal("0.66")
     assert plan.notional_eur == Decimal("11402.50")
     assert plan.risk_eur == Decimal("75.00")
     assert plan.suggested_leverage == 10  # clamped, not 12
@@ -162,7 +162,7 @@ def test_long_single_entry(config: AppConfig, clock: FrozenClock) -> None:
     assert plan.costs.entry_fee_eur == Decimal("2.28")
     assert plan.costs.stop_exit_fee_eur == Decimal("5.66")
     assert plan.costs.round_trip_cost_eur == Decimal("7.94")
-    assert plan.costs.cost_pct_of_risk == Decimal("10.5867")
+    assert plan.costs.cost_pct_of_risk == Decimal("10.59")
 
 
 def test_short_three_rung_ladder(config: AppConfig, clock: FrozenClock) -> None:
@@ -210,7 +210,7 @@ def test_short_three_rung_ladder(config: AppConfig, clock: FrozenClock) -> None:
     ]
     assert plan.avg_entry == Decimal("84.025")
     assert plan.avg_fill_price == Decimal("84.11")
-    assert plan.stop_distance_pct == Decimal("2.4695")
+    assert plan.stop_distance_pct == Decimal("2.47")
     assert plan.notional_eur == Decimal("3163.88")
     assert plan.risk_eur == Decimal("74.98")
     assert plan.suggested_leverage == 4
