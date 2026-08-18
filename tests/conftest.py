@@ -8,9 +8,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
-from sentinel.core.config import AppConfig, Secrets, Settings, load_config
+from sentinel.charts.models import ChartImage
+from sentinel.core.config import AppConfig, FeaturesConfig, Secrets, Settings, load_config
+from sentinel.features import compute as compute_features
+from sentinel.features.models import SymbolFeatures
+from sentinel.ingestion.models import MarketSnapshot
+from sentinel.llm.client import AnthropicClient
+from tests.anthropic_double import ClientFactory, Recorder, make_client, scripted_transport
+from tests.market_double import chart_album, snapshot_from_cassettes
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPO_CONFIG = REPO_ROOT / "config.yaml"
@@ -80,3 +88,61 @@ class StubDatabase:
 
     async def dispose(self) -> None:
         self.disposed = True
+
+
+# --------------------------------------------------------------------------- #
+# LLM doubles (M5). Defined here rather than in tests/llm/ because three test
+# packages -- llm, screener, analyst -- all drive the same wire-level double.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def app_config() -> AppConfig:
+    return load_config(REPO_CONFIG)
+
+
+@pytest.fixture
+def recorder() -> Recorder:
+    return Recorder()
+
+
+@pytest.fixture
+def client_factory(app_config: AppConfig, recorder: Recorder) -> ClientFactory:
+    """Build a client that replays ``responses`` and records what was sent."""
+
+    def build(
+        responses: list[dict[str, Any] | httpx.Response],
+        *,
+        max_retries: int | None = None,
+    ) -> AnthropicClient:
+        return make_client(
+            scripted_transport(responses, recorder), app_config, max_retries=max_retries
+        )
+
+    return build
+
+
+# --------------------------------------------------------------------------- #
+# Market-data fixtures. Cassette-backed; shared by the screener and analyst
+# packages (tests/charts has its own, scoped to its rendering needs).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def snapshot() -> MarketSnapshot:
+    return snapshot_from_cassettes()
+
+
+@pytest.fixture
+def features(snapshot: MarketSnapshot) -> SymbolFeatures:
+    return compute_features(snapshot, FeaturesConfig())
+
+
+@pytest.fixture
+def snapshot_with_features(snapshot: MarketSnapshot, features: SymbolFeatures) -> MarketSnapshot:
+    return snapshot.model_copy(update={"features": features.model_dump(mode="json")})
+
+
+@pytest.fixture
+def charts() -> list[ChartImage]:
+    return chart_album()

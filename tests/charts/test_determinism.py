@@ -13,7 +13,7 @@ from sentinel.charts.models import ChartSpec
 from sentinel.charts.renderer import render
 from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import OHLCVSeries
-from tests.charts.conftest import series_from_cassette
+from tests.market_double import series_from_cassette
 
 
 def test_same_ohlcv_yields_identical_bytes(

@@ -11,8 +11,7 @@ requires-python = ">=3.12,<3.13"
 authors = [{ name = "Sentinel owner" }]
 
 # Heavier libraries from ARCHITECTURE.md §2 are added in the milestone that needs
-# them, per CLAUDE.md's >1MB approval rule. Still pending: pandas-ta, mplfinance
-# (M2/M3), anthropic (M5), aiogram (M6).
+# them, per CLAUDE.md's >1MB approval rule. Still pending: aiogram (M6).
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
@@ -35,6 +34,10 @@ dependencies = [
   # regenerate the golden hashes in tests/charts/ when you do.
   "mplfinance==0.12.10b0",
   "matplotlib==3.11.1",
+  # M5 — LLM pipeline (owner-approved 2026-08-18). The Messages API client for
+  # both tiers: screener (claude-sonnet-4-6) and analyst (claude-fable-5).
+  # Read-only inference; no exchange credentials pass through it, ever.
+  "anthropic>=0.122",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +61,12 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["sentinel"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# Prompt text is data, not code: it must ship in the wheel so `load_prompt`
+# resolves inside the container as well as in a source checkout (CLAUDE.md
+# §Prompts — prompt text lives ONLY in these files).
+"sentinel/analyst/prompts" = "sentinel/analyst/prompts"
 
 [tool.ruff]
 line-length = 100

@@ -56,8 +56,12 @@ sentinel/
 │       └── crypto_binance.py   (forex_oanda.py = v2, same interface)
 ├── features/         # deterministic indicators, regimes, S/R detection
 ├── charts/           # mplfinance rendering → PNG bytes + stored params
+├── llm/              # shared Anthropic client: retries, timeouts, cost logging,
+│                     # untrusted-input containment (M5 — sits below both LLM
+│                     # stages so neither has to import the other)
 ├── screener/         # cheap-LLM pass; strict JSON verdict per symbol
 ├── analyst/          # Fable 5 deep analysis; prompt assembly; schema validation
+│   └── providers/    # AnalystProvider implementations (specs/ENSEMBLE.md §2)
 ├── risk/             # sizing, leverage, ladder builder, portfolio limits, pause rails
 ├── bot/              # aiogram handlers, signal cards, commands, callbacks
 ├── tracker/          # price-watch loop, fill/TP/SL/invalidation detection, R accounting
@@ -95,7 +99,8 @@ sentinel/
 
 - Analyst input = snapshot JSON + chart PNGs + account *limits* only (never balances-as-analysis-input beyond what's needed for context; sizing happens after).
 - Analyst output schema-validated; numeric coherence re-checked deterministically: stop on correct side, targets ordered, entry zone sane vs. last price (≤ configurable % away), RR to TP1 ≥ 1.5 or reject.
-- Prompts live in versioned files (`analyst/prompts/vN.md`); every stored report records the prompt version → enables A/B stats per prompt version. **This is the improvement loop the reference build lacks.**
+- Prompts live in versioned files (`analyst/prompts/<provider>_vN.md`, per specs/ENSEMBLE.md §2); every stored report records the prompt version → enables A/B stats per prompt version. **This is the improvement loop the reference build lacks.**
+- The **wire schema is part of the prompt surface**: structured outputs strips length and range bounds, so every capped field states its cap in its `description`. A test fails if the two drift (M5 — found by a live call that overran all three caps and cost a retry).
 
 ## 5. Deployment
 

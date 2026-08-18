@@ -257,13 +257,64 @@ class ManagementConfig(_Strict):
     entry_ttl_hours_swing: int = 36
 
 
+class ModelPricing(_Strict):
+    """USD per 1M tokens, per model.
+
+    Published rates are in no spec, so they live in config where they can be
+    corrected without a code change. **Token counts are the ground truth**; the
+    money figure derived from them is an estimate, which is why every column and
+    field carrying it is named ``cost_usd_estimate``.
+    """
+
+    input_per_mtok: Dec
+    output_per_mtok: Dec
+    cache_read_per_mtok: Dec = Decimal("0")
+    cache_write_per_mtok: Dec = Decimal("0")
+
+
 class LLMConfig(_Strict):
-    """ARCHITECTURE.md §2. Prompt *text* lives only in analyst/prompts/vN.md."""
+    """ARCHITECTURE.md §2. Prompt *text* lives only in analyst/prompts/ files.
+
+    Two independent retry budgets, deliberately not merged — CLAUDE.md requires
+    the first, specs/PROMPTS.md §2 the second:
+
+    * ``max_transport_retries`` — 429/5xx/connection failures, handled by the SDK.
+    * ``max_json_retries`` — schema-invalid *content*: retried once with the
+      validation errors fed back, then discarded. Never guessed (ARCHITECTURE §6).
+    """
 
     screener_model: str = "claude-sonnet-4-6"
     analyst_model: str = "claude-fable-5"
     analyst_effort: Literal["low", "medium", "high"] = "high"
     max_json_retries: int = 1
+
+    #: Transport-level only. Content failures use ``max_json_retries``.
+    max_transport_retries: int = 2
+    screener_timeout_seconds: float = 60.0
+    #: specs/ENSEMBLE.md §3 budgets 90s per provider. The analyst thinks before it
+    #: answers, so this is a whole-turn budget, not a connect timeout.
+    analyst_timeout_seconds: float = 90.0
+    screener_max_tokens: int = 4096
+    analyst_max_tokens: int = 16000
+    #: 0 = one call for the whole watchlist (specs/PROMPTS.md §1 is a batch pass).
+    screener_batch_size: int = 0
+    #: specs/PROMPTS.md §3 — last N verdicts per symbol in the history block.
+    history_verdicts: int = 3
+
+    pricing: dict[str, ModelPricing] = {
+        "claude-sonnet-4-6": ModelPricing(
+            input_per_mtok=Decimal("3"),
+            output_per_mtok=Decimal("15"),
+            cache_read_per_mtok=Decimal("0.3"),
+            cache_write_per_mtok=Decimal("3.75"),
+        ),
+        "claude-fable-5": ModelPricing(
+            input_per_mtok=Decimal("10"),
+            output_per_mtok=Decimal("50"),
+            cache_read_per_mtok=Decimal("1"),
+            cache_write_per_mtok=Decimal("12.5"),
+        ),
+    }
 
 
 class TelegramConfig(_Strict):

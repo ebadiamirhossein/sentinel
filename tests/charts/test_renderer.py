@@ -18,13 +18,8 @@ from sentinel.charts.models import ChartSpec
 from sentinel.charts.renderer import _format_price, render, render_album
 from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import DataQuality, MarketSnapshot, OHLCVSeries
-from tests.charts.conftest import (
-    count_colour,
-    dominant_colour,
-    image_size,
-    series_from_cassette,
-    snapshot_from_cassettes,
-)
+from tests.charts.conftest import count_colour, dominant_colour, image_size
+from tests.market_double import series_from_cassette, snapshot_from_cassettes
 
 HEADER_BAND_PX = 100  # below this, pixels belong to the watermark/EMA key
 

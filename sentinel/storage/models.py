@@ -170,3 +170,105 @@ class IngestionFailureRow(Base):
     __table_args__ = (
         UniqueConstraint("cycle_id", "symbol", "source", name="uq_ingestion_failures_cycle"),
     )
+
+
+class LLMCallRow(Base):
+    """Every LLM request/response, successful or not (PRD F10, G5; CLAUDE.md).
+
+    Failures are rows too. M9 asks "how often does the analyst return invalid
+    JSON, and does that correlate with a prompt version?" — a table holding only
+    successes cannot answer it, and the JSON-validity target in PRD §6 is
+    literally a ratio over this table.
+
+    ``request`` holds text blocks verbatim and images as ``{sha256, params}``
+    references: a chart re-renders byte-identically from stored OHLCV (M3), so
+    reconstruction holds without ~400KB of PNG per analyst call.
+    """
+
+    __tablename__ = "llm_calls"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    #: Null for the screener — it is one batch call across the whole watchlist.
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt: Mapped[int] = mapped_column(nullable=False, default=1)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    stop_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    refusal_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    tokens_in: Mapped[int] = mapped_column(nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(nullable=False, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(nullable=False, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(nullable=False, default=0)
+    #: Derived from token counts and config pricing. An estimate, by name.
+    cost_usd_estimate: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), nullable=False, default=Decimal("0")
+    )
+    duration_ms: Mapped[int] = mapped_column(nullable=False, default=0)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    request: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    response: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_llm_calls_started_at", "started_at"),
+        Index("ix_llm_calls_symbol_started_at", "symbol", "started_at"),
+        # M9 groups by (prompt_version, status) to compute JSON validity per
+        # prompt version, and by (model, started_at) for the M8 spend guard.
+        Index("ix_llm_calls_prompt_version_status", "prompt_version", "status"),
+        Index("ix_llm_calls_cycle_id", "cycle_id"),
+    )
+
+
+class AnalystReportRow(Base):
+    """One validated analyst report (ARCHITECTURE.md §3 contract 3).
+
+    ``role`` exists from day one even though M5 only ever writes ``'primary'``:
+    specs/ENSEMBLE.md §3 stores the GPT second opinion here with ``role='shadow'``
+    at M10, and a column added now costs nothing while a migration then would
+    have to rewrite live rows.
+
+    Feeds specs/PROMPTS.md §3's history block: `recent_for_symbol` is the query.
+    """
+
+    __tablename__ = "analyst_reports"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    snapshot_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    llm_call_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: "primary" in M5; "shadow" for the M10 second opinion.
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="primary")
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    #: Broken out of the JSONB so /stats can group without a JSON path.
+    candidate_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    setup_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    confidence: Mapped[int] = mapped_column(nullable=False, default=0)
+    thesis: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+
+    report: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("ix_analyst_reports_symbol_created_at", "symbol", "created_at"),
+        Index("ix_analyst_reports_prompt_version", "prompt_version"),
+        Index("ix_analyst_reports_setup_type", "setup_type"),
+        Index("ix_analyst_reports_cycle_id", "cycle_id"),
+    )

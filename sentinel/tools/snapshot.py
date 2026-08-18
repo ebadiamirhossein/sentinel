@@ -15,18 +15,11 @@ import asyncio
 from decimal import Decimal
 from uuid import uuid4
 
-import httpx
-
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
-from sentinel.features import compute as compute_features
-from sentinel.features.engine import attach as attach_features
+from sentinel.core.wiring import assemble_with_features, snapshot_assembler
 from sentinel.features.models import LevelKind, SymbolFeatures
-from sentinel.ingestion.adapters.crypto_binance import BinanceCryptoAdapter
-from sentinel.ingestion.assembler import SnapshotAssembler
-from sentinel.ingestion.clients import FxClient, MacroClient, NewsClient, SentimentClient
-from sentinel.ingestion.http import HttpFetcher
-from sentinel.ingestion.models import MarketSnapshot
+from sentinel.ingestion.models import FxRate, MarketSnapshot
 from sentinel.storage.db import Database
 from sentinel.storage.repositories import (
     FxRateRepository,
@@ -145,58 +138,23 @@ async def run(symbols: list[str], *, as_json: bool, save: bool, settings: Settin
     cycle_id = uuid4()
     database = Database(settings.secrets.database_url) if save else None
 
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        fetcher = HttpFetcher(
-            client,
-            timeout_seconds=settings.config.ingestion.request_timeout_seconds,
-            max_retries=settings.config.ingestion.max_retries,
-            backoff_seconds=settings.config.ingestion.retry_backoff_seconds,
+    async def last_known_good_fx() -> FxRate | None:
+        if database is None:
+            return None
+        async with database.session() as session:
+            return await FxRateRepository(session).get()
+
+    async with snapshot_assembler(settings, last_known_good_fx=last_known_good_fx) as assembler:
+        snapshots, feature_map = await assemble_with_features(
+            assembler, symbols, settings.config.features, cycle_id=cycle_id
         )
 
-        async def last_known_good_fx() -> object | None:
-            if database is None:
-                return None
-            async with database.session() as session:
-                return await FxRateRepository(session).get()
-
-        adapter = BinanceCryptoAdapter(settings.config.ingestion)
-        assembler = SnapshotAssembler(
-            adapter,
-            settings.config,
-            news=NewsClient(
-                fetcher,
-                settings.config.ingestion,
-                api_key=(
-                    settings.secrets.cryptopanic_api_key.get_secret_value()
-                    if settings.secrets.cryptopanic_api_key
-                    else None
-                ),
-            ),
-            sentiment=SentimentClient(fetcher, settings.config.ingestion),
-            macro=MacroClient(fetcher, settings.config.ingestion),
-            fx=FxClient(
-                fetcher,
-                settings.config.ingestion,
-                last_known_good=last_known_good_fx,  # type: ignore[arg-type]
-            ),
-        )
-
-        try:
-            raw_snapshots = await assembler.assemble_many(symbols, cycle_id=cycle_id)
-        finally:
-            await adapter.close()
-
-        # M2: deterministic features are computed here and travel with the snapshot.
-        snapshots = []
-        for snapshot in raw_snapshots:
-            features = compute_features(snapshot, settings.config.features)
-            snapshots.append(attach_features(snapshot, features))
-
+        for snapshot in snapshots:
             if as_json:
-                print(snapshots[-1].model_dump_json(indent=2))
+                print(snapshot.model_dump_json(indent=2))
             else:
                 print(_summary(snapshot))
-                print(_features_summary(features))
+                print(_features_summary(feature_map[snapshot.symbol]))
             print()
 
         if save and database is not None:

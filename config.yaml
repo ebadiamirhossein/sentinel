@@ -158,8 +158,33 @@ management:
 llm:
   screener_model: claude-sonnet-4-6
   analyst_model: claude-fable-5
-  analyst_effort: high
-  max_json_retries: 1             # retry once, then discard + log
+  analyst_effort: high            # output_config.effort; thinking is always on for fable-5
+  max_json_retries: 1             # schema-invalid CONTENT: retry once, then discard + log
+
+  # Transport failures (429/5xx/connection) are a separate budget from the
+  # content retry above — CLAUDE.md mandates the first, PROMPTS §2 the second.
+  max_transport_retries: 2
+  screener_timeout_seconds: 60
+  analyst_timeout_seconds: 90     # specs/ENSEMBLE.md §3 per-provider budget
+  screener_max_tokens: 4096
+  analyst_max_tokens: 16000
+  screener_batch_size: 0          # 0 = one call for the whole watchlist
+  history_verdicts: 3             # specs/PROMPTS.md §3 — last N verdicts per symbol
+
+  # USD per 1M tokens. In no spec, so it lives here: a price change is a config
+  # edit, not a code change. Token counts are the ground truth; money is an
+  # estimate (hence cost_usd_estimate everywhere it is stored).
+  pricing:
+    claude-sonnet-4-6:
+      input_per_mtok: 3
+      output_per_mtok: 15
+      cache_read_per_mtok: 0.3
+      cache_write_per_mtok: 3.75
+    claude-fable-5:
+      input_per_mtok: 10
+      output_per_mtok: 50
+      cache_read_per_mtok: 1
+      cache_write_per_mtok: 12.5
 
 # specs/TELEGRAM_UX.md — rendering/display only. Allowlist lives in .env.
 telegram:

@@ -6,6 +6,7 @@ Serialization is split out into pure functions (`snapshot_context`,
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -14,13 +15,18 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sentinel.analyst.history import PastVerdict
+from sentinel.analyst.models import AnalystReport, CandidateStatus, SetupType
 from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
+from sentinel.llm.models import LLMCall
 from sentinel.risk.models import GateDecision, PauseReason, PauseState
 from sentinel.storage.models import (
+    AnalystReportRow,
     FxRateRow,
     GateDecisionRow,
     IngestionFailureRow,
     InstrumentMetaRow,
+    LLMCallRow,
     MarketSnapshotRow,
     OhlcvCandleRow,
     RiskStateRow,
@@ -315,3 +321,144 @@ class IngestionFailureRepository:
             occurred_at=occurred_at,
         )
         await self._session.execute(statement.on_conflict_do_nothing())
+
+
+def llm_call_row(call: LLMCall) -> dict[str, Any]:
+    """Pure serialization for an LLM call — testable without a database."""
+    return {
+        "id": call.call_id,
+        "cycle_id": call.cycle_id,
+        "symbol": call.symbol,
+        "kind": call.kind.value,
+        "provider": call.provider,
+        "model": call.model,
+        "prompt_version": call.prompt_version,
+        "attempt": call.attempt,
+        "status": call.status.value,
+        "stop_reason": call.stop_reason,
+        "refusal_category": call.refusal_category,
+        "error": None if call.error is None else call.error[:1024],
+        "tokens_in": call.usage.input_tokens,
+        "tokens_out": call.usage.output_tokens,
+        "cache_read_tokens": call.usage.cache_read_tokens,
+        "cache_write_tokens": call.usage.cache_write_tokens,
+        "cost_usd_estimate": call.cost_usd_estimate,
+        "duration_ms": call.duration_ms,
+        "request_id": call.request_id,
+        "started_at": call.started_at,
+        "request": call.request,
+        "response": call.response,
+    }
+
+
+def analyst_report_row(
+    report: AnalystReport,
+    *,
+    created_at: datetime,
+    provider: str,
+    role: str = "primary",
+    cycle_id: UUID | None = None,
+    snapshot_id: UUID | None = None,
+    llm_call_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Pure serialization for a validated report."""
+    return {
+        "cycle_id": cycle_id,
+        "snapshot_id": snapshot_id,
+        "llm_call_id": llm_call_id,
+        "symbol": report.symbol,
+        "created_at": created_at,
+        "role": role,
+        "provider": provider,
+        "model": report.model or "",
+        "prompt_version": report.prompt_version or "",
+        "candidate_status": report.candidate_status.value,
+        "setup_type": report.setup_type.value,
+        "direction": report.direction.value,
+        "confidence": report.confidence,
+        "thesis": report.thesis[:1024],
+        "report": report.model_dump(mode="json"),
+    }
+
+
+class LLMCallRepository:
+    """Audit trail for every LLM call — successes, refusals and failures alike."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(self, call: LLMCall) -> UUID:
+        self._session.add(LLMCallRow(**llm_call_row(call)))
+        return call.call_id
+
+    async def record_many(self, calls: Sequence[LLMCall]) -> int:
+        for call in calls:
+            await self.record(call)
+        return len(calls)
+
+    async def recent(self, limit: int = 50) -> list[LLMCallRow]:
+        result = await self._session.execute(
+            select(LLMCallRow).order_by(LLMCallRow.started_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+class AnalystReportRepository:
+    """Stored reports, and the query behind specs/PROMPTS.md §3's history block."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def save(
+        self,
+        report: AnalystReport,
+        *,
+        created_at: datetime,
+        provider: str,
+        role: str = "primary",
+        cycle_id: UUID | None = None,
+        snapshot_id: UUID | None = None,
+        llm_call_id: UUID | None = None,
+    ) -> UUID:
+        row = AnalystReportRow(
+            **analyst_report_row(
+                report,
+                created_at=created_at,
+                provider=provider,
+                role=role,
+                cycle_id=cycle_id,
+                snapshot_id=snapshot_id,
+                llm_call_id=llm_call_id,
+            )
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row.id
+
+    async def recent_for_symbol(
+        self, symbol: str, limit: int = 3, *, role: str = "primary"
+    ) -> list[PastVerdict]:
+        """Last N verdicts for one symbol, newest first (specs/PROMPTS.md §3).
+
+        ``outcome`` stays ``None``: nothing measures outcomes until M7's tracker,
+        and the history block says so in words rather than implying a result.
+        """
+        result = await self._session.execute(
+            select(AnalystReportRow)
+            .where(AnalystReportRow.symbol == symbol, AnalystReportRow.role == role)
+            .order_by(AnalystReportRow.created_at.desc())
+            .limit(limit)
+        )
+        return [
+            PastVerdict(
+                created_at=row.created_at,
+                candidate_status=CandidateStatus(row.candidate_status),
+                setup_type=SetupType(row.setup_type),
+                direction=row.direction,
+                confidence=row.confidence,
+                thesis=row.thesis,
+                prompt_version=row.prompt_version,
+                outcome=None,
+            )
+            for row in result.scalars().all()
+        ]

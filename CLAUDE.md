@@ -24,7 +24,8 @@ You are building **Sentinel**, a 24/7 crypto market-research and signal system. 
 - Log every LLM call: model, prompt_version, tokens in/out, cost estimate, duration.
 
 ## Prompts
-- Prompt text lives ONLY in `sentinel/analyst/prompts/vN.md` files. Never inline prompt edits. New behavior = new version file + entry in `journal/PROMPT_LOG.md`.
+- Prompt text lives ONLY in `sentinel/analyst/prompts/` files. Never inline prompt edits. New behavior = new version file + entry in `journal/PROMPT_LOG.md`.
+- Filenames are **per provider**: `fable_v1.md`, `screener_v1.md`, later `sol_v1.md` (specs/ENSEMBLE.md §2, which supersedes the earlier bare `vN.md` here — settled with the owner 2026-08-18 so M10's second provider needs no rename and no rewrite of stored `prompt_version` values).
 
 ## When unsure
 Ask. A clarifying question costs a minute; a wrong assumption in a trading system costs money. Specifically ask before: changing any risk default, adding a dependency > 1MB, altering a Pydantic contract, or touching the DB schema outside a migration.
