@@ -220,3 +220,9 @@ telegram:
   owner_timezone: Europe/Vilnius  # display only — everything internal stays UTC
   digest_hour_local: 8
   quiet_mode_on_no_setup: true
+  # §1: "Charts (1h + 4h PNGs) attached as an album above the card." The analyst
+  # still receives all three timeframes (charts.timeframes above) — this is the
+  # owner's view, and the 15m timing detail is already priced into the entry zone.
+  card_chart_timeframes: [1h, 4h]
+  poll_timeout_seconds: 30
+  parse_mode: HTML

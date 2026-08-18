@@ -181,6 +181,13 @@ class EntryRung(Frozen):
     qty: Decimal
     notional_usdt: Decimal
     notional_eur: Decimal
+    #: How far this rung sits from ``TradePlan.last_price``, **signed**: negative
+    #: is below the current price. Added 2026-08-18 (owner directive, from M6) so
+    #: the card can say "-0.3597%" without computing it. The sign is stored rather
+    #: than inferred from ``direction`` because §2 rule 2 bounds both zone edges
+    #: within 3% of price without forcing the zone to one side of it — a ladder
+    #: can straddle the last price, and then the two ends have opposite signs.
+    distance_pct: Decimal = Decimal("0")
 
 
 class PlanCosts(Frozen):
@@ -233,9 +240,16 @@ class TradePlan(Frozen):
     **schema_version 2** (2026-08-18) adds ``costs`` and ``rr_targets_net``.
     ``rr_targets`` keeps both its name and its meaning — reward-to-risk *gross* of
     costs — so plans stored by M4/M5 stay readable exactly as written.
+
+    **schema_version 3** (2026-08-18, owner directive from M6) adds ``last_price``,
+    ``target_distances_pct`` and ``EntryRung.distance_pct``. The card needs to say
+    how far a target is from the entry and how far each rung is from the current
+    price; a number the card needs and the plan lacks is a gap in the engine, not
+    a line to drop from the card. Additive only — ``gate_decisions.plan`` is JSONB,
+    so plans stored under 1 and 2 stay readable and no backfill is required.
     """
 
-    schema_version: int = 2
+    schema_version: int = 3
     plan_id: UUID = Field(default_factory=uuid4)
     created_at: datetime
 
@@ -259,9 +273,20 @@ class TradePlan(Frozen):
     #: The same targets net of fees and estimated funding (§4.2). ``min_rr_tp1``
     #: gates on ``rr_targets_net[0]``, not on ``rr_targets[0]``.
     rr_targets_net: tuple[Decimal, ...]
+    #: Each target's distance from ``avg_entry`` as an **unsigned** percentage,
+    #: parallel to ``targets``. Unsigned because a short's reward is a falling
+    #: price and a minus sign there reads as a loss; the card supplies the "+".
+    #: Measured from ``avg_entry``, the same basis as ``stop_distance_pct`` and
+    #: every RR figure, so all three reconcile by hand on the card.
+    target_distances_pct: tuple[Decimal, ...] = ()
     costs: PlanCosts
 
     stop_distance_pct: Decimal
+    #: The market price the plan was built against — the reference every
+    #: ``EntryRung.distance_pct`` is measured from. Stored so those percentages
+    #: stay re-derivable by hand (PRD G5: a figure whose reference was discarded
+    #: is not auditable).
+    last_price: Decimal = Decimal("0")
     planned_risk_eur: Decimal
     #: Risk after quantities are floored to the exchange step — the real number.
     risk_eur: Decimal

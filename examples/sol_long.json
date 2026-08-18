@@ -29,7 +29,7 @@
     "invalidation_price": "81.40",
     "invalidation_text": "1h close below 81.40",
     "confidence": 78,
-    "prompt_version": "v1",
+    "prompt_version": "fable_v1",
     "model": "claude-fable-5"
   },
   "market": {

@@ -211,6 +211,33 @@ and report "thin RR" for a position the owner simply cannot fund.
 > should see what a trade costs before taking it, not after. The bot renders; it
 > never computes (`gate_decisions` stores the whole block as JSONB, no migration).
 
+> **Addition (2026-08-18, from M6) — the distances the card shows.** `schema_version`
+> is now **3**. A number the signal card needs and the plan lacks is a gap in this
+> spec, not a line to drop from the card: reading `TP1: 85.20` at 3am without a
+> percentage means doing mental arithmetic against a moving price. Three additive
+> fields, all `Decimal`, all quantized with the same 4dp `percent()` as
+> `stop_distance_pct`, so one card never mixes precisions:
+>
+> * `last_price` — the market price the plan was built against. Stored so the rung
+>   percentages stay re-derivable by hand; a figure whose reference price was
+>   discarded is not auditable (PRD G5).
+> * `target_distances_pct[]` — parallel to `targets`, each
+>   `|TP_i − avg_entry| / avg_entry`. Measured from §3's weighted average entry, the
+>   same basis as `stop_distance_pct` and every RR figure, so all three reconcile by
+>   hand on one card. **Unsigned**: a short's reward is a falling price, and a minus
+>   sign in front of it reads as a loss — the card supplies the `+`.
+> * `entries[].distance_pct` — `(price_i − last_price) / last_price`. **Signed**,
+>   because §2 rule 2 bounds both zone edges within `max_entry_distance_pct` of the
+>   last price without forcing the zone to one side of it: a ladder can straddle
+>   price, and a renderer inferring the sign from `direction` would then print the
+>   wrong one. `stop_distance_pct` is unchanged and stays unsigned.
+>
+> All three are computed on the **final** ladder, after any min-notional collapse —
+> a collapse moves `avg_entry`, and the plan that ships must show the distances of
+> the ladder it ships (the same rule §3's collapse ruling applies to rules 3–5).
+> Additive only: `gate_decisions.plan` is JSONB, so plans stored under schema 1 and
+> 2 stay readable and nothing is backfilled.
+
 ## 7. Portfolio rails (checked before every signal AND on every tracker tick)
 
 - Daily realized loss ≥ limit → `PAUSED_LOSS_LIMIT` for 24h; Telegram notice; `/resume` requires explicit confirmation.
@@ -224,6 +251,13 @@ and report "thin RR" for a position the owner simply cannot fund.
 3. Rejection matrix: one test per coherence rule.
 4. Ladder-collapse tests around min-notional boundaries.
 5. Partial-fill R accounting: rung1-only + stop = −0.40R (±rounding); rung1+2 + TP1 math correct.
+7. **Distances (added 2026-08-18, from M6):** hand-calculated goldens for the rung
+   and target percentages on the long baseline and its short mirror; the
+   single-entry case; a ladder straddling the last price, proving the rung sign is
+   stored rather than derived from `direction`; and recomputation after a collapse
+   moves `avg_entry`. Property tests: every stored percentage re-derives from the
+   `last_price`/`avg_entry` on the same plan, and target distances are positive and
+   ordered with the targets.
 6. **Costs (added 2026-08-18, from M5.1):** hand-calculated fee arithmetic per golden
    case; settlement counting across the expiry window (none / one / many, stale and
    absent `next_funding_time`); the funding sign in both directions; the

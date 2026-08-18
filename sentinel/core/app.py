@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
 
 from sentinel import __version__
+from sentinel.bot.app import BotRunner, build_runner
 from sentinel.core.clock import utc_now
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
@@ -55,6 +56,9 @@ class AppState:
     last_heartbeat_at: datetime | None = None
     #: Set by the cycle orchestrator once it exists (M7). None means "never ran".
     last_cycle_at: datetime | None = None
+    #: The Telegram bot (M6). None when no token is configured — the app still
+    #: serves /health and the scheduler still runs; only the UI is absent.
+    bot: BotRunner | None = None
 
 
 def _age_seconds(moment: datetime | None, *, now: datetime) -> float | None:
@@ -95,6 +99,19 @@ def create_app(
             next_run_time=utc_now(),
         )
         scheduler.start()
+
+        # specs/TELEGRAM_UX.md §1's UI, in this process and this event loop. A
+        # missing token is a degraded start, not a crash: /health, the scheduler
+        # and (from M7) the tracker are all still useful without a chat attached,
+        # and refusing to boot would turn a misconfigured .env into an outage.
+        if resolved.secrets.telegram_bot_token is None:
+            log.warning("bot.disabled", reason="TELEGRAM_BOT_TOKEN is not set")
+        elif isinstance(db, Database):
+            state.bot = build_runner(resolved, db)
+            await state.bot.start()
+        else:  # pragma: no cover — only an injected test double lands here
+            log.warning("bot.disabled", reason="no real database in this process")
+
         log.info(
             "app.started",
             version=__version__,
@@ -106,6 +123,8 @@ def create_app(
         try:
             yield
         finally:
+            if state.bot is not None:
+                await state.bot.stop()
             scheduler.shutdown(wait=False)
             await db.dispose()
             log.info("app.stopped")

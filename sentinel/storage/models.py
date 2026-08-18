@@ -20,6 +20,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Identity,
     Index,
     Numeric,
     String,
@@ -272,3 +273,135 @@ class AnalystReportRow(Base):
         Index("ix_analyst_reports_setup_type", "setup_type"),
         Index("ix_analyst_reports_cycle_id", "cycle_id"),
     )
+
+
+class SignalRow(Base):
+    """A gate-approved plan that was (or is about to be) delivered to Telegram.
+
+    ARCHITECTURE.md §3 contract 5 — "TradePlan + Telegram message ids + user
+    decision + tracked outcome" — landing at M6 because idempotent posting and a
+    persisted button state both need a row to hang off. The tracker's half arrives
+    at M7 and only adds columns: ``status`` already carries the initial state of
+    the state machine in ARCHITECTURE §3, so M7 extends the vocabulary rather than
+    reshaping the table.
+
+    ``plan_id`` is unique and is the idempotency key. It comes from the
+    ``TradePlan`` itself, so re-publishing the same decision — after a restart, a
+    retry, or a duplicated cycle — collides here instead of posting a second card.
+
+    The whole plan is kept as JSONB rather than exploded into columns: §7 requires
+    a signal's sizing to stay immutable after ``/capital`` changes, and the surest
+    way to promise that is to store exactly what was shown to the owner.
+    """
+
+    __tablename__ = "signals"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    #: The ``TradePlan.plan_id`` — unique, and the reason a restart cannot double-post.
+    plan_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+
+    #: Human-facing sequence, so a card can say "Signal #142" without exposing a
+    #: UUID. A Postgres IDENTITY rather than a count(*): the number must be stable
+    #: once printed on a card, and a count changes if a row is ever deleted.
+    number: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
+
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    setup_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    prompt_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    confidence: Mapped[int] = mapped_column(nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    #: ARCHITECTURE §3's tracker state machine. M6 only ever writes PENDING_ENTRY.
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING_ENTRY")
+    #: TAKEN | WATCHING | SKIPPED — null until the owner presses a button.
+    decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    #: The full TradePlan, Decimals as strings (``model_dump(mode="json")``).
+    plan: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: ChartRenderParams per attached chart. M3 §7: charts have no life independent
+    #: of the signal, so they live here rather than in a table of their own.
+    chart_params: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+
+    __table_args__ = (
+        UniqueConstraint("plan_id", name="uq_signals_plan_id"),
+        Index("ix_signals_symbol_created_at", "symbol", "created_at"),
+        Index("ix_signals_status", "status"),
+        Index("ix_signals_decision", "decision"),
+    )
+
+
+class TelegramMessageRow(Base):
+    """One row per message the bot owns — the whole of specs/TELEGRAM_UX.md §6.
+
+    "All messages idempotent (message ids stored; restarts never double-post)" is
+    this unique constraint. A row is claimed as ``PENDING`` *before* the send and
+    updated to ``SENT`` after, so a crash in between leaves evidence rather than a
+    silent gap: the claim is never re-sent (a duplicate card is worse than a
+    missing one the owner can re-request), and ``/status`` reports the stuck row.
+    """
+
+    __tablename__ = "telegram_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    signal_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: charts | card | update — one of each per signal per chat.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: Null while the claim is PENDING; set when Telegram confirms the send.
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("signal_id", "kind", "chat_id", name="uq_telegram_messages_signal_id"),
+        Index("ix_telegram_messages_status", "status"),
+    )
+
+
+class RuntimeSettingRow(Base):
+    """Current value of one runtime-overridable setting (ARCHITECTURE.md §2).
+
+    "Precedence: DB > yaml > defaults" — this table is the DB layer, and until M6
+    it did not exist, so ``load_config``'s ``db_overrides`` parameter had no source.
+    ``capital_eur`` in particular lives nowhere else: config.yaml deliberately omits
+    it and the gate rejects with ``NO_CAPITAL`` until ``/capital`` writes it here.
+
+    Values are JSONB so a Decimal, an int and a watchlist all fit one table without
+    a column per setting. Decimals are stored as strings, as everywhere else.
+    """
+
+    __tablename__ = "runtime_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_by_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class ConfigChangeRow(Base):
+    """Append-only audit of every runtime-config change (PRD F10).
+
+    F10 requires Postgres to hold "config changes", not merely current values: when
+    M9 asks why a signal was sized against €8,000, the answer has to be a row with a
+    timestamp, not an inference. Kept separate from ``runtime_settings`` so the
+    current value stays a cheap primary-key lookup.
+    """
+
+    __tablename__ = "config_changes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    old_value: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    new_value: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("ix_config_changes_key_changed_at", "key", "changed_at"),)

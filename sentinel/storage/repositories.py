@@ -11,17 +11,25 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel.analyst.history import PastVerdict
 from sentinel.analyst.models import AnalystReport, CandidateStatus, SetupType
+from sentinel.bot.models import (
+    MessageKind,
+    MessageStatus,
+    PostedMessage,
+    SignalDecision,
+    SignalRecord,
+)
 from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
 from sentinel.llm.models import LLMCall
-from sentinel.risk.models import GateDecision, PauseReason, PauseState
+from sentinel.risk.models import GateDecision, PauseReason, PauseState, TradePlan
 from sentinel.storage.models import (
     AnalystReportRow,
+    ConfigChangeRow,
     FxRateRow,
     GateDecisionRow,
     IngestionFailureRow,
@@ -30,6 +38,9 @@ from sentinel.storage.models import (
     MarketSnapshotRow,
     OhlcvCandleRow,
     RiskStateRow,
+    RuntimeSettingRow,
+    SignalRow,
+    TelegramMessageRow,
 )
 
 #: Snapshot parts stored as JSONB on the snapshot row.
@@ -141,6 +152,21 @@ class SnapshotRepository:
         )
         await self._session.execute(statement)
         return len(rows)
+
+    async def latest_per_symbol(self, limit: int = 20) -> list[MarketSnapshotRow]:
+        """The newest snapshot for each symbol — ``/status``'s data-quality block.
+
+        DISTINCT ON is Postgres-specific and deliberate: the alternative is one
+        query per watchlist symbol, and a chat command should not fan out to ten
+        round trips to answer one question.
+        """
+        statement = (
+            select(MarketSnapshotRow)
+            .distinct(MarketSnapshotRow.symbol)
+            .order_by(MarketSnapshotRow.symbol, MarketSnapshotRow.captured_at.desc())
+            .limit(limit)
+        )
+        return list((await self._session.execute(statement)).scalars())
 
     async def latest_for_symbol(self, symbol: str) -> MarketSnapshotRow | None:
         result = await self._session.execute(
@@ -462,3 +488,239 @@ class AnalystReportRepository:
             )
             for row in result.scalars().all()
         ]
+
+
+def signal_row(record: SignalRecord, plan: TradePlan) -> dict[str, Any]:
+    """Pure: a ``SignalRecord`` as column values. Testable without a database."""
+    return {
+        "id": record.signal_id,
+        "plan_id": plan.plan_id,
+        "cycle_id": record.cycle_id,
+        "symbol": plan.symbol,
+        "direction": plan.direction.value,
+        "setup_type": plan.setup_type.value,
+        "prompt_version": plan.report.prompt_version,
+        "confidence": plan.confidence,
+        "created_at": plan.created_at,
+        "expires_at": plan.expires_at,
+        "status": record.status.value,
+        "decision": None if record.decision is None else record.decision.value,
+        "decided_at": record.decided_at,
+        "decided_by_user_id": record.decided_by_user_id,
+        "plan": plan.model_dump(mode="json"),
+        "chart_params": list(record.chart_params),
+    }
+
+
+class SignalRepository:
+    """Signals as delivered to Telegram (ARCHITECTURE.md §3 contract 5)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def claim(self, record: SignalRecord) -> SignalRecord | None:
+        """Insert the signal, or return ``None`` if this plan already has one.
+
+        ``plan_id`` is unique, so a re-published plan — after a restart, a retry,
+        or a duplicated cycle — collides here rather than reaching Telegram twice
+        (specs/TELEGRAM_UX.md §6). ``None`` means "someone already owns this".
+        """
+        statement = (
+            insert(SignalRow)
+            .values(signal_row(record, record.plan))
+            .on_conflict_do_nothing(index_elements=["plan_id"])
+            .returning(SignalRow.id, SignalRow.number)
+        )
+        row = (await self._session.execute(statement)).first()
+        if row is None:
+            return None
+        return record.model_copy(update={"signal_id": row.id, "number": row.number})
+
+    async def get_by_plan_id(self, plan_id: UUID) -> SignalRow | None:
+        statement = select(SignalRow).where(SignalRow.plan_id == plan_id)
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def get(self, signal_id: UUID) -> SignalRow | None:
+        return await self._session.get(SignalRow, signal_id)
+
+    async def record_decision(
+        self,
+        signal_id: UUID,
+        decision: SignalDecision,
+        *,
+        at: datetime,
+        user_id: int,
+    ) -> tuple[SignalRow, bool] | None:
+        """Persist a button press, and say whether it changed anything.
+
+        Idempotent: pressing the same button twice writes nothing and reports
+        ``changed=False``, so the caller can skip an edit Telegram would reject
+        anyway. ``None`` means there is no such signal.
+        """
+        row = await self._session.get(SignalRow, signal_id)
+        if row is None:
+            return None
+        if row.decision == decision.value:
+            return row, False
+        row.decision = decision.value
+        row.decided_at = at
+        row.decided_by_user_id = user_id
+        return row, True
+
+    async def with_decision(self, decision: SignalDecision, *, limit: int = 50) -> list[SignalRow]:
+        """Signals the owner marked a given way, newest first (``/positions``)."""
+        statement = (
+            select(SignalRow)
+            .where(SignalRow.decision == decision.value)
+            .order_by(SignalRow.created_at.desc())
+            .limit(limit)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def recent(self, limit: int = 20) -> list[SignalRow]:
+        statement = select(SignalRow).order_by(SignalRow.created_at.desc()).limit(limit)
+        return list((await self._session.execute(statement)).scalars())
+
+    async def undecided_count(self) -> int:
+        statement = select(func.count()).select_from(SignalRow).where(SignalRow.decision.is_(None))
+        return int((await self._session.execute(statement)).scalar_one())
+
+
+class TelegramMessageRepository:
+    """specs/TELEGRAM_UX.md §6 — message ids stored, restarts never double-post.
+
+    Claim-then-send, in two steps, because there is no third option that is safe:
+    claiming after the send loses the id if the process dies in between, and not
+    claiming at all means every restart re-posts.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def claim(
+        self, signal_id: UUID, kind: MessageKind, chat_id: int, *, at: datetime
+    ) -> bool:
+        """Reserve ``(signal, kind, chat)``. ``False`` means someone already has it.
+
+        A ``False`` here is the entire anti-double-post guarantee: it is returned
+        both for a message already sent and for one claimed but never confirmed
+        (a crash between send and commit). The stuck claim is deliberately *not*
+        retried — a duplicated signal card is worse than a missing one the owner
+        can ask for again — and ``/status`` reports it so it is never silent.
+        """
+        statement = (
+            insert(TelegramMessageRow)
+            .values(
+                signal_id=signal_id,
+                kind=kind.value,
+                chat_id=chat_id,
+                status=MessageStatus.PENDING.value,
+                claimed_at=at,
+            )
+            .on_conflict_do_nothing(index_elements=["signal_id", "kind", "chat_id"])
+            .returning(TelegramMessageRow.id)
+        )
+        return (await self._session.execute(statement)).first() is not None
+
+    async def confirm(
+        self,
+        signal_id: UUID,
+        kind: MessageKind,
+        chat_id: int,
+        *,
+        message_id: int,
+        at: datetime,
+    ) -> None:
+        row = await self._row(signal_id, kind, chat_id)
+        if row is None:  # pragma: no cover — confirm always follows a successful claim
+            return
+        row.message_id = message_id
+        row.status = MessageStatus.SENT.value
+        row.sent_at = at
+        row.error = None
+
+    async def fail(self, signal_id: UUID, kind: MessageKind, chat_id: int, *, error: str) -> None:
+        row = await self._row(signal_id, kind, chat_id)
+        if row is None:  # pragma: no cover — fail always follows a successful claim
+            return
+        row.status = MessageStatus.FAILED.value
+        row.error = error[:512]
+
+    async def get(self, signal_id: UUID, kind: MessageKind, chat_id: int) -> PostedMessage | None:
+        row = await self._row(signal_id, kind, chat_id)
+        if row is None:
+            return None
+        return PostedMessage(
+            signal_id=row.signal_id,
+            kind=MessageKind(row.kind),
+            chat_id=row.chat_id,
+            message_id=row.message_id,
+            status=MessageStatus(row.status),
+            error=row.error,
+        )
+
+    async def stuck(self) -> list[TelegramMessageRow]:
+        """Claims that never reached ``SENT`` — surfaced by ``/status``."""
+        statement = select(TelegramMessageRow).where(
+            TelegramMessageRow.status != MessageStatus.SENT.value
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+    async def _row(
+        self, signal_id: UUID, kind: MessageKind, chat_id: int
+    ) -> TelegramMessageRow | None:
+        statement = select(TelegramMessageRow).where(
+            TelegramMessageRow.signal_id == signal_id,
+            TelegramMessageRow.kind == kind.value,
+            TelegramMessageRow.chat_id == chat_id,
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+
+class RuntimeSettingsRepository:
+    """ARCHITECTURE.md §2's "DB" layer: DB > yaml > defaults.
+
+    Every write also appends to ``config_changes`` — PRD F10 stores config changes,
+    not just current values, so "why was this signal sized against €8,000" has a
+    timestamped answer instead of an inference.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def all(self) -> dict[str, Any]:
+        rows = (await self._session.execute(select(RuntimeSettingRow))).scalars()
+        return {row.key: row.value for row in rows}
+
+    async def get(self, key: str) -> Any | None:
+        row = await self._session.get(RuntimeSettingRow, key)
+        return None if row is None else row.value
+
+    async def set(self, key: str, value: Any, *, at: datetime, user_id: int | None) -> None:
+        previous = await self.get(key)
+        statement = insert(RuntimeSettingRow).values(
+            key=key, value=value, updated_at=at, updated_by_user_id=user_id
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["key"],
+                set_={
+                    "value": statement.excluded.value,
+                    "updated_at": statement.excluded.updated_at,
+                    "updated_by_user_id": statement.excluded.updated_by_user_id,
+                },
+            )
+        )
+        self._session.add(
+            ConfigChangeRow(
+                key=key,
+                old_value=previous,
+                new_value=value,
+                actor_user_id=user_id,
+                changed_at=at,
+            )
+        )
+
+    async def changes(self, limit: int = 50) -> list[ConfigChangeRow]:
+        statement = select(ConfigChangeRow).order_by(ConfigChangeRow.changed_at.desc()).limit(limit)
+        return list((await self._session.execute(statement)).scalars())

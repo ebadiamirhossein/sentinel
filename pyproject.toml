@@ -11,7 +11,7 @@ requires-python = ">=3.12,<3.13"
 authors = [{ name = "Sentinel owner" }]
 
 # Heavier libraries from ARCHITECTURE.md §2 are added in the milestone that needs
-# them, per CLAUDE.md's >1MB approval rule. Still pending: aiogram (M6).
+# them, per CLAUDE.md's >1MB approval rule. All of §2's list has now landed.
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.32",
@@ -38,6 +38,11 @@ dependencies = [
   # both tiers: screener (claude-sonnet-4-6) and analyst (claude-fable-5).
   # Read-only inference; no exchange credentials pass through it, ever.
   "anthropic>=0.122",
+  # M6 — Telegram bot (ARCHITECTURE.md §2 names it; pyproject reserved it for this
+  # milestone). Read-only towards the exchange by construction: the bot talks to
+  # api.telegram.org and to our own Postgres, and there is no execution path for it
+  # to reach (PRD §3). Brings no new transport — aiohttp is already here via ccxt.
+  "aiogram>=3.15,<4",
 ]
 
 [project.optional-dependencies]

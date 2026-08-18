@@ -36,6 +36,7 @@ from sentinel.risk.models import (
     TradePlan,
 )
 from sentinel.risk.rounding import money, round_to_tick
+from sentinel.risk.sizing import distance_pct
 
 from .conftest import NOW, instrument, portfolio
 
@@ -214,6 +215,32 @@ def test_structural_invariants_of_every_approved_plan(case: Scenario) -> None:
     assert all(entry.qty > 0 for entry in plan.entries)
     assert plan.rr_targets[0] >= CONFIG.risk.min_rr_tp1
     assert plan.expires_at > plan.created_at
+
+
+@given(scenario())
+def test_distances_are_stored_and_re_derivable(case: Scenario) -> None:
+    """§6 addition (2026-08-18, from M6) — the card's percentages are engine output.
+
+    Every figure must both exist and reconcile with the prices stored beside it,
+    because the whole point of putting them on the plan is that the bot never
+    recomputes them and no one can check them later if their reference is gone.
+    """
+    _, market, _ = case
+    plan = approved(case)
+    if plan is None:
+        return
+
+    assert plan.last_price == market.last_price
+    assert len(plan.target_distances_pct) == len(plan.targets)
+    # Targets are beyond the entry in the trade's direction (§2 rule 1), so their
+    # distance is a strictly positive magnitude and grows with the target.
+    assert all(shown > 0 for shown in plan.target_distances_pct)
+    assert list(plan.target_distances_pct) == sorted(plan.target_distances_pct)
+
+    for target, shown in zip(plan.targets, plan.target_distances_pct, strict=True):
+        assert shown == distance_pct(plan.avg_entry, target, signed=False)
+    for entry in plan.entries:
+        assert entry.distance_pct == distance_pct(plan.last_price, entry.price, signed=True)
 
 
 @given(scenario())

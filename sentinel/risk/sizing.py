@@ -29,7 +29,7 @@ from sentinel.analyst.models import Direction, EntryZone
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.ladder import collapse
 from sentinel.risk.models import EntryRung, Frozen, LadderRung
-from sentinel.risk.rounding import floor_to_step, money, round_to_tick
+from sentinel.risk.rounding import floor_to_step, money, percent, round_to_tick
 
 HUNDRED = Decimal("100")
 
@@ -60,6 +60,29 @@ def stop_distance_fraction(avg_entry: Decimal, stop: Decimal) -> Decimal:
     return abs(avg_entry - stop) / avg_entry
 
 
+def distance_pct(reference: Decimal, price: Decimal, *, signed: bool) -> Decimal:
+    """``(price - reference) / reference`` as a human percentage, 4dp.
+
+    Added 2026-08-18 (owner directive, from M6). The signal card shows how far a
+    target sits from the weighted entry and how far each rung sits from the last
+    price; the bot renders and never computes, so the engine owns both numbers.
+
+    ``signed=False`` returns the magnitude, which is what a **target** distance
+    reports: a short's reward is a falling price, and a minus sign in front of it
+    reads as a loss. ``signed=True`` keeps the direction, which is what a **rung**
+    distance needs: §2 rule 2 bounds both zone edges within 3% of the last price
+    but does not force the zone to one side of it, so a ladder can straddle price
+    and the sign carries information no renderer could re-derive.
+
+    Quantized with the same ``percent()`` as ``stop_distance_pct`` — a card that
+    mixes precisions invites the owner to think one figure is more exact than it is.
+    """
+    if reference <= 0:
+        raise ValueError(f"distance_pct needs a positive reference price, got {reference}")
+    delta = price - reference
+    return percent((delta if signed else abs(delta)) * HUNDRED / reference)
+
+
 def planned_qty(
     *, weight_pct: Decimal, price: Decimal, stop: Decimal, risk_usdt: Decimal
 ) -> Decimal:
@@ -84,6 +107,7 @@ def size_ladder(
     instrument: InstrumentMeta,
     min_rung_notional_usdt: Decimal,
     eurusd_rate: Decimal,
+    last_price: Decimal,
 ) -> SizedLadder | None:
     """Size every rung, collapsing the ladder while any rung is below the minimum.
 
@@ -94,7 +118,7 @@ def size_ladder(
     current = rungs
     while True:
         sized = _size_once(
-            current, stop, risk_usdt, instrument, min_rung_notional_usdt, eurusd_rate
+            current, stop, risk_usdt, instrument, min_rung_notional_usdt, eurusd_rate, last_price
         )
         if sized is not None:
             return sized
@@ -111,6 +135,7 @@ def _size_once(
     instrument: InstrumentMeta,
     min_rung_notional_usdt: Decimal,
     eurusd_rate: Decimal,
+    last_price: Decimal,
 ) -> SizedLadder | None:
     from sentinel.risk.ladder import effective_min_notional
 
@@ -137,6 +162,7 @@ def _size_once(
                 qty=qty,
                 notional_usdt=notional,
                 notional_eur=money(notional / eurusd_rate),
+                distance_pct=distance_pct(last_price, rung.price, signed=True),
             )
         )
 

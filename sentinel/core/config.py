@@ -346,9 +346,21 @@ class LLMConfig(_Strict):
 
 
 class TelegramConfig(_Strict):
+    """specs/TELEGRAM_UX.md. Display and delivery only — the allowlist is a secret."""
+
     owner_timezone: str = "UTC"
     digest_hour_local: int = 8
     quiet_mode_on_no_setup: bool = True
+    #: §1 attaches the 1h and 4h charts to a card. The analyst still sees all three
+    #: (15m included) — this is what the *owner* gets, and the 15m timing detail is
+    #: already encoded in the entry zone.
+    card_chart_timeframes: tuple[str, ...] = ("1h", "4h")
+    #: Long polling. 30s is aiogram's own default and keeps the bot responsive
+    #: without a webhook, which would need an inbound port on the VPS.
+    poll_timeout_seconds: int = 30
+    #: Cards use a handful of <b>/<i> tags; analyst prose is escaped before it is
+    #: interpolated (see sentinel/bot/formatting.py).
+    parse_mode: str = "HTML"
 
 
 class AppConfig(_Strict):

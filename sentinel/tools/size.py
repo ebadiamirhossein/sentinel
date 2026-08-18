@@ -69,22 +69,28 @@ def _render_plan(plan: TradePlan) -> str:
         f"capital       €{plan.capital_eur}  ·  risk {plan.risk_per_trade_pct}% "
         f"= €{plan.planned_risk_eur}  ·  EURUSD {plan.eurusd_rate}",
         "",
-        "entry ladder (limit orders)",
+        f"entry ladder (limit orders)  ·  last price {plan.last_price}",
     ]
     for index, entry in enumerate(plan.entries, start=1):
         lines.append(
-            f"  {index}) {entry.price} — {entry.weight_pct}% of risk — "
+            f"  {index}) {entry.price} ({entry.distance_pct}%) — {entry.weight_pct}% of risk — "
             f"{entry.qty} {_base(plan.symbol)} (€{entry.notional_eur})"
         )
     lines += [
         f"  weighted entry {plan.avg_entry}  ·  avg fill {plan.avg_fill_price}",
         "",
         f"stop          {plan.stop}  (-{plan.stop_distance_pct}%)",
-        "targets       "
-        + "  ".join(
-            f"TP{i}: {t} ({net}R net · {gross}R gross)"
-            for i, (t, gross, net) in enumerate(
-                zip(plan.targets, plan.rr_targets, plan.rr_targets_net, strict=True), 1
+        *(
+            f"{'targets' if i == 1 else '':<14}TP{i}: {t} (+{away}%)  {net}R net · {gross}R gross"
+            for i, (t, gross, net, away) in enumerate(
+                zip(
+                    plan.targets,
+                    plan.rr_targets,
+                    plan.rr_targets_net,
+                    plan.target_distances_pct,
+                    strict=True,
+                ),
+                1,
             )
         ),
         *_cost_lines(plan),

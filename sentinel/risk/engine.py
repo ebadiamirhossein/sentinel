@@ -57,6 +57,7 @@ from sentinel.risk.rails import check_portfolio_rails
 from sentinel.risk.rounding import money, percent, ratio, round_stop_to_tick
 from sentinel.risk.sizing import (
     SizedLadder,
+    distance_pct,
     risk_budget_eur,
     size_ladder,
     solve_leverage,
@@ -192,6 +193,7 @@ class RiskEngine:
             instrument=checked.instrument,
             min_rung_notional_usdt=risk.min_rung_notional_usdt,
             eurusd_rate=account.eurusd_rate,
+            last_price=market.last_price,
         )
         if sized is None:
             return self._decide(report, now, GateStatus.REJECTED, RejectionReason.MIN_NOTIONAL)
@@ -289,6 +291,7 @@ class RiskEngine:
             costs=costs,
             expiry=expiry,
             account=account,
+            market=market,
             now=now,
         )
         log.info(
@@ -343,6 +346,7 @@ class RiskEngine:
         costs: PlanCosts,
         expiry: datetime,
         account: AccountState,
+        market: MarketContext,
         now: datetime,
     ) -> TradePlan:
         return TradePlan(
@@ -360,8 +364,15 @@ class RiskEngine:
             targets=report.targets,
             rr_targets=rr_gross,
             rr_targets_net=rr_net,
+            # Measured on the FINAL ladder: a min-notional collapse moves
+            # ``avg_entry``, and the plan that ships must show the distances of
+            # the ladder it ships (M4 decision 2, applied to the display figures).
+            target_distances_pct=tuple(
+                distance_pct(sized.avg_entry, target, signed=False) for target in report.targets
+            ),
             costs=costs,
             stop_distance_pct=percent(stop_fraction * HUNDRED),
+            last_price=market.last_price,
             planned_risk_eur=planned_risk_eur,
             risk_eur=risk_eur,
             notional_usdt=sized.notional_usdt,

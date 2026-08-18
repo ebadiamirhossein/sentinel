@@ -41,11 +41,16 @@ def test_an_approved_plan_carries_every_field_the_card_needs(
     # so both have to be on the plan — the bot renders, it never computes.
     assert len(plan.rr_targets_net) == len(plan.targets)
     assert len(plan.costs.tp_exit_fees_eur) == len(plan.targets)
+    # §6 (addition 2026-08-18, from M6): so are the distance percentages — see
+    # tests/risk/test_distances.py for the hand-calculated values.
+    assert len(plan.target_distances_pct) == len(plan.targets)
+    assert plan.last_price == Decimal("83.40")
+    assert all(e.distance_pct != 0 for e in plan.entries)
     assert plan.costs.entry_fee_eur > 0
     assert plan.costs.stop_exit_fee_eur > 0
     assert plan.costs.round_trip_cost_eur > 0
     assert plan.costs.cost_pct_of_risk > 0
-    assert plan.schema_version == 2
+    assert plan.schema_version == 3
     assert plan.risk_eur > 0
     assert plan.margin_eur > 0
     assert plan.notional_eur > 0

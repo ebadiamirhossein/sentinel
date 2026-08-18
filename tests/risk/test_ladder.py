@@ -167,6 +167,7 @@ def test_collapse_triggers_exactly_at_the_minimum(risk_usdt: str, expected_rungs
         instrument=SOLUSDT,
         min_rung_notional_usdt=Decimal("20"),
         eurusd_rate=Decimal("1"),
+        last_price=Decimal("83.40"),
     )
     assert sized is not None
     assert len(sized.rungs) == expected_rungs

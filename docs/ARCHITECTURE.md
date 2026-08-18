@@ -76,7 +76,7 @@ sentinel/
 1. **`MarketSnapshot`** — per symbol per cycle: OHLCV frames (15m/1h/4h/1D tail), computed features, funding, OI, L/S ratio, orderbook imbalance, F&G, BTC dominance, news items (headline, source, age_minutes), `data_quality: OK|DEGRADED`, timestamps.
 2. **`ScreenerVerdict`** — `{symbol, interesting: bool, direction_hint, reason(≤200 chars)}`.
 3. **`AnalystReport`** — thesis, setup_type (enum: trend_pullback, range_reversal, breakout_retest, momentum_continuation, mean_reversion), direction, entry_zone {low, high}, stop, targets[1..3], invalidation_text + invalidation_price, timeframe_label (intraday|swing), confidence 0–100, evidence[] (each item cites a snapshot field), candidate_status. **No sizes. No leverage. No EUR.**
-4. **`TradePlan`** — everything above **plus** risk-gate output: entries[] {price, weight, qty, eur_notional}, margin_eur, suggested_leverage, risk_eur, rr_to_tp1/tp2, and `gate_status: APPROVED_FOR_HUMAN | REJECTED(reason)`.
+4. **`TradePlan`** — everything above **plus** risk-gate output: entries[] {price, weight, qty, eur_notional, distance_pct}, margin_eur, suggested_leverage, risk_eur, rr_to_tp1/tp2 (gross **and** net of costs), the `costs` block, `last_price` with per-target `distance_pct`, and `gate_status: APPROVED_FOR_HUMAN | REJECTED(reason) | DOWNGRADED_WATCHLIST`. Every number the signal card shows is on it: the bot renders, it never computes.
 5. **`SignalRecord`** — TradePlan + Telegram message ids + user decision + tracked outcome.
 
 ### Cycle orchestrator (core loop)
