@@ -112,11 +112,13 @@ class TimeframeSpec(_Strict):
 class MarketDataConfig(_Strict):
     exchange: str = "binance_usdm"
     orderbook_depth: int = 50
+    #: One more than DATA_SOURCES §2.1's tail lengths: the last candle is still
+    #: in progress and gets dropped, so this yields 200/200/200/100 *closed* bars.
     timeframes: tuple[TimeframeSpec, ...] = (
-        TimeframeSpec(timeframe="15m", candles=200),
-        TimeframeSpec(timeframe="1h", candles=200),
-        TimeframeSpec(timeframe="4h", candles=200),
-        TimeframeSpec(timeframe="1d", candles=100),
+        TimeframeSpec(timeframe="15m", candles=201),
+        TimeframeSpec(timeframe="1h", candles=201),
+        TimeframeSpec(timeframe="4h", candles=201),
+        TimeframeSpec(timeframe="1d", candles=101),
     )
 
 
@@ -164,6 +166,33 @@ class IngestionConfig(_Strict):
     fear_greed_url: str = "https://api.alternative.me/fng/"
     coingecko_global_url: str = "https://api.coingecko.com/api/v3/global"
     frankfurter_url: str = "https://api.frankfurter.dev/v1/latest"
+
+
+class FeaturesConfig(_Strict):
+    """M2 feature engine. Regime and S/R parameters are owner-approved (2026-08-18);
+    the specs do not define them, so they live here rather than in code."""
+
+    rsi_period: int = 14
+    atr_period: int = 14
+    ema_periods: tuple[int, ...] = (20, 50, 200)
+    relative_volume_lookback: int = 20
+    #: Indicators run on closed candles only; the in-progress bar is dropped.
+    drop_partial_candle: bool = True
+
+    primary_timeframe: str = "1h"
+    context_timeframe: str = "4h"
+
+    # Volatility regime: ATR% ranked against its own trailing distribution.
+    volatility_lookback: int = 100
+    volatility_min_observations: int = 20
+    volatility_low_percentile: float = 33.0
+    volatility_high_percentile: float = 67.0
+
+    # Support/resistance: confirmed fractal pivots clustered into ATR-wide bands.
+    pivot_window: int = 3
+    level_cluster_atr_multiple: float = 0.5
+    max_levels_per_side: int = 3
+    level_timeframes: tuple[str, ...] = ("1h", "4h")
 
 
 class RiskConfig(_Strict):
@@ -238,6 +267,7 @@ class AppConfig(_Strict):
     market_data: MarketDataConfig = MarketDataConfig()
     ingestion: IngestionConfig = IngestionConfig()
     data_quality: DataQualityConfig = DataQualityConfig()
+    features: FeaturesConfig = FeaturesConfig()
     risk: RiskConfig = RiskConfig()
     ladder: LadderConfig = LadderConfig()
     management: ManagementConfig = ManagementConfig()

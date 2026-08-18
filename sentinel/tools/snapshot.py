@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from decimal import Decimal
 from uuid import uuid4
 
 import httpx
 
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
+from sentinel.features import compute as compute_features
+from sentinel.features.engine import attach as attach_features
+from sentinel.features.models import LevelKind, SymbolFeatures
 from sentinel.ingestion.adapters.crypto_binance import BinanceCryptoAdapter
 from sentinel.ingestion.assembler import SnapshotAssembler
 from sentinel.ingestion.clients import FxClient, MacroClient, NewsClient, SentimentClient
@@ -85,6 +89,58 @@ def _summary(snapshot: MarketSnapshot) -> str:
     return "\n".join(lines)
 
 
+def _features_summary(features: SymbolFeatures) -> str:
+    lines = ["", "features"]
+    for timeframe in sorted(features.timeframes, key=_timeframe_order):
+        tf = features.timeframes[timeframe]
+        lines.append(
+            f"  {tf.timeframe:<4} close={tf.last_close} "
+            f"ema20={_fmt(tf.ema20)} ema50={_fmt(tf.ema50)} ema200={_fmt(tf.ema200)}"
+        )
+        lines.append(
+            f"       rsi14={_fmt(tf.rsi14, 2)} atr14={_fmt(tf.atr14, 4)} "
+            f"atr%={_fmt(tf.atr_pct, 3)} rel_vol={_fmt(tf.relative_volume, 2)} "
+            f"stack={tf.ema_stack or 'n/a'}"
+        )
+        lines.append(
+            f"       regime={tf.trend_regime.value} ({tf.regime_basis.value.lower()}) "
+            f"vol={tf.volatility_regime.value} bars={tf.candles_used}"
+            + ("  [partial candle dropped]" if tf.partial_candle_dropped else "")
+        )
+
+    lines.append(f"  htf   regime_4h={features.htf_regime.value} aligned={features.regime_aligned}")
+    lines.append(
+        f"  chg   1h={_fmt(features.pct_change_1h, 2)}% 4h={_fmt(features.pct_change_4h, 2)}% "
+        f"24h={_fmt(features.pct_change_24h, 2)}%"
+    )
+
+    if features.levels:
+        lines.append("  levels (price · touches · strength · distance)")
+        for level in sorted(features.levels, key=lambda lv: -lv.price):
+            marker = "R" if level.kind is LevelKind.RESISTANCE else "S"
+            lines.append(
+                f"    {marker} {level.timeframe:<3} {level.price:>12} · "
+                f"{level.touches}x · {level.strength:.2f} · {level.distance_pct:+.2f}%"
+            )
+    else:
+        lines.append("  levels  none detected")
+
+    return "\n".join(lines)
+
+
+def _timeframe_order(timeframe: str) -> int:
+    order = {"15m": 0, "1h": 1, "4h": 2, "1d": 3}
+    return order.get(timeframe, 99)
+
+
+def _fmt(value: Decimal | None, places: int | None = None) -> str:
+    if value is None:
+        return "n/a"
+    if places is None:
+        return str(value)
+    return f"{value:.{places}f}"
+
+
 async def run(symbols: list[str], *, as_json: bool, save: bool, settings: Settings) -> int:
     cycle_id = uuid4()
     database = Database(settings.secrets.database_url) if save else None
@@ -126,12 +182,21 @@ async def run(symbols: list[str], *, as_json: bool, save: bool, settings: Settin
         )
 
         try:
-            snapshots = await assembler.assemble_many(symbols, cycle_id=cycle_id)
+            raw_snapshots = await assembler.assemble_many(symbols, cycle_id=cycle_id)
         finally:
             await adapter.close()
 
-        for snapshot in snapshots:
-            print(snapshot.model_dump_json(indent=2) if as_json else _summary(snapshot))
+        # M2: deterministic features are computed here and travel with the snapshot.
+        snapshots = []
+        for snapshot in raw_snapshots:
+            features = compute_features(snapshot, settings.config.features)
+            snapshots.append(attach_features(snapshot, features))
+
+            if as_json:
+                print(snapshots[-1].model_dump_json(indent=2))
+            else:
+                print(_summary(snapshot))
+                print(_features_summary(features))
             print()
 
         if save and database is not None:

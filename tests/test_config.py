@@ -43,8 +43,13 @@ def test_money_values_are_decimal_not_float(repo_config: AppConfig) -> None:
 def test_watchlist_and_timeframes_match_specs(repo_config: AppConfig) -> None:
     assert repo_config.watchlist[:3] == ("BTCUSDT", "ETHUSDT", "SOLUSDT")
     assert len(repo_config.watchlist) == 10
+    # DATA_SOURCES §2.1 specifies 200/200/200/100 as the tail lengths the
+    # indicators consume. We request one extra bar per timeframe because the last
+    # candle is still in progress and the feature engine drops it, so these are
+    # the spec's lengths in *closed* candles.
     tails = {spec.timeframe: spec.candles for spec in repo_config.market_data.timeframes}
-    assert tails == {"15m": 200, "1h": 200, "4h": 200, "1d": 100}
+    assert tails == {"15m": 201, "1h": 201, "4h": 201, "1d": 101}
+    assert {tf: n - 1 for tf, n in tails.items()} == {"15m": 200, "1h": 200, "4h": 200, "1d": 100}
 
 
 def test_defaults_apply_when_yaml_omits_keys(tmp_path: Path) -> None:

@@ -40,6 +40,10 @@ dev = [
   "ruff>=0.8",
   "types-PyYAML>=6.0",
   "pandas-stubs>=2.2",
+  # M2: third-party oracle for the indicator tests only (owner-approved
+  # 2026-08-18). Not a runtime dependency — see journal/M2_REPORT.md §4 for why
+  # the indicators are implemented directly instead.
+  "pandas-ta>=0.4.71b0",
 ]
 
 [tool.hatch.build.targets.wheel]

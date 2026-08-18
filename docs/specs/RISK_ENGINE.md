@@ -67,7 +67,9 @@ liq_distance_pct ≥ 2.0 × stop_dist_pct
 
 If violated, reduce leverage until satisfied; if leverage would fall below 1, reject. This guarantees the stop always triggers far before liquidation — the position can never be liquidated on a planned stop-out.
 
-**Min notional rule:** each rung's notional ≥ exchange minimum (Binance ≈ 5 USDT, use 20 USDT floor for practicality). If a rung falls below, collapse to fewer rungs (3→2→1) preserving total notional.
+**Min notional rule:** each rung's notional ≥ `max(exchange_minimum, 20 USDT)`. If a rung falls below, collapse to fewer rungs (3→2→1) preserving total notional.
+
+> **Correction (2026-08-18, from M1):** the earlier "Binance ≈ 5 USDT" was wrong — the exchange minimum is **per symbol**, not a global constant, and it can exceed the 20 USDT practicality floor. Measured live via `ccxt` `limits.cost.min` on Binance USDT-M: **BTCUSDT = 50 USDT**, **SOLUSDT = 5 USDT**. So the rule is a `max()`, never a fixed 20: the engine must read `InstrumentMeta.min_notional` (ingested and cached per symbol since M1) and take the larger of it and the 20 USDT floor. Hardcoding 20 would produce rungs Binance rejects on BTCUSDT.
 
 **Rounding:** qty down to symbol qty-step; prices to symbol tick-size (fetched from exchange info, cached daily). After rounding, recompute actual risk_eur and display the real number.
 

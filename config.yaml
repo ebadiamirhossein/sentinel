@@ -28,11 +28,16 @@ schedule:
 market_data:
   exchange: binance_usdm
   orderbook_depth: 50
+  # §2.1 specifies 200/200/200/100. We request one extra bar per timeframe
+  # because the last candle Binance returns is still in progress and the feature
+  # engine drops it — without the +1, only 199 closed candles remain and EMA200
+  # could never be computed (PRD F3). The spec's tail lengths are preserved as
+  # *closed* candles, which is what the indicators actually consume.
   timeframes:
-    - { timeframe: 15m, candles: 200 }
-    - { timeframe: 1h, candles: 200 }
-    - { timeframe: 4h, candles: 200 }
-    - { timeframe: 1d, candles: 100 }
+    - { timeframe: 15m, candles: 201 }
+    - { timeframe: 1h, candles: 201 }
+    - { timeframe: 4h, candles: 201 }
+    - { timeframe: 1d, candles: 101 }
 
 # specs/DATA_SOURCES.md §2–§3 — client behaviour and endpoints. Keys stay in .env.
 ingestion:
@@ -70,6 +75,29 @@ data_quality:
     btc_dominance: 86400
     news_window: 21600            # 6h news window
     eurusd: 3600                  # refetched hourly, last-known-good fallback
+
+# M2 feature engine. PRD F3 names the indicators; the regime and S/R parameters
+# below are owner-approved (2026-08-18) because no spec defines them.
+features:
+  rsi_period: 14
+  atr_period: 14
+  ema_periods: [20, 50, 200]
+  relative_volume_lookback: 20
+  drop_partial_candle: true       # indicators run on CLOSED candles only
+  primary_timeframe: 1h           # setup TF (PRD §7)
+  context_timeframe: 4h           # regime TF
+  # Volatility regime: ATR% ranked against its own trailing distribution, so the
+  # thresholds hold for BTC and a small-cap alt alike.
+  volatility_lookback: 100
+  volatility_min_observations: 20
+  volatility_low_percentile: 33.0
+  volatility_high_percentile: 67.0
+  # Support/resistance: confirmed fractal pivots (k bars each side, no repaint)
+  # clustered into bands of 0.5 × ATR(14).
+  pivot_window: 3
+  level_cluster_atr_multiple: 0.5
+  max_levels_per_side: 3
+  level_timeframes: [1h, 4h]
 
 # specs/RISK_ENGINE.md §1 — risk defaults. capital_eur is intentionally absent:
 # it is required before the first signal and set by the owner via /capital.
