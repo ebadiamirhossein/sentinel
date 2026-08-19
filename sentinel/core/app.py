@@ -29,6 +29,7 @@ from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
 
 from sentinel import __version__
+from sentinel.bot.alerts import AdminAlerter
 from sentinel.bot.app import BotRunner, build_runner
 from sentinel.bot.formatting import zone_info
 from sentinel.bot.notifier import TrackerNotifier
@@ -113,9 +114,16 @@ def _schedule_pipeline(
     async def scan() -> None:
         publisher = None if state.bot is None else _publisher_for(state, settings, database)
         try:
-            await CycleOrchestrator(settings, database, publisher=publisher).run()
+            result = await CycleOrchestrator(settings, database, publisher=publisher).run()
         except Exception as exc:  # pragma: no cover — the orchestrator catches its own
             log.error("scheduler.scan_failed", error=str(exc), error_type=type(exc).__name__)
+        else:
+            # M8: ARCHITECTURE §2's "alert after 3 consecutive cycle failures",
+            # evaluated from the cycles table after every cycle — including the
+            # ones that succeed, which is how the recovery notice gets sent. It
+            # never raises; see sentinel/bot/alerts.py.
+            if state.bot is not None:
+                await _alerter_for(state, settings, database).after_cycle(result)
         finally:
             state.last_cycle_at = utc_now()
 
@@ -162,6 +170,17 @@ def _publisher_for(state: AppState, settings: Settings, database: Database) -> S
         state.bot.bot,
         chat_ids=settings.secrets.allowed_user_ids,
         telegram=settings.config.telegram,
+        tz=zone_info(settings.config.telegram.owner_timezone),
+    )
+
+
+def _alerter_for(state: AppState, settings: Settings, database: Database) -> AdminAlerter:
+    assert state.bot is not None
+    return AdminAlerter(
+        database,
+        state.bot.bot,
+        chat_ids=settings.secrets.allowed_user_ids,
+        settings=settings,
         tz=zone_info(settings.config.telegram.owner_timezone),
     )
 

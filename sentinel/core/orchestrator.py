@@ -151,6 +151,12 @@ class CycleResult:
     spend_usd_estimate: Decimal = Decimal("0")
     analysis_suspended: bool = False
     suspended_reason: str | None = None
+    #: The spend guard's verdict before this cycle spent anything and after it
+    #: recorded what it spent. M8's admin alert messages on the *transition*
+    #: between them, which is why the guard needs no "already warned today" row:
+    #: exactly one cycle sees OK→WARN, and it is the cycle that caused it.
+    spend_state_before: SpendState | None = None
+    spend_state_after: SpendState | None = None
     #: Why each symbol was dropped before the analyst — a quiet cycle explains
     #: itself from the row rather than only from the logs.
     skipped: dict[str, str] = field(default_factory=dict)
@@ -297,6 +303,12 @@ class CycleOrchestrator:
         #    reason so a silent cycle is explicable.
         allowed = await self._allowed(interesting, result, started=started, config=config)
 
+        # Read once, before anything expensive runs. The screener's own calls are
+        # not recorded yet, so this is genuinely "where the day stood when this
+        # cycle began" — the left-hand side of the transition M8 alerts on.
+        state, reason = await self._spend_state(started)
+        result.spend_state_before = state
+
         # A pause holds back the expensive tier too. The gate would reject every
         # plan with PAUSED anyway (§2 rule 7), so analysing first would buy a
         # ~$0.32 rejection; the screener still runs, because its verdicts are the
@@ -314,23 +326,21 @@ class CycleOrchestrator:
             )
             allowed = set()
 
-        # The spend guard is checked here, after the cheap pass and before the
+        # The spend guard bites here, after the cheap pass and before the
         # expensive one — exactly the split it is meant to make.
-        if allowed:
-            state, reason = await self._spend_state(started)
-            if state is SpendState.LIMIT_REACHED:
-                result.analysis_suspended = True
-                result.suspended_reason = reason
-                for symbol in allowed:
-                    result.skipped[symbol] = "spend limit reached"
-                log.warning(
-                    "cycle.analysis_suspended",
-                    cycle_id=str(result.cycle_id),
-                    reason=reason,
-                    held_back=sorted(allowed),
-                    detail="the screener and the tracker keep running",
-                )
-                allowed = set()
+        if allowed and state is SpendState.LIMIT_REACHED:
+            result.analysis_suspended = True
+            result.suspended_reason = reason
+            for symbol in allowed:
+                result.skipped[symbol] = "spend limit reached"
+            log.warning(
+                "cycle.analysis_suspended",
+                cycle_id=str(result.cycle_id),
+                reason=reason,
+                held_back=sorted(allowed),
+                detail="the screener and the tracker keep running",
+            )
+            allowed = set()
 
         # 4-5. Deep analysis, gate, publish.
         for snapshot in snapshots:
@@ -346,6 +356,11 @@ class CycleOrchestrator:
         async with self._database.session() as session:
             await self._repos.llm_calls(session).record_many(calls)
             await session.commit()
+
+        # Re-read *after* the commit above, so this cycle's own calls are in the
+        # total. A guard that only ever looked at yesterday's spend would notice
+        # the crossing one cycle late — fifteen minutes and ~$0.32 too late.
+        result.spend_state_after, _ = await self._spend_state(started)
 
     async def _analyse_symbol(
         self,

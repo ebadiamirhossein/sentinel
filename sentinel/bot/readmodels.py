@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 from sentinel.bot.views import (
+    AlertView,
     PositionView,
     SpendView,
     StatsBreakdownView,
@@ -24,6 +25,7 @@ from sentinel.bot.views import (
     StatsView,
     TrackerEventView,
 )
+from sentinel.core.alerts import Alert, AlertKind
 from sentinel.core.config import LLMConfig
 from sentinel.llm.spend import SpendTotals, evaluate_spend
 from sentinel.risk.accounting import Exit, Fill, unrealized_r
@@ -111,6 +113,74 @@ def tracker_event_view(event: SignalEventRow, row: SignalRow) -> TrackerEventVie
     )
 
 
+def alert_view(alert: Alert, *, spend: SpendView | None = None) -> AlertView:
+    """One ``core.alerts.Alert`` as the lines an admin message is made of.
+
+    The words are assembled here rather than in ``cards.py`` for the usual
+    reason — the renderer stays a renderer — and every line answers the only two
+    questions a 3am message has to answer: what stopped, and what is still
+    running. "The tracker is unaffected" is on the failure alert on purpose: an
+    owner with an open position needs to know that the part managing it did not
+    stop with the part that failed.
+    """
+    if alert.kind is AlertKind.CYCLE_FAILURES:
+        body = [
+            f"The scan cycle has failed {alert.failures} times in a row.",
+            "The tracker is unaffected — open positions are still being watched.",
+        ]
+        if alert.last_error:
+            body.append(f"Last error: {alert.last_error}")
+        body.append("Logs: docker compose logs --tail=200 app")
+        return AlertView(
+            kind=alert.kind.value,
+            title=f"🚨 Sentinel — {alert.failures} cycles failed in a row",
+            body=tuple(body),
+            at=alert.since,
+        )
+
+    if alert.kind is AlertKind.CYCLE_RECOVERED:
+        return AlertView(
+            kind=alert.kind.value,
+            title="✅ Sentinel — the scan cycle recovered",
+            body=(
+                f"A cycle completed normally after {alert.failures} consecutive failures.",
+                "Nothing was lost: a failed cycle is skipped, not retried.",
+            ),
+            at=alert.since,
+        )
+
+    if spend is None:  # pragma: no cover — the caller always pairs these
+        raise ValueError(f"{alert.kind} needs the spend totals to render")
+
+    at_least = "at least " if spend.is_floor else ""
+    figures = [
+        f"Today: {at_least}${spend.day_usd} of ${spend.limit_usd} (warn at ${spend.warn_usd}).",
+        f"Month to date: {at_least}${spend.month_usd}.",
+    ]
+    if spend.is_floor:
+        figures.append(
+            f"{spend.unpriced_calls} call(s) used a model with no price in config — "
+            "their cost is missing from the figures above, not zero."
+        )
+    if alert.kind is AlertKind.SPEND_LIMIT:
+        return AlertView(
+            kind=alert.kind.value,
+            title="⛔ Sentinel — daily LLM spend limit reached",
+            body=(
+                *figures,
+                "New deep analysis is suspended until 00:00 UTC. The screener and "
+                "the tracker keep running.",
+                "It clears itself: the totals are recomputed every cycle, so there "
+                "is nothing to /resume.",
+            ),
+        )
+    return AlertView(
+        kind=alert.kind.value,
+        title="⚠️ Sentinel — LLM spend past the warn level",
+        body=(*figures, "Nothing is suspended yet. Analysis stops at the limit."),
+    )
+
+
 def spend_view(totals: SpendTotals, config: LLMConfig) -> SpendView:
     return SpendView(
         day_usd=money(totals.day_usd),
@@ -182,6 +252,7 @@ def stats_view(report: StatsReport) -> StatsView:
 
 __all__ = [
     "POPULATION_NOTES",
+    "alert_view",
     "position_view",
     "spend_view",
     "stats_view",

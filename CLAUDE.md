@@ -28,12 +28,14 @@ You are building **Sentinel**, a 24/7 crypto market-research and signal system. 
 - Filenames are **per provider**: `fable_v1.md`, `screener_v1.md`, later `sol_v1.md` (specs/ENSEMBLE.md §2, which supersedes the earlier bare `vN.md` here — settled with the owner 2026-08-18 so M10's second provider needs no rename and no rewrite of stored `prompt_version` values).
 
 ## Milestone gate
-`make check` = tests + ruff + mypy + 100% risk branch coverage + **`check-wheel` and
-`check-image`**. The last two build the wheel and the Docker image and then *import the app
+`make check` = tests + ruff + mypy + 100% risk branch coverage + **`check-ops`, `check-wheel`
+and `check-image`**. The last two build the wheel and the Docker image and then *import the app
 inside the image* — journal/M6_REPORT.md §12 found the image unbuildable for two milestones
 because everything else runs from a source checkout, and journal/M7_REPORT.md §6 found that
-building alone still misses an undeclared dependency. Neither ever skips silently. `make
-check-fast` is the old gate for mid-edit runs.
+building alone still misses an undeclared dependency. `check-ops` (M8) is the same lesson one
+layer out: `ops/*.sh` run only on the server, so a typo in them is found at 3am by the person
+who needed the backup — it runs `bash -n` on every script, and shellcheck too when installed.
+None of the three ever skips silently. `make check-fast` is the old gate for mid-edit runs.
 
 ## When unsure
 Ask. A clarifying question costs a minute; a wrong assumption in a trading system costs money. Specifically ask before: changing any risk default, adding a dependency > 1MB, altering a Pydantic contract, or touching the DB schema outside a migration.

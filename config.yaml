@@ -10,7 +10,7 @@
 # with dry_run=true, and the tracker resolves it silently. /stats reports dry-run
 # outcomes as their own population, never merged into real or hypothetical.
 # Run 24h with this true before letting the system post for real.
-dry_run: false
+dry_run: true
 
 # PRD.md §7 — default watchlist (configurable at runtime via /watchlist).
 watchlist:
@@ -253,6 +253,20 @@ llm:
       output_per_mtok: 50
       cache_read_per_mtok: 1
       cache_write_per_mtok: 12.5
+
+# ARCHITECTURE.md §2 and §6 — "Telegram admin alert after 3 consecutive cycle
+# failures". The alert says how many cycles failed, when the run started and what
+# the newest one said, and repeats every `consecutive_cycle_failures` further
+# failures so a continuing outage does not go quiet after one message. One
+# recovery notice is sent when a cycle finally succeeds.
+#
+# A cycle row is written RUNNING before the cycle starts, so a process killed
+# mid-cycle leaves RUNNING behind for ever. A row still RUNNING after
+# stale_cycle_multiplier x scan_interval_minutes is counted as a failure — it is
+# the most serious kind, and nothing else would ever notice it.
+alerts:
+  consecutive_cycle_failures: 3
+  stale_cycle_multiplier: 2
 
 # specs/TELEGRAM_UX.md — rendering/display only. Allowlist lives in .env.
 telegram:

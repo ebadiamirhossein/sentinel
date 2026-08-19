@@ -1,10 +1,16 @@
 PY ?= python3.12
 VENV := .venv
 BIN := $(VENV)/bin
-COMPOSE ?= docker compose
+
+# Every target here is for LOCAL DEVELOPMENT, and layers docker-compose.dev.yml
+# on top of the deployment file — that overlay publishes Postgres on 127.0.0.1 so
+# `make run`, alembic and the sentinel.tools.* CLIs can reach it from the host
+# venv. The SERVER uses plain `docker compose` and never picks the overlay up,
+# because 5432 there belongs to another application (docs/DEPLOY.md §3).
+COMPOSE ?= docker compose -f docker-compose.yml -f docker-compose.dev.yml
 
 .DEFAULT_GOAL := help
-.PHONY: help install test lint format typecheck coverage-risk check-wheel check-image check-fast check run up down restart logs ps migrate revision shell clean require-env
+.PHONY: help install test lint format typecheck coverage-risk check-ops check-wheel check-image check-fast check run up down restart logs ps migrate revision shell clean require-env backup verify-backup
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -45,6 +51,19 @@ coverage-risk: install ## Risk engine: 100% branch coverage or fail (specs/RISK_
 # in `check` and neither ever skips silently — a skipped packaging check is
 # exactly how the break stayed hidden for two milestones.
 
+check-ops: ## Syntax-check the deploy scripts (shellcheck too, if installed)
+	@# M8. Same lesson as check-image, one layer out: ops/*.sh run only on the
+	@# server, so a typo in them is found at 3am by the person who needed the
+	@# backup. `bash -n` needs no extra tooling and catches the whole class;
+	@# shellcheck is used when present and never required.
+	@for script in ops/*.sh; do bash -n "$$script" || exit 1; done
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x ops/*.sh || exit 1; \
+		echo "ops scripts: bash -n + shellcheck clean"; \
+	else \
+		echo "ops scripts: bash -n clean (install shellcheck for the deeper check)"; \
+	fi
+
 check-wheel: install ## Build the wheel — catches a broken package in ~2s
 	@rm -rf .build-wheel
 	$(BIN)/python -m pip wheel --no-deps -q -w .build-wheel .
@@ -72,7 +91,7 @@ check-image: ## Build the image AND import the app inside it
 		 from sentinel.core.config import load_config; load_config(); \
 		 print('image imports, prompts ship, config loads')"
 
-check-fast: test lint typecheck coverage-risk ## The gate without the image build
+check-fast: test lint typecheck coverage-risk check-ops ## The gate without the image build
 check: check-fast check-wheel check-image ## Everything the milestone gate requires
 
 run: install require-env ## Run the app locally (no Docker)
@@ -113,6 +132,18 @@ revision: require-env ## Autogenerate a migration: make revision m="add signals 
 
 shell: ## Open a shell in the app container
 	$(COMPOSE) exec app sh
+
+# ── Ops (docs/DEPLOY.md) ─────────────────────────────────────────────────────
+#
+# The scripts themselves are host-side and take no make: on the server they are
+# run by cron and by hand. These two targets exist so the same commands can be
+# rehearsed locally against the development stack.
+
+backup: require-env ## pg_dump the running database into $BACKUP_DIR
+	./ops/backup.sh
+
+verify-backup: require-env ## Restore the newest dump into a scratch DB and check it
+	./ops/verify-backup.sh
 
 clean: ## Remove caches and the virtualenv
 	rm -rf $(VENV) .pytest_cache .mypy_cache .ruff_cache .coverage htmlcov

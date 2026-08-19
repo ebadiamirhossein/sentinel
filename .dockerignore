@@ -19,3 +19,6 @@ journal/
 docs/
 tests/
 Makefile
+# Host-side deploy scripts (docs/DEPLOY.md) — they drive Docker, they never run in it.
+ops/
+backups/

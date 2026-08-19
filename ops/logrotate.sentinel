@@ -1,0 +1,17 @@
+# Rotation for the HOST-side cron logs — install as /etc/logrotate.d/sentinel.
+#
+# The containers' own logs are not here: they are rotated by Docker's json-file
+# driver, capped at 10m x 5 per service in docker-compose.yml. Rotating those
+# with logrotate would fight the daemon for the same files.
+#
+# Ubuntu runs logrotate daily from a systemd timer, so installing this file is
+# all that is needed. Check it with:  sudo logrotate -d /etc/logrotate.d/sentinel
+/var/log/sentinel/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+}

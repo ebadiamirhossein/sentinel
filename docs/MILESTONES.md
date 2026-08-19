@@ -76,6 +76,30 @@ Cycle orchestrator wiring M1–M6 on APScheduler; tracker state machine with lad
 VPS deploy runbook (`docs/DEPLOY.md`); pg_dump backup cron; failure alerts to Telegram; log rotation; ~~spend guard (daily Anthropic cost log + alert threshold)~~ **→ shipped in M7, verify it in the runbook**; README polish.
 **Demo:** fresh VPS → running system in < 30 min following the runbook only.
 
+> **Scope settled at M8 (2026-08-19, owner) — the target box is shared.**
+> Deployment is an existing Hetzner CPX32 (Ubuntu, Nuremberg) that already runs an
+> unrelated application and its own Postgres. Three constraints follow, and they
+> are asserted by `tests/test_compose.py` rather than only documented:
+>
+> * **Sentinel's Postgres publishes no host port.** The app reaches it over the
+>   Compose network; `docker-compose.dev.yml` adds a loopback publish for local
+>   development only.
+> * **The app's host port is configurable** (`SENTINEL_HTTP_PORT`) and defaults to
+>   **`127.0.0.1:18080`** — loopback, because Telegram is long polling and the
+>   process needs no inbound port at all.
+> * **The Compose project name is pinned to `sentinel`**, so containers and volumes
+>   can never collide with the neighbour's.
+>
+> Two additions, both agreed before they were built:
+>
+> * **The spend guard's Telegram notice is finished here.** M7 shipped the guard
+>   and both this file and journal/M7_REPORT.md §1 described "a Telegram notice
+>   when either trips"; no code ever sent one. M8's job was to *verify* the guard,
+>   verification found the hole, and it is closed through the alert channel this
+>   milestone builds (journal/M8_REPORT.md §4).
+> * **A host watchdog** (`ops/healthcheck.sh`, cron): nothing inside the app can
+>   alert when the app is not running, which is the failure that matters most.
+
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.

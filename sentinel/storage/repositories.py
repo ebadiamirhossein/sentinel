@@ -1031,6 +1031,16 @@ class CycleRepository:
         statement = select(CycleRow).order_by(CycleRow.started_at.desc()).limit(1)
         return (await self._session.execute(statement)).scalars().first()
 
+    async def recent(self, limit: int = 10) -> list[CycleRow]:
+        """The newest cycles, newest first — M8's failure-streak alert reads this.
+
+        Ordered by ``started_at`` and not ``finished_at``: a cycle that never
+        finished has no ``finished_at`` at all, and those are precisely the rows
+        the alert exists to notice.
+        """
+        statement = select(CycleRow).order_by(CycleRow.started_at.desc()).limit(limit)
+        return list((await self._session.execute(statement)).scalars())
+
     async def latest_completed_at(self) -> datetime | None:
         statement = (
             select(CycleRow.finished_at)

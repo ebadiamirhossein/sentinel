@@ -1,0 +1,20 @@
+# Sentinel host cron — install as root:   sudo crontab -e
+#
+# Everything below is UTC if the server's timezone is UTC (`timedatectl`), which
+# is what docs/DEPLOY.md §2 sets. Every internal timestamp in Sentinel is UTC, so
+# keeping the box on UTC means a 03:10 dump lands where you expect in the logs.
+#
+# Cron's PATH is minimal, so it is set explicitly — `docker` lives in /usr/bin.
+# Replace /opt/sentinel with wherever the repo was cloned.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Nightly database dump with retention. Quiet on success; Telegram on failure.
+10 3 * * *   /opt/sentinel/ops/backup.sh   >> /var/log/sentinel/backup.log 2>&1
+
+# Weekly proof that the newest dump actually restores, into a scratch database
+# that is dropped again. This is the line that keeps "we have backups" true.
+40 3 * * 0   /opt/sentinel/ops/verify-backup.sh >> /var/log/sentinel/backup.log 2>&1
+
+# The watchdog. The app alerts on failing cycles; only something outside it can
+# alert when the app itself is gone.
+*/15 * * * * /opt/sentinel/ops/healthcheck.sh >> /var/log/sentinel/health.log 2>&1

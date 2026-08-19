@@ -1,0 +1,20 @@
+# Local development only — never used on the server.
+#
+# docker-compose.yml publishes no database port, because the deployment target
+# shares its host with another application that owns 5432. A laptop has the
+# opposite need: `make run`, `alembic`, the opt-in Postgres test suite and every
+# `python -m sentinel.tools.*` command run from the host venv and have to reach
+# the database at 127.0.0.1.
+#
+# So the publish lives here and is layered on explicitly:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# which is what every `make` target already does. docs/DEPLOY.md uses plain
+# `docker compose`, so the server never picks this file up.
+services:
+  postgres:
+    ports:
+      # Loopback only, even locally: a database on 0.0.0.0 is one firewall
+      # mistake away from being everyone's database.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"

@@ -183,6 +183,8 @@ class FakeStore:
     exits: dict[tuple[UUID, str], dict[str, Any]] = field(default_factory=dict)
     events: dict[tuple[UUID, str], dict[str, Any]] = field(default_factory=dict)
     last_cycle: Any = None
+    #: Newest first, as ``CycleRepository.recent`` returns them (M8's alerts).
+    cycles: list[Any] = field(default_factory=list)
     cycles_completed: int = 0
     cycles_started: int = 0
     spend: SpendTotals = field(default_factory=SpendTotals)
@@ -513,6 +515,9 @@ class FakeCycleRepository(CycleRepository):
 
     async def latest(self) -> Any:
         return self._store.last_cycle
+
+    async def recent(self, limit: int = 10) -> list[Any]:
+        return list(self._store.cycles[:limit])
 
     async def completion_since(self, since: datetime) -> tuple[int, int]:
         return self._store.cycles_completed, self._store.cycles_started

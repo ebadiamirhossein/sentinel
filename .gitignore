@@ -30,3 +30,7 @@ sentinel/**/*.png
 
 # `make check-wheel` output — a build artifact, never committed.
 .build-wheel/
+
+# Local rehearsal of the backup cron (docs/DEPLOY.md §7). Database dumps are
+# the one thing in this repo that must never reach a remote.
+/backups/

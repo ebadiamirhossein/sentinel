@@ -147,6 +147,33 @@ sentinel/
 - Watchtower optional for image updates; healthcheck endpoint `/health` (scheduler heartbeat + DB ping + last-cycle age).
 - Secrets only in `.env` (Anthropic key, Telegram token, CryptoPanic key). No exchange keys in v1.
 
+> **Correction (2026-08-19, from M8) — the deployment target shares its host.**
+> The box is a Hetzner CPX32 already running an unrelated application and its own
+> Postgres, and several details of this section change as a result. The runbook
+> is `docs/DEPLOY.md`; this is what it settles.
+>
+> * **Sentinel's Postgres publishes no host port at all.** 5432 belongs to the
+>   neighbour, and the app reaches its database over the Compose network, where no
+>   publish is needed. `docker-compose.dev.yml` adds a loopback publish for local
+>   development only.
+> * **The Compose project name is pinned** (`name: sentinel`), so containers and
+>   the `sentinel_pgdata` volume can never collide with another project that
+>   happens to share a directory name.
+> * **`/health` binds `127.0.0.1:${SENTINEL_HTTP_PORT:-18080}`.** Telegram is long
+>   polling, so the process needs no inbound port whatsoever; publishing one on a
+>   shared public box would be exposure for nothing.
+> * **`pg_dump` writes to a host directory through `docker compose exec`**, rather
+>   than to a mounted backup dir as written above. Same outcome, and it avoids the
+>   container-uid ownership trap on the mount. Retention, a Telegram alert on
+>   failure, and a weekly *restore* into a scratch database are `ops/backup.sh` and
+>   `ops/verify-backup.sh`.
+> * **Watchtower is not used.** Automatic image updates on a system that trades no
+>   money but reports numbers a human trades on is a way to change behaviour
+>   without noticing. Updates are `ops/update.sh`, run deliberately.
+> * **Log rotation is Docker's json-file driver**, capped per service in the
+>   compose file (`10m` x `5`) rather than in `/etc/docker/daemon.json`, which the
+>   neighbour application also depends on.
+
 ## 6. Failure modes & handling
 
 | Failure | Behavior |

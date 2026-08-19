@@ -386,6 +386,21 @@ class LLMConfig(_Strict):
     }
 
 
+class AlertsConfig(_Strict):
+    """ARCHITECTURE.md §2 and §6 — "Telegram admin alert after 3 consecutive
+    cycle failures". The decision itself is pure and lives in ``core/alerts.py``.
+
+    ``stale_cycle_multiplier`` is how many scan intervals a cycle may stay
+    ``RUNNING`` before it is counted as a failure. A cycle is budgeted five
+    minutes against a fifteen-minute period (PRD F1), so two intervals is
+    generous; the case it catches is a process killed mid-cycle, which leaves
+    ``RUNNING`` in the row for ever and is otherwise invisible to a status check.
+    """
+
+    consecutive_cycle_failures: int = Field(default=3, ge=1)
+    stale_cycle_multiplier: int = Field(default=2, ge=1)
+
+
 class TelegramConfig(_Strict):
     """specs/TELEGRAM_UX.md. Display and delivery only — the allowlist is a secret."""
 
@@ -441,6 +456,7 @@ class AppConfig(_Strict):
     management: ManagementConfig = ManagementConfig()
     llm: LLMConfig = LLMConfig()
     telegram: TelegramConfig = TelegramConfig()
+    alerts: AlertsConfig = AlertsConfig()
 
 
 def _deep_merge(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:

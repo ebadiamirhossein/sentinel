@@ -40,6 +40,22 @@ class SpendView:
 
 
 @dataclass(frozen=True)
+class AlertView:
+    """One admin alert (M8). Everything already decided in ``core/alerts.py``.
+
+    There is no alert format in specs/TELEGRAM_UX.md — this is an addition, not a
+    deviation, recorded in journal/M8_REPORT.md §3. It is deliberately unlike a
+    signal card: no buttons, no charts, no disclaimer. It is the system talking
+    about itself, and it must be impossible to mistake for something to trade.
+    """
+
+    kind: str
+    title: str
+    body: tuple[str, ...] = ()
+    at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class StatusView:
     """``/status`` — pipeline health (specs/TELEGRAM_UX.md §3).
 
@@ -170,6 +186,7 @@ class SettingsView:
 
 
 __all__ = [
+    "AlertView",
     "DataSourceView",
     "PositionView",
     "SettingsView",

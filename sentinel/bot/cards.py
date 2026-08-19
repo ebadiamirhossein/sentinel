@@ -28,6 +28,7 @@ from sentinel.analyst.models import Direction
 from sentinel.bot.formatting import DISCLAIMER, escape, local_and_utc, local_date_time
 from sentinel.bot.models import SignalDecision, SignalRecord
 from sentinel.bot.views import (
+    AlertView,
     PositionView,
     SettingsView,
     StatsView,
@@ -270,6 +271,23 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
                 "  ⛔ new deep analysis is suspended until 00:00 UTC. The screener "
                 "and the tracker keep running."
             )
+    return "\n".join(lines)
+
+
+def alert_card(view: AlertView, tz: ZoneInfo) -> str:
+    """An admin alert (M8) — the system talking about itself.
+
+    Deliberately unlike every other card here: no buttons, no charts, no
+    disclaimer, no numbers from a plan. Nothing about it should be mistakable for
+    something to trade at three in the morning. The body lines are assembled in
+    ``readmodels.alert_view`` and escaped here, because one of them is an
+    exception message and exception messages contain angle brackets.
+    """
+    lines = [f"<b>{escape(view.title)}</b>", ""]
+    lines.extend(escape(line) for line in view.body)
+    if view.at is not None:
+        lines.append("")
+        lines.append(f"<i>since {local_and_utc(view.at, tz)}</i>")
     return "\n".join(lines)
 
 

@@ -1,16 +1,47 @@
+# Sentinel — the whole runtime: the app and its database, nothing else.
+#
+# This file is written for a SHARED server. journal/M8_REPORT.md §2: the target
+# box (Hetzner CPX32, Nuremberg) already runs an unrelated application and its own
+# Postgres, so three things here are deliberate rather than incidental:
+#
+#   1. `name:` below fixes the Compose project name, so containers and volumes are
+#      `sentinel-*` / `sentinel_pgdata` wherever this is deployed — never the
+#      directory name, which is what would collide with a neighbour. It can still
+#      be overridden per-machine with COMPOSE_PROJECT_NAME, which is exactly what
+#      the development .env does so a laptop's existing volume keeps its name.
+#   2. Postgres publishes NO host port at all. The app reaches it over the Compose
+#      network; 5432 on the host belongs to somebody else. docker-compose.dev.yml
+#      adds a loopback publish for local tooling only.
+#   3. The app's health port is bound to 127.0.0.1 and defaults to 18080. Sentinel
+#      needs no inbound port whatsoever — Telegram is long polling, i.e. outbound —
+#      so nothing here should ever face the internet.
+name: sentinel
+
+# YAML anchor: both services log through Docker's json-file driver, capped. The
+# Ubuntu daemon default is *unlimited*, and a 24/7 JSON-logging app fills a disk
+# eventually. Capping per service rather than in /etc/docker/daemon.json keeps the
+# neighbour app's logging untouched — see docs/DEPLOY.md §9.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: ${POSTGRES_DB:-sentinel}
+    # No `ports:` — and that is the point. The database is reachable only from the
+    # `app` container over the Compose network. Publishing it, even on loopback,
+    # would fail to start the stack on a host where 5432 is already taken.
+    # `make up` layers docker-compose.dev.yml on top for local host tooling.
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      # Bound to loopback only — never expose the DB on a public VPS interface.
-      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinel}"]
       interval: 10s
@@ -21,6 +52,7 @@ services:
   app:
     build: .
     restart: unless-stopped
+    logging: *logging
     env_file:
       - .env
     environment:
@@ -35,14 +67,17 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${HEALTH_PORT:-8000}:8000"
+      # host:container. SENTINEL_HTTP_PORT is the HOST side and the only one worth
+      # changing; HEALTH_PORT is what the app binds *inside* the container and is
+      # interpolated into the healthcheck below too, so the two can never drift.
+      - "127.0.0.1:${SENTINEL_HTTP_PORT:-18080}:${HEALTH_PORT:-8000}"
     healthcheck:
       # urllib raises on a non-200 (e.g. the 503 we return when the DB is down).
       test:
         - "CMD"
         - "python"
         - "-c"
-        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:${HEALTH_PORT:-8000}/health', timeout=5)"
       interval: 30s
       timeout: 10s
       retries: 3

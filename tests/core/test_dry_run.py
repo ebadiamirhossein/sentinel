@@ -163,6 +163,12 @@ async def test_turning_the_flag_off_does_not_retrospectively_make_it_real(
     stored = next(iter(store.signals.values()))
     assert stored.dry_run is True
 
-    live = Settings(secrets=dry_settings.secrets, config=load_config())
+    # Built explicitly rather than from load_config(): a deployment that is
+    # currently rehearsing has `dry_run: true` in its own config.yaml, and this
+    # test is about the stored row, not about what the checkout happens to say.
+    live = Settings(
+        secrets=dry_settings.secrets,
+        config=dry_settings.config.model_copy(update={"dry_run": False}),
+    )
     assert live.config.dry_run is False
     assert stored.dry_run is True, "the stored row is immutable, not derived from config"
