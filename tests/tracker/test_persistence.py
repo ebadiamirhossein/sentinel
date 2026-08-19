@@ -26,6 +26,7 @@ from sentinel.storage.repositories import (
     SignalRepository,
     TelegramMessageRepository,
 )
+from tests.bot_double import OWNER_ID
 from tests.db_guard import TEST_DB_URL, requires_db
 from tests.risk_double import approved_plan
 
@@ -55,7 +56,7 @@ async def session() -> AsyncIterator[AsyncSession]:
 
 
 async def _signal(session: AsyncSession, **overrides: object) -> SignalRecord:
-    record = SignalRecord(plan=approved_plan(), **overrides)
+    record = SignalRecord(plan=approved_plan(), user_id=OWNER_ID, **overrides)
     claimed = await SignalRepository(session).claim(record)
     assert claimed is not None
     await session.commit()
@@ -124,22 +125,22 @@ async def test_an_event_is_journalled_once_and_found_unposted(
     )
     await session.commit()
 
-    pending = await events.unposted(chat_id=4242)
+    pending = await events.unposted(chat_id=OWNER_ID, user_id=OWNER_ID)
     assert [row.event_key for row in pending] == ["stop"]
 
     messages = TelegramMessageRepository(session)
-    await messages.claim(record.signal_id, MessageKind.UPDATE, 4242, at=NOW, event_key="stop")
+    await messages.claim(record.signal_id, MessageKind.UPDATE, OWNER_ID, at=NOW, event_key="stop")
     await messages.confirm(
         record.signal_id,
         MessageKind.UPDATE,
-        4242,
+        OWNER_ID,
         message_id=1,
         at=NOW,
         event_key="stop",
     )
     await session.commit()
 
-    assert await events.unposted(chat_id=4242) == []
+    assert await events.unposted(chat_id=OWNER_ID, user_id=OWNER_ID) == []
 
 
 @requires_db
@@ -222,6 +223,6 @@ async def test_a_stop_out_arms_a_cooldown_and_a_target_does_not(
     )
     await session.commit()
 
-    resolutions = await signals.resolutions_since(NOW - timedelta(hours=4))
+    resolutions = await signals.resolutions_since(NOW - timedelta(hours=4), user_id=OWNER_ID)
     assert [symbol for symbol, _ in resolutions] == ["SOLUSDT"]
     assert len(resolutions) == 1, "only the stop-out arms a cooldown"

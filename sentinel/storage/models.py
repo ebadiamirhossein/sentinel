@@ -25,7 +25,9 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    false,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -118,12 +120,18 @@ class GateDecisionRow(Base):
     The ``reason`` column holds a machine-readable ``RejectionReason`` — M9 asks
     "what is the gate rejecting most often, and was it right to?", which a prose
     message cannot answer.
+
+    From M8.1 there is one row per (cycle, symbol, **user**): the analysis is
+    shared but the sizing and the rails are not, so the same report can approve for
+    one user and reject with ``MAX_OPEN_RISK`` for another. Dropping the user would
+    make that pair of verdicts contradict each other in the audit trail.
     """
 
     __tablename__ = "gate_decisions"
 
     id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
     cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     gate_status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -300,6 +308,11 @@ class SignalRow(Base):
     #: The ``TradePlan.plan_id`` — unique, and the reason a restart cannot double-post.
     plan_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    #: Whose signal this is (M8.1). One shared ``AnalystReport`` yields one row per
+    #: approved user, each with its own sizing in ``plan``, its own ``decision`` and
+    #: its own realized R — which is what makes every statistic downstream
+    #: partitioned by construction rather than by a filter somebody has to remember.
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     #: Human-facing sequence, so a card can say "Signal #142" without exposing a
     #: UUID. A Postgres IDENTITY rather than a count(*): the number must be stable
@@ -370,6 +383,8 @@ class SignalRow(Base):
         Index("ix_signals_status_expires_at", "status", "expires_at"),
         #: /stats windows every population by when the signal resolved.
         Index("ix_signals_closed_at", "closed_at"),
+        #: Every per-user query — the rails, /positions, /stats — starts here.
+        Index("ix_signals_user_id_created_at", "user_id", "created_at"),
     )
 
 
@@ -456,6 +471,86 @@ class ConfigChangeRow(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (Index("ix_config_changes_key_changed_at", "key", "changed_at"),)
+
+
+# --------------------------------------------------------------------------- #
+# M8.1 — who the users are
+# --------------------------------------------------------------------------- #
+
+
+class UserRow(Base):
+    """One Telegram id and where it stands (specs/TELEGRAM_UX.md §7).
+
+    Through M8 identity was ``TELEGRAM_ALLOWED_USER_IDS`` — one env var used as
+    *both* the authorization list and the broadcast list, which works only for a
+    single person. This table replaces it as the runtime authority; the env var
+    survives to name the owner and to bootstrap this row.
+
+    Two columns are here rather than in ``runtime_settings`` on purpose. ``capital_eur``
+    and ``risk_per_trade_pct`` were one global value; under multiple users they are
+    precisely the two numbers that must not be shared, and every plan is sized from
+    them. ``None`` means "this user has not set it": capital then rejects with
+    ``NO_CAPITAL`` exactly as it did before, and risk falls back to config.
+
+    ``paused``/``pause_reason``/``paused_until`` mirror ``risk_state`` field for
+    field, so one ``PauseState`` helper round-trips both. They hold this user's
+    **daily-loss** pause and nothing else — the operator's ``/pause`` is still one
+    global row, because a member who cannot pause themselves must not be able to
+    strand the owner without a stop button either.
+
+    No foreign keys, matching every other table here; ``signals.user_id`` and
+    ``gate_decisions.user_id`` are plain ``BigInteger`` for the same reason.
+    """
+
+    __tablename__ = "users"
+
+    #: Telegram's id, not ours. ``autoincrement=False`` because an integer primary
+    #: key would otherwise be a BIGSERIAL, and an insert that forgot the id would
+    #: quietly create user 1 instead of failing.
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Telegram ``full_name``. Usernames are optional on Telegram, and an approval
+    #: request that reaches the owner as a bare integer is not a decision anyone
+    #: can make.
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    role: Mapped[str] = mapped_column(String(8), nullable=False, default="MEMBER")
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    capital_eur: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    risk_per_trade_pct: Mapped[Decimal | None] = mapped_column(PRICE, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Which wording was accepted. A disclaimer nobody can identify is not a record.
+    acknowledged_version: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="", server_default=""
+    )
+    paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    pause_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    paused_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Last time this id was told where it stands — the throttle that stops a
+    #: rejected stranger from making the bot answer them repeatedly.
+    notice_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_users_status", "status"),
+        # There is exactly one owner, and the database says so rather than the
+        # application remembering to. Two OWNER rows would mean two people can
+        # admit users to somebody else's trading system, and the failure would be
+        # silent — the second owner simply works. A partial unique index is the
+        # cheapest place to make that impossible.
+        Index(
+            "uq_users_single_owner",
+            "role",
+            unique=True,
+            postgresql_where=text("role = 'OWNER'"),
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #

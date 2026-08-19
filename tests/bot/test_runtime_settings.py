@@ -5,6 +5,12 @@ supplied one, because the DB layer did not exist. These tests cover the merge
 itself and the two values that are not ordinary config: ``capital_eur``, which
 lives nowhere in ``AppConfig`` at all, and the risk percentage, which lives in
 both ``AppConfig`` and ``AccountState``.
+
+**Those two now come from the caller's ``users`` row rather than from
+``runtime_settings`` (M8.1)** — they are exactly the values that must not be shared
+between people. What is asserted below is unchanged in substance: an unset capital
+stays ``None`` so the gate rejects loudly, a set one reaches the gate, and the config
+default applies until a user chooses otherwise. Only the source moved.
 """
 
 from __future__ import annotations
@@ -15,7 +21,6 @@ import pytest
 
 from sentinel.bot.runtime import (
     CAPITAL_EUR,
-    RISK_PER_TRADE_PCT,
     WATCHLIST,
     Invalid,
     account_state,
@@ -31,6 +36,7 @@ from sentinel.core.config import RiskConfig, Secrets, Settings, load_config
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.engine import RiskEngine
 from sentinel.risk.models import GateStatus, PortfolioState, RejectionReason
+from tests.bot_double import owner_account
 from tests.risk_double import PLAN_NOW, SOLUSDT, analyst_report, market_context
 
 RISK = RiskConfig()
@@ -81,7 +87,7 @@ def test_source_of_labels_where_a_value_came_from() -> None:
 def test_an_unset_capital_stays_none_so_the_gate_rejects_loudly(settings: Settings) -> None:
     """Substituting a default would size positions against a number the owner
     never chose. ``NO_CAPITAL`` is the correct, visible behaviour."""
-    state = account_state({}, settings.config, Decimal("1.1593"))
+    state = account_state(owner_account(), settings.config, Decimal("1.1593"))
     assert state.capital_eur is None
 
     decision = RiskEngine(settings.config).evaluate(
@@ -96,14 +102,18 @@ def test_an_unset_capital_stays_none_so_the_gate_rejects_loudly(settings: Settin
 
 def test_stored_values_reach_the_gate(settings: Settings) -> None:
     state = account_state(
-        {CAPITAL_EUR: "8000", RISK_PER_TRADE_PCT: "1.25"}, settings.config, Decimal("1.1593")
+        owner_account(capital_eur=Decimal("8000"), risk_per_trade_pct=Decimal("1.25")),
+        settings.config,
+        Decimal("1.1593"),
     )
     assert state.capital_eur == Decimal("8000")
     assert state.risk_per_trade_pct == Decimal("1.25")
 
 
 def test_the_config_default_applies_until_risk_is_set(settings: Settings) -> None:
-    state = account_state({CAPITAL_EUR: "8000"}, settings.config, Decimal("1.1593"))
+    state = account_state(
+        owner_account(capital_eur=Decimal("8000")), settings.config, Decimal("1.1593")
+    )
     assert state.risk_per_trade_pct == settings.config.risk.risk_per_trade_pct
 
 
@@ -115,7 +125,9 @@ def test_capital_changes_do_not_touch_a_plan_already_issued(settings: Settings) 
     first = engine.evaluate(
         report=analyst_report(),
         market=market_context(),
-        account=account_state({CAPITAL_EUR: "10000"}, settings.config, Decimal("1.1593")),
+        account=account_state(
+            owner_account(capital_eur=Decimal("10000")), settings.config, Decimal("1.1593")
+        ),
         portfolio=PortfolioState(),
     )
     assert first.plan is not None
@@ -124,7 +136,9 @@ def test_capital_changes_do_not_touch_a_plan_already_issued(settings: Settings) 
     second = engine.evaluate(
         report=analyst_report(),
         market=market_context(),
-        account=account_state({CAPITAL_EUR: "20000"}, settings.config, Decimal("1.1593")),
+        account=account_state(
+            owner_account(capital_eur=Decimal("20000")), settings.config, Decimal("1.1593")
+        ),
         portfolio=PortfolioState(),
     )
     assert second.plan is not None

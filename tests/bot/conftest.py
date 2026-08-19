@@ -10,7 +10,7 @@ from sentinel.bot.models import SignalRecord
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import AppConfig, load_config
 from sentinel.risk.models import TradePlan
-from tests.bot_double import FakeBot, FakeDatabase
+from tests.bot_double import OWNER_ID, FakeBot, FakeDatabase
 from tests.risk_double import PLAN_NOW, approved_plan
 
 #: The owner's timezone from the repo's config.yaml, so tests read the same card
@@ -42,7 +42,7 @@ def plan(bot_config: AppConfig) -> TradePlan:
 
 @pytest.fixture
 def record(plan: TradePlan) -> SignalRecord:
-    return SignalRecord(plan=plan, number=1)
+    return SignalRecord(plan=plan, user_id=OWNER_ID, number=1)
 
 
 @pytest.fixture

@@ -73,15 +73,26 @@ class StatsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def resolved(self, *, since: datetime | None = None) -> list[ResolvedSignal]:
-        rows = await SignalRepository(self._session).resolved_since(since)
+    async def resolved(
+        self, *, user_id: int, since: datetime | None = None
+    ) -> list[ResolvedSignal]:
+        rows = await SignalRepository(self._session).resolved_since(since, user_id=user_id)
         return [resolved_from_row(row) for row in rows]
 
 
-async def build_report(session: AsyncSession, *, window: str, now: datetime) -> StatsReport:
-    """Assemble everything ``/stats`` renders, in one pass over the window."""
+async def build_report(
+    session: AsyncSession, *, window: str, now: datetime, user_id: int
+) -> StatsReport:
+    """Assemble everything ``/stats`` renders, in one pass over the window.
+
+    ``user_id`` is required, and it is the load-bearing argument of this function
+    from M8.1. ``Population.REAL`` is defined by ``decision == TAKEN``; under one
+    shared analysis several people answer the same setup differently, so without the
+    filter one person's Taken lands in another person's record — the exact number PRD
+    G2 exists to make trustworthy.
+    """
     since = window_start(window, now=now)
-    resolved = await StatsRepository(session).resolved(since=since)
+    resolved = await StatsRepository(session).resolved(since=since, user_id=user_id)
     books = split(resolved)
     followed = tracked(resolved)
 
@@ -98,7 +109,7 @@ async def build_report(session: AsyncSession, *, window: str, now: datetime) -> 
 
 
 async def setup_stats(
-    session: AsyncSession, *, now: datetime, days: int = 30, minimum: int = 1
+    session: AsyncSession, *, now: datetime, owner_id: int, days: int = 30, minimum: int = 1
 ) -> list[SetupStat]:
     """specs/PROMPTS.md §3's "rolling 30-day stats per setup_type" for the prompt.
 
@@ -107,10 +118,20 @@ async def setup_stats(
     not the owner's execution — a setup the owner skipped still tells the model
     whether the setup worked. A rehearsal day would be neither.
 
+    **Scoped to the owner (M8.1, owner ruling).** The analyst runs once per cycle and
+    its output is shared, but one shared analysis now produces one signal row *per
+    user*. Counting all of them would multiply the sample size by the number of users
+    and turn the win rate into a weighted average of everybody's execution — a figure
+    that changes when somebody new joins, which is not a fact about the market. The
+    owner's book is the calibration reference: exactly one row per analysis, and the
+    only book the owner controls. Members' decisions never reach the prompt.
+
     ``float`` at this boundary only, because ``SetupStat`` has taken floats since
     M5 and this is a prompt line rather than money math.
     """
-    resolved = await StatsRepository(session).resolved(since=now - timedelta(days=days))
+    resolved = await StatsRepository(session).resolved(
+        since=now - timedelta(days=days), user_id=owner_id
+    )
     rows = by_key(tracked(resolved), "setup_type", minimum=minimum)
     return [
         SetupStat(

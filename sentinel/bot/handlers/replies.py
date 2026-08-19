@@ -26,6 +26,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, ForceReply, Message
 
+from sentinel.bot.auth import Actor
 from sentinel.bot.context import BotContext
 from sentinel.bot.formatting import escape
 from sentinel.bot.keyboards import ManageAction, ManageCallback
@@ -56,7 +57,9 @@ def _prompt_key(action: ManageAction) -> str:
 
 
 @replies_router.callback_query(ManageCallback.filter())
-async def manage(query: CallbackQuery, callback_data: ManageCallback, ctx: BotContext) -> None:
+async def manage(
+    query: CallbackQuery, callback_data: ManageCallback, ctx: BotContext, actor: Actor
+) -> None:
     """Ask the question, and record that we asked it."""
     assert query.message is not None
     chat_id = query.message.chat.id
@@ -66,6 +69,17 @@ async def manage(query: CallbackQuery, callback_data: ManageCallback, ctx: BotCo
         row = await ctx.repositories.signals(session).get(callback_data.signal_id)
     if row is None:
         await query.answer("That signal is no longer in the database.", show_alert=True)
+        return
+    if row.user_id != actor.user_id:
+        # As with the decision buttons (M8.1): a forwarded card carries its manage
+        # row, and a manual close writes a realized R into somebody's statistics.
+        log.warning(
+            "bot.manage_rejected",
+            signal_id=str(callback_data.signal_id),
+            user_id=actor.user_id,
+            detail="the signal belongs to another user",
+        )
+        await query.answer("That signal is not yours.", show_alert=True)
         return
     if action is ManageAction.CLOSE and row.filled_qty <= 0:
         await query.answer("Nothing has filled on this signal yet.", show_alert=True)

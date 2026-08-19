@@ -93,10 +93,13 @@ async def run(settings: Settings, *, simulate: int | None, send: bool) -> int:
         print("\n(not sent — pass --send to deliver it)")
         return 0
 
-    chat_ids = settings.secrets.allowed_user_ids
-    if not chat_ids:
-        print("\nTELEGRAM_ALLOWED_USER_IDS is empty — there is nobody to send to.")
+    # Admin alerts go to the owner alone (M8.1): a member has no lever to pull in
+    # response to a failed cycle or an LLM bill.
+    owner_id = settings.secrets.owner_user_id
+    if owner_id is None:
+        print("\nTELEGRAM_OWNER_USER_ID is not set — there is nobody to send to.")
         return 1
+    chat_ids = (owner_id,)
 
     bot = build_bot(settings)
     try:

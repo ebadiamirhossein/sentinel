@@ -17,6 +17,13 @@ because a signal's thread carries a dozen updates and ``kind`` alone allowed one
 
 **Dry-run signals are skipped entirely.** A rehearsal cycle must produce a
 completely silent phone; the events are still recorded and still measured.
+
+**M8.1 — one recipient at a time, and the queue is theirs.** ``chat_ids`` is now the
+list of users eligible to receive anything, and ``unposted`` is asked *per user* as
+well as per chat. That second filter is not a refinement: "unposted" used to mean
+"no message row for this chat", which for a single owner was the same thing as
+"mine". With several users it is not, and without the filter every member would
+receive fill-by-fill commentary on every other member's positions.
 """
 
 from __future__ import annotations
@@ -67,11 +74,17 @@ class TrackerNotifier:
         self._signals = signals
 
     async def deliver(self) -> int:
-        """Post everything outstanding. Returns how many messages were sent."""
+        """Post everything outstanding. Returns how many messages were sent.
+
+        A private chat id equals its user id on Telegram, which is why one loop
+        variable serves as both here — and why ``unposted`` is given it twice, once
+        as the delivery key and once as the ownership filter. They are the same
+        number and two different questions.
+        """
         sent = 0
         for chat_id in self._chat_ids:
             async with self._database.session() as session:
-                pending = await self._events(session).unposted(chat_id)
+                pending = await self._events(session).unposted(chat_id, user_id=chat_id)
             for event in pending:
                 sent += await self._deliver_one(event, chat_id)
         return sent

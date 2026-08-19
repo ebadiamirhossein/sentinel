@@ -4,14 +4,19 @@
 mapping since M0 and nothing ever supplied one, because the DB layer did not
 exist. This module is that layer.
 
-Three settings are owner-editable, and they are not all the same kind of thing:
+**M8.1 split this table in two, and the split is the point.** ``capital_eur`` and
+``risk_per_trade_pct`` moved out of ``runtime_settings`` and onto the ``users`` row:
+they are the two numbers that must not be shared between people, and every position
+size comes from them. ``runtime_settings`` keeps what genuinely is one setting for
+the whole pipeline — the watchlist — and the old rows are left where they are, since
+nothing reads capital or risk from them any more.
 
 * ``capital_eur`` is **not** in ``AppConfig`` at all — config.yaml deliberately
   omits it and the gate rejects with ``NO_CAPITAL`` until it is set. It belongs to
   ``AccountState``, so it is returned there rather than merged into the config.
 * ``risk_per_trade_pct`` exists in both places. The gate reads it from
-  ``AccountState``, so that is what ``/risk`` writes; the config value remains the
-  default a fresh install starts from.
+  ``AccountState``, so that is what ``/risk`` writes onto the caller's row; the
+  config value remains the default a user who has not chosen one is sized against.
 * ``watchlist`` is plain config, and is merged through ``load_config`` so the
   existing deep-merge decides precedence instead of a second mechanism.
 
@@ -26,11 +31,17 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from sentinel.bot.models import UserAccount
 from sentinel.core.config import AppConfig, RiskConfig, Settings, load_config
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.models import AccountState
 
 #: Keys in ``runtime_settings``. Strings, because they are stored in a database.
+#:
+#: ``CAPITAL_EUR`` and ``RISK_PER_TRADE_PCT`` are **historical** from M8.1: the
+#: values moved to ``users``, and migration 0007 copied the owner's across rather
+#: than deleting the rows. They are still named here because the migration reads
+#: them and because ``/settings`` should be able to explain where a value came from.
 CAPITAL_EUR = "capital_eur"
 RISK_PER_TRADE_PCT = "risk_per_trade_pct"
 WATCHLIST = "watchlist"
@@ -140,20 +151,28 @@ def effective_config(settings: Settings, stored: dict[str, Any]) -> AppConfig:
     return load_config(settings.secrets.config_path, db_overrides=overrides)
 
 
-def account_state(stored: dict[str, Any], config: AppConfig, eurusd_rate: Decimal) -> AccountState:
-    """Build the gate's ``AccountState`` from what the owner has set.
+def risk_pct_of(account: UserAccount, config: AppConfig) -> Decimal:
+    """This user's risk per trade, or the config default if they never chose one.
+
+    One function rather than the same conditional in ``/risk``, ``/status``,
+    ``/settings`` and the gate — four copies of a fallback is four chances for one of
+    them to fall back to something else.
+    """
+    if account.risk_per_trade_pct is None:
+        return config.risk.risk_per_trade_pct
+    return account.risk_per_trade_pct
+
+
+def account_state(account: UserAccount, config: AppConfig, eurusd_rate: Decimal) -> AccountState:
+    """Build the gate's ``AccountState`` from what **this user** has set.
 
     ``capital_eur`` stays ``None`` when unset — the gate then rejects with
     ``NO_CAPITAL``, which is the correct, loud behaviour. Substituting a default
-    would silently size positions against a number the owner never chose.
+    would silently size positions against a number the user never chose.
     """
-    capital = stored.get(CAPITAL_EUR)
-    risk_pct = stored.get(RISK_PER_TRADE_PCT)
     return AccountState(
-        capital_eur=None if capital is None else Decimal(str(capital)),
-        risk_per_trade_pct=(
-            config.risk.risk_per_trade_pct if risk_pct is None else Decimal(str(risk_pct))
-        ),
+        capital_eur=account.capital_eur,
+        risk_per_trade_pct=risk_pct_of(account, config),
         eurusd_rate=eurusd_rate,
     )
 
@@ -174,6 +193,7 @@ __all__ = [
     "parse_capital",
     "parse_risk_pct",
     "parse_symbol",
+    "risk_pct_of",
     "source_of",
     "verify_symbol",
 ]

@@ -75,17 +75,43 @@ class Secrets(BaseSettings):
 
     anthropic_api_key: SecretStr | None = None
     telegram_bot_token: SecretStr | None = None
+    #: Who owns this deployment (M8.1). The ``users`` table is the runtime authority
+    #: on standing and roles; this names the row to seed and is the one identity that
+    #: cannot be granted from inside Telegram.
+    telegram_owner_user_id: int | None = None
     # Comma-separated in the environment; parsed by `allowed_user_ids`.
     telegram_allowed_user_ids: str = ""
     cryptopanic_api_key: SecretStr | None = None
 
     @property
     def allowed_user_ids(self) -> tuple[int, ...]:
-        """Telegram allowlist (specs/TELEGRAM_UX.md §1). Everyone else gets silence."""
+        """The pre-M8.1 allowlist. **Bootstrap only** from M8.1 onwards.
+
+        Through M8 this tuple was both the authorization list and the broadcast
+        list. Both jobs moved to the ``users`` table, which a person can be *added*
+        to without a deploy. What survives here is its use as a fallback for
+        :attr:`owner_user_id`, so an existing single-id ``.env`` keeps working
+        untouched.
+        """
         raw = self.telegram_allowed_user_ids.strip()
         if not raw:
             return ()
         return tuple(int(part.strip()) for part in raw.split(",") if part.strip())
+
+    @property
+    def owner_user_id(self) -> int | None:
+        """The owner's Telegram id, or ``None`` if the environment names none.
+
+        ``TELEGRAM_ALLOWED_USER_IDS`` is only trusted when it holds a single id: a
+        multi-id allowlist predates roles entirely and says nothing about which of
+        those ids owns the system. Guessing would hand approval rights to whoever
+        happened to be listed first, so the fallback declines instead and migration
+        0007 fails with the variable's name in the message.
+        """
+        if self.telegram_owner_user_id is not None:
+            return self.telegram_owner_user_id
+        allowed = self.allowed_user_ids
+        return allowed[0] if len(allowed) == 1 else None
 
     @property
     def json_logs(self) -> bool:

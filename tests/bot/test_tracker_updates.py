@@ -141,7 +141,9 @@ def test_invalidation_and_expiry_read_like_the_spec() -> None:
 @pytest.fixture
 def store() -> FakeStore:
     store = FakeStore()
-    store.signals[SIGNAL_ID] = _SignalRow(SIGNAL_ID, uuid4(), number=7)
+    # chat id == user id on Telegram, which is the identity M8.1's notifier
+    # relies on: the queue is per chat *and* per owner of the signal.
+    store.signals[SIGNAL_ID] = _SignalRow(SIGNAL_ID, uuid4(), number=7, user_id=CHAT_ID)
     store.messages[(SIGNAL_ID, MessageKind.CARD.value, CHAT_ID, "")] = _MessageRow(
         signal_id=SIGNAL_ID,
         kind=MessageKind.CARD.value,
@@ -161,13 +163,16 @@ def notifier(
         def __init__(self, session: Any) -> None:
             self._session = session
 
-        async def unposted(self, chat_id: int, *, limit: int = 100) -> list[Any]:
+        async def unposted(self, chat_id: int, *, user_id: int, limit: int = 100) -> list[Any]:
             posted = {
                 key[3]
                 for key in store.messages
                 if key[1] == MessageKind.UPDATE.value and key[2] == chat_id
             }
-            return [item for item in events if item.event_key not in posted]
+            mine = {signal_id for signal_id, row in store.signals.items() if row.user_id == user_id}
+            return [
+                item for item in events if item.event_key not in posted and item.signal_id in mine
+            ]
 
     class Signals:
         def __init__(self, session: Any) -> None:

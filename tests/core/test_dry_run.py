@@ -50,7 +50,12 @@ class Signals:
     async def claim(self, record: SignalRecord) -> SignalRecord | None:
         if self.store.by_plan_id(record.plan.plan_id) is not None:
             return None
-        row = _SignalRow(record.signal_id, record.plan.plan_id, number=len(self.store.signals) + 1)
+        row = _SignalRow(
+            record.signal_id,
+            record.plan.plan_id,
+            number=len(self.store.signals) + 1,
+            user_id=record.user_id,
+        )
         row.dry_run = record.dry_run
         row.symbol = record.plan.symbol
         row.plan = record.plan.model_dump(mode="json")
@@ -72,7 +77,7 @@ async def test_an_approved_plan_is_stored_and_never_sent(
     )
     result = CycleResult(cycle_id=uuid4(), dry_run=True)
 
-    await orchestrator._record_dry_run(result, plan, [])
+    await orchestrator._record_dry_run(result, plan, [], user_id=CHAT_ID)
 
     assert result.published == 1
     assert bot.calls == [], "a rehearsal must make no outbound Telegram call"
@@ -93,7 +98,9 @@ async def test_the_card_that_would_have_been_sent_is_logged_verbatim(
         clock=FrozenClock(NOW),
         repositories=CycleRepositories(signals=Signals),  # type: ignore[arg-type]
     )
-    await orchestrator._record_dry_run(CycleResult(cycle_id=uuid4(), dry_run=True), plan, [])
+    await orchestrator._record_dry_run(
+        CycleResult(cycle_id=uuid4(), dry_run=True), plan, [], user_id=CHAT_ID
+    )
 
     logged = capsys.readouterr().out
     assert "cycle.dry_run_card" in logged
@@ -109,7 +116,7 @@ async def test_the_tracker_stays_silent_about_a_rehearsal_signal(
     exactly as a real one — and says nothing about any of it."""
     store = FakeStore()
     signal_id = uuid4()
-    row = _SignalRow(signal_id, plan.plan_id, number=1)
+    row = _SignalRow(signal_id, plan.plan_id, number=1, user_id=CHAT_ID)
     row.dry_run = True
     row.symbol = "SOLUSDT"
     store.signals[signal_id] = row
@@ -158,7 +165,9 @@ async def test_turning_the_flag_off_does_not_retrospectively_make_it_real(
         clock=FrozenClock(NOW),
         repositories=CycleRepositories(signals=Signals),  # type: ignore[arg-type]
     )
-    await orchestrator._record_dry_run(CycleResult(cycle_id=uuid4(), dry_run=True), plan, [])
+    await orchestrator._record_dry_run(
+        CycleResult(cycle_id=uuid4(), dry_run=True), plan, [], user_id=CHAT_ID
+    )
 
     stored = next(iter(store.signals.values()))
     assert stored.dry_run is True

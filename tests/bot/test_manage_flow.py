@@ -17,17 +17,26 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from sentinel.bot.auth import Actor
 from sentinel.bot.context import BotContext
 from sentinel.bot.handlers import replies
 from sentinel.bot.keyboards import ManageAction, ManageCallback
 from sentinel.bot.models import MessageKind, SignalStatus
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
-from tests.bot_double import FakeDatabase, FakeStore, _SignalRow, fake_repositories
+from tests.bot_double import (
+    FakeDatabase,
+    FakeStore,
+    _SignalRow,
+    fake_repositories,
+    owner_account,
+)
 from tests.risk_double import approved_plan
 
 SIGNAL_ID = UUID("22222222-2222-2222-2222-222222222222")
 CHAT_ID = 4242
+#: chat id == user id on Telegram; the manage row belongs to that user's signal.
+ACTOR = Actor(user_id=CHAT_ID, account=owner_account(CHAT_ID))
 NOW = datetime(2026, 8, 18, 14, 0, tzinfo=UTC)
 PROMPT_ID = 777
 
@@ -70,7 +79,7 @@ class FakeQuery:
 def store() -> FakeStore:
     store = FakeStore()
     plan = approved_plan(load_config())
-    row = _SignalRow(SIGNAL_ID, plan.plan_id, number=7)
+    row = _SignalRow(SIGNAL_ID, plan.plan_id, number=7, user_id=CHAT_ID)
     row.plan = plan.model_dump(mode="json")
     row.filled_qty = Decimal("18.30")
     row.status = SignalStatus.PARTIALLY_FILLED.value
@@ -110,6 +119,7 @@ async def test_the_close_button_asks_for_the_price_it_needs(
         query,
         ManageCallback(signal_id=SIGNAL_ID, action=ManageAction.CLOSE),
         ctx,
+        ACTOR,
     )
     assert "reply to this message with the price you were actually filled at" in (
         query.message.last.lower()
@@ -130,6 +140,7 @@ async def test_the_close_button_refuses_a_signal_that_has_not_filled(
         query,
         ManageCallback(signal_id=SIGNAL_ID, action=ManageAction.CLOSE),
         ctx,
+        ACTOR,
     )
     assert query.answers == ["Nothing has filled on this signal yet."]
     assert query.message.replies == []
@@ -154,6 +165,7 @@ async def test_a_reply_to_the_prompt_records_the_close_and_its_realized_r(
         query,
         ManageCallback(signal_id=SIGNAL_ID, action=ManageAction.CLOSE),
         ctx,
+        ACTOR,
     )
 
     answer = FakeMessage(text="84.00", reply_to=PROMPT_ID)
@@ -175,6 +187,7 @@ async def test_a_reply_that_is_not_a_price_is_rejected_rather_than_stored(
         query,
         ManageCallback(signal_id=SIGNAL_ID, action=ManageAction.CLOSE),
         ctx,
+        ACTOR,
     )
 
     answer = FakeMessage(text="about eighty four", reply_to=PROMPT_ID)
@@ -193,6 +206,7 @@ async def test_nan_is_refused_by_name(ctx: BotContext, store: FakeStore) -> None
         query,
         ManageCallback(signal_id=SIGNAL_ID, action=ManageAction.CLOSE),
         ctx,
+        ACTOR,
     )
     for hostile in ("nan", "inf", "-5", "0"):
         answer = FakeMessage(text=hostile, reply_to=PROMPT_ID)
@@ -207,6 +221,7 @@ async def test_a_note_is_stored_against_the_signal(ctx: BotContext, store: FakeS
         query,
         ManageCallback(signal_id=SIGNAL_ID, action=ManageAction.NOTE),
         ctx,
+        ACTOR,
     )
     answer = FakeMessage(text="entered late, chased the retest", reply_to=PROMPT_ID)
     await replies.answered(answer, ctx)
@@ -233,6 +248,7 @@ async def test_the_question_survives_a_restart(ctx: BotContext, store: FakeStore
         query,
         ManageCallback(signal_id=SIGNAL_ID, action=ManageAction.CLOSE),
         ctx,
+        ACTOR,
     )
 
     restarted = BotContext(

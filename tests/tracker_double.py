@@ -22,7 +22,14 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sentinel.bot.models import OPEN_STATUSES, SignalDecision, SignalRecord, SignalStatus
+from sentinel.bot.models import (
+    OPEN_STATUSES,
+    SignalDecision,
+    SignalRecord,
+    SignalStatus,
+    UserAccount,
+    UserStatus,
+)
 from sentinel.ingestion.models import Candle, OHLCVSeries
 from sentinel.risk.models import PauseState
 from sentinel.storage.repositories import (
@@ -32,8 +39,10 @@ from sentinel.storage.repositories import (
     SignalExitRepository,
     SignalFillRepository,
     SignalRepository,
+    UserRepository,
 )
 from sentinel.tracker.loop import TrackerRepositories
+from tests.bot_double import OWNER_ID
 
 _EPOCH = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
@@ -46,6 +55,8 @@ class FakeSignalRow:
     plan: dict[str, Any]
     symbol: str
     number: int = 1
+    #: M8.1 — whose signal, and therefore whose loss limit and whose chat.
+    user_id: int = OWNER_ID
     status: str = SignalStatus.PENDING_ENTRY.value
     decision: str | None = None
     dry_run: bool = False
@@ -72,6 +83,8 @@ class FakeStore:
     events: dict[tuple[UUID, str], dict[str, Any]] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
     pause: PauseState = field(default_factory=PauseState)
+    #: The ``users`` rows the daily-loss rail divides each book by (M8.1).
+    users: dict[int, UserAccount] = field(default_factory=dict)
     committed: int = 0
 
     def add_signal(self, record: SignalRecord, **overrides: Any) -> FakeSignalRow:
@@ -80,6 +93,7 @@ class FakeStore:
             plan=record.plan.model_dump(mode="json"),
             symbol=record.plan.symbol,
             number=record.number,
+            user_id=record.user_id,
             status=record.status.value,
             decision=None if record.decision is None else record.decision.value,
             dry_run=record.dry_run,
@@ -136,16 +150,18 @@ class FakeSignalRepository(SignalRepository):
             row for row in self._store.signals.values() if SignalStatus(row.status) in OPEN_STATUSES
         ]
 
-    async def realized_eur_since(self, since: datetime) -> list[Decimal]:
-        return [
-            row.realized_eur
-            for row in self._store.signals.values()
-            if row.decision == SignalDecision.TAKEN.value
-            and not row.dry_run
-            and row.closed_at is not None
-            and row.closed_at >= since
-            and row.realized_eur is not None
-        ]
+    async def realized_eur_by_user_since(self, since: datetime) -> dict[int, list[Decimal]]:
+        grouped: dict[int, list[Decimal]] = {}
+        for row in self._store.signals.values():
+            if (
+                row.decision == SignalDecision.TAKEN.value
+                and not row.dry_run
+                and row.closed_at is not None
+                and row.closed_at >= since
+                and row.realized_eur is not None
+            ):
+                grouped.setdefault(row.user_id, []).append(row.realized_eur)
+        return grouped
 
     async def advance(self, signal_id: UUID, **fields: Any) -> Any:
         row = self._store.signals.get(signal_id)
@@ -258,6 +274,24 @@ class FakeSettingsRepository(RuntimeSettingsRepository):
         return dict(self._store.settings)
 
 
+class FakeUserRepository(UserRepository):
+    """The two calls the daily-loss rail makes (M8.1)."""
+
+    def __init__(self, session: Any) -> None:
+        self._store = _store(session)
+
+    async def approved(self) -> list[UserAccount]:
+        return sorted(
+            (a for a in self._store.users.values() if a.status is UserStatus.APPROVED),
+            key=lambda a: a.telegram_user_id,
+        )
+
+    async def set_pause(self, user_id: int, state: PauseState, *, at: datetime) -> None:
+        existing = self._store.users.get(user_id)
+        if existing is not None:
+            self._store.users[user_id] = existing.model_copy(update={"pause": state})
+
+
 class _Row:
     """Attribute access over a dict, so the fakes hand back row-shaped objects."""
 
@@ -273,6 +307,7 @@ def fake_repositories() -> TrackerRepositories:
         events=FakeEventRepository,
         risk_state=FakeRiskStateRepository,
         settings=FakeSettingsRepository,
+        users=FakeUserRepository,
     )
 
 

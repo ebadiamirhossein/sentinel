@@ -88,6 +88,29 @@ sentinel/
 5. Gate-approved plans → Telegram signal card. Everything persisted at every step.
 6. Dedup guard: no new signal for a symbol while one is ACTIVE or within cooldown (default 4h) of a rejected/expired one, unless direction flips with strong evidence.
 
+> **Correction (2026-08-19, from M8.1) — step 5 fans out; steps 1-4 never do.**
+> The snapshot, the features, the screener verdict, the charts, the deep analyst call
+> and the `analyst_reports` row happen **exactly once per symbol per cycle**, whoever
+> is approved: the analyst produces a judgment about a market, not about a person,
+> and it is the ~$0.32 tier. Only step 5 repeats — per eligible user, with that
+> user's own `AccountState` and `PortfolioState`, their own `RiskEngine.evaluate`,
+> their own `gate_decisions` row (the table gains `user_id`), their own signal and
+> their own card. `sentinel/risk/` is untouched: it was already a pure function of
+> `(account, portfolio)`.
+>
+> Step 6's guard runs on the **union** of eligible users — a symbol is analysed if
+> *any* of them could receive it, because one member's cooldown must not suppress a
+> shared analysis for everybody. It is applied a second time **per user** inside the
+> fan-out, because the gate has no dedup rail of its own and PRD F11's "max 1 active
+> signal per symbol" is per person. **Nobody eligible ⇒ the deep analyst is not
+> called at all.**
+>
+> Contract 5 (`SignalRecord`) and the `signals` table gain `user_id`. One shared
+> report becomes one row per user, each with its own sizing, decision, fills and
+> realized R — so every per-user query downstream is a filter on a column rather than
+> a join through a second table, and the tracker, the R accounting and the state
+> machine need no changes at all.
+
 > **Ruling (2026-08-18, from M7) — cooldown scope, and the flip exception deferred.**
 > The cooldown also arms after a **stop-out**: re-entering the same failing idea on
 > the next 15-minute cycle is exactly what the rail is for. "Unless direction flips

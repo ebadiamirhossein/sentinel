@@ -28,6 +28,7 @@ from sentinel.risk.models import (
 )
 from sentinel.storage.models import GateDecisionRow, RiskStateRow
 from sentinel.storage.repositories import GateDecisionRepository, RiskStateRepository
+from tests.bot_double import OWNER_ID
 from tests.db_guard import TEST_DB_URL, requires_db
 
 from .conftest import NOW, account, market, portfolio, report
@@ -47,7 +48,7 @@ def decisions(config: AppConfig, clock: FrozenClock) -> list[GateDecision]:
 def test_decision_rows_keep_the_machine_readable_reason(
     config: AppConfig, clock: FrozenClock
 ) -> None:
-    rows = [GateDecisionRepository.to_row(d) for d in decisions(config, clock)]
+    rows = [GateDecisionRepository.to_row(d, user_id=OWNER_ID) for d in decisions(config, clock)]
 
     assert [row["gate_status"] for row in rows] == [
         GateStatus.APPROVED_FOR_HUMAN.value,
@@ -67,7 +68,7 @@ def test_decision_rows_keep_the_machine_readable_reason(
 def test_decision_rows_are_json_safe(config: AppConfig, clock: FrozenClock) -> None:
     import json
 
-    plan = GateDecisionRepository.to_row(decisions(config, clock)[0])["plan"]
+    plan = GateDecisionRepository.to_row(decisions(config, clock)[0], user_id=OWNER_ID)["plan"]
     assert plan is not None
     assert json.loads(json.dumps(plan))["entries"][0]["qty"] == "18.30"
 
@@ -95,7 +96,7 @@ async def test_gate_decisions_round_trip(
 ) -> None:
     repo = GateDecisionRepository(session)
     for decision in decisions(config, clock):
-        await repo.record(decision)
+        await repo.record(decision, user_id=OWNER_ID)
     await session.commit()
 
     stored = await repo.recent(limit=10)

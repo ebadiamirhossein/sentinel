@@ -38,6 +38,20 @@ From runtime config (DB-overridable via Telegram):
 > gap depends on the stop distance, from ~0.07R on a 2.3×ATR stop to ~0.25R on a
 > 0.6×ATR one.
 
+> **Correction (2026-08-19, from M8.1) — `capital_eur` and `risk_per_trade_pct`
+> are per user.** They were one global pair in `runtime_settings`; under multiple
+> approved users they are precisely the two values that must not be shared, and every
+> position size comes from them. They now live on the `users` row and reach the gate
+> through `AccountState` exactly as before — **the engine is unchanged**, because it
+> was already a pure function of `(AccountState, PortfolioState)`. Every other
+> parameter in the table above stays one value for the whole system. `None` for
+> either still means "not set by this user": capital rejects with `NO_CAPITAL`, risk
+> falls back to the config default.
+>
+> Migration 0007 copied the owner's two `runtime_settings` values onto their row and
+> left the rows in place. `/capital` and `/risk` still append to `config_changes`
+> (PRD F10), under a per-user key `user.<id>.capital_eur`.
+
 From the analyst (`AnalystReport`): direction, entry_zone {low, high}, stop, targets[], setup_type, confidence.
 
 ## 2. Coherence checks (reject with reason if any fail)
@@ -279,6 +293,25 @@ and report "thin RR" for a position the owner simply cannot fund.
 > §4 notice every minute. `tracker/loop.already_paused_for_loss` is that check.
 >
 > Dry-run signals are excluded: a paper loss cannot pause a real account.
+> **Correction (2026-08-19, from M8.1) — one pause became two, and they are
+> different things.** The daily-loss pause is **per user**: the limit is a percentage
+> of somebody's capital, there is no longer one capital, and a member's bad day must
+> not stop everybody else. It lives on that user's `users` row, is raised by the
+> tracker against their own realized EUR and their own capital, lapses after 24h on
+> its own, and is announced to *them* (specs/TELEGRAM_UX.md §4's notice, finally
+> delivered — the tracker has raised this pause since M7 and nothing ever sent it).
+>
+> The operator's `/pause` stays **system-wide** and stays in `risk_state`'s single
+> row, gating everybody. Members have no `/pause` (§3's M8.1 scope note), so making
+> this one per-user too would leave the person running the system without a stop
+> button for it.
+>
+> `PortfolioState.pause` composes them: the system pause when active — it is the
+> wider statement — otherwise the user's own. `/resume` keeps M6's asymmetry: it
+> lifts a manual pause on the command and requires the confirmation button whenever a
+> **loss** pause is being overridden, because that is the moment a reflexive tap costs
+> the most.
+
 - `/pause` manual pause any time; pause state persisted in DB (survives restart).
 - Capital changes via `/capital` apply to **new** signals only; open signals keep their original sizing (stored, immutable).
 

@@ -122,10 +122,13 @@ async def analyze_symbol(
     charts = list(render_album(snapshot, features, chart_specs(settings, snapshot.symbol)))
 
     verdicts = []
-    if database is not None:
+    owner_id = settings.secrets.owner_user_id
+    if database is not None and owner_id is not None:
         async with database.session() as session:
             verdicts = await AnalystReportRepository(session).recent_for_symbol(
-                snapshot.symbol, limit=settings.config.llm.history_verdicts
+                snapshot.symbol,
+                limit=settings.config.llm.history_verdicts,
+                owner_id=owner_id,
             )
     # setup_stats stays empty until M7's tracker measures outcomes; the block
     # says so in words rather than implying a result (specs/PROMPTS.md §3).

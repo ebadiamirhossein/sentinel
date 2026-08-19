@@ -1,0 +1,580 @@
+"""Owner-only commands — specs/TELEGRAM_UX.md §3 and §7 (M8.1).
+
+``/users /approve /reject /suspend`` are new here. ``/status /settings /watchlist
+/pause /resume`` moved here from ``commands.py`` unchanged in behaviour, because the
+split this milestone needs is exactly operator-versus-member: what shapes the whole
+pipeline (the watchlist, the pause), what reports on it (status, settings, spend),
+and who may be in it.
+
+**There is no refusal path in this module**, and that is deliberate. Every handler
+sits behind :class:`~sentinel.bot.auth.OwnerOnly`; a filter that does not match means
+no handler runs, which is silence. A member typing ``/approve`` therefore learns
+nothing — not that the command exists, not that they lack the role, not that anybody
+has it.
+
+``/users`` carries this milestone's other owner ruling, and it is worth reading the
+docstring on :func:`~sentinel.bot.cards.users_card` for it: the card shows standing,
+join date, whether a capital has been set at all, and whether a loss pause is
+holding. It shows no amount, no P&L, no win rate and no decision. Operating a system
+for friends does not require watching them trade.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, CommandObject
+from aiogram.types import CallbackQuery, Message
+
+from sentinel.bot.auth import Actor, OwnerOnly
+from sentinel.bot.cards import (
+    acknowledgement_card,
+    settings_card,
+    standing_card,
+    status_card,
+    users_card,
+    watchlist_card,
+    welcome_card,
+)
+from sentinel.bot.context import BotContext
+from sentinel.bot.formatting import escape
+from sentinel.bot.keyboards import (
+    AdminAction,
+    AdminCallback,
+    acknowledge_keyboard,
+    resume_keyboard,
+)
+from sentinel.bot.menu import clear_for, publish_for
+from sentinel.bot.models import SignalDecision, UserAccount, UserStatus
+from sentinel.bot.outbound import SupportsBot
+from sentinel.bot.readmodels import spend_view, user_view
+from sentinel.bot.runtime import (
+    WATCHLIST,
+    Invalid,
+    effective_config,
+    parse_symbol,
+    risk_pct_of,
+    source_of,
+    verify_symbol,
+)
+from sentinel.bot.views import DataSourceView, SettingsView, StatusView
+from sentinel.core.logging import get_logger
+from sentinel.risk.models import PauseReason, PauseState, TradePlan
+from sentinel.risk.rails import open_risk_pct
+
+log = get_logger(__name__)
+
+admin_router = Router(name="admin")
+admin_router.message.filter(OwnerOnly())
+admin_router.callback_query.filter(OwnerOnly())
+
+#: What ``/approve`` and friends say when the id is not a number or not known.
+USAGE = "Usage: /approve 123456789 · /reject 123456789 · /suspend 123456789\nSee /users for ids."
+
+
+def _parse_user_id(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    candidate = raw.strip()
+    return int(candidate) if candidate.lstrip("-").isdigit() else None
+
+
+# --------------------------------------------------------------------------- #
+# §7 — who has access
+# --------------------------------------------------------------------------- #
+
+
+@admin_router.message(Command("users"))
+async def users(message: Message, ctx: BotContext) -> None:
+    """§7 ``/users`` — standing, join date, set-up-or-not, loss-paused-or-not."""
+    now = ctx.clock.now()
+    async with ctx.database.session() as session:
+        accounts = await ctx.repositories.users(session).all()
+    await message.answer(users_card([user_view(a, now=now) for a in accounts], ctx.tz))
+
+
+@admin_router.message(Command("approve"))
+async def approve(
+    message: Message, command: CommandObject, ctx: BotContext, actor: Actor, bot: SupportsBot
+) -> None:
+    """§7 ``/approve <id>`` — and the first-run note goes out immediately."""
+    user_id = _parse_user_id(command.args)
+    if user_id is None:
+        await message.answer(USAGE)
+        return
+    updated = await _decide(ctx, user_id, UserStatus.APPROVED, by=actor.user_id)
+    if updated is None:
+        await message.answer(f"No user with id <code>{user_id}</code>. {escape(USAGE)}")
+        return
+
+    await publish_for(bot, user_id, owner=updated.is_owner)
+    await _greet(bot, ctx, updated)
+    log.info("bot.user_approved", user_id=user_id, by_user_id=actor.user_id)
+    await message.answer(
+        f"✅ Approved <code>{user_id}</code>. They have been sent the note they must "
+        "accept before anything is delivered, and asked to set their capital."
+    )
+
+
+@admin_router.message(Command("reject"))
+async def reject(
+    message: Message, command: CommandObject, ctx: BotContext, actor: Actor, bot: SupportsBot
+) -> None:
+    """§7 ``/reject <id>``. The person is told plainly; they are not left guessing."""
+    await _refuse(
+        message,
+        command,
+        ctx,
+        actor,
+        bot,
+        status=UserStatus.REJECTED,
+        confirmation="🚫 Rejected <code>{user_id}</code>. They have been told, once.",
+    )
+
+
+@admin_router.message(Command("suspend"))
+async def suspend(
+    message: Message, command: CommandObject, ctx: BotContext, actor: Actor, bot: SupportsBot
+) -> None:
+    """§7 ``/suspend <id>`` — stop delivering without deleting anything."""
+    await _refuse(
+        message,
+        command,
+        ctx,
+        actor,
+        bot,
+        status=UserStatus.SUSPENDED,
+        confirmation=(
+            "⏸️ Suspended <code>{user_id}</code>. No further signals or updates. "
+            "Their history is untouched, and /approve puts them back."
+        ),
+    )
+
+
+@admin_router.callback_query(AdminCallback.filter())
+async def approval_button(
+    query: CallbackQuery,
+    callback_data: AdminCallback,
+    ctx: BotContext,
+    actor: Actor,
+    bot: SupportsBot,
+) -> None:
+    """The Approve/Reject buttons on a request card.
+
+    The role was already re-checked against the database by :class:`OwnerOnly` on
+    this router — a callback payload is client-supplied, and a request card forwarded
+    to somebody else carries its buttons along with it.
+    """
+    approved = callback_data.action is AdminAction.APPROVE
+    status = UserStatus.APPROVED if approved else UserStatus.REJECTED
+    updated = await _decide(ctx, callback_data.user_id, status, by=actor.user_id)
+    if updated is None:  # pragma: no cover — the row existed when the card was sent
+        await query.answer("That user is no longer in the database.", show_alert=True)
+        return
+
+    if approved:
+        await publish_for(bot, updated.telegram_user_id, owner=updated.is_owner)
+        await _greet(bot, ctx, updated)
+    else:
+        await clear_for(bot, updated.telegram_user_id)
+        await _tell(bot, ctx, updated)
+
+    log.info(
+        "bot.user_decided",
+        user_id=updated.telegram_user_id,
+        status=status.value,
+        by_user_id=actor.user_id,
+    )
+    await query.answer("Approved." if approved else "Rejected.")
+    if query.message is None:  # pragma: no cover — a card too old to still be there
+        return
+    # The buttons come off the request card once it has been answered: a second tap
+    # on a stale card would re-decide a standing the owner may since have changed by
+    # hand.
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except (TelegramBadRequest, AttributeError):  # pragma: no cover — cosmetic only
+        log.info("bot.request_markup_edit_skipped", user_id=updated.telegram_user_id)
+    await query.message.answer(
+        f"{'✅ Approved' if approved else '🚫 Rejected'} <code>{updated.telegram_user_id}</code>."
+    )
+
+
+async def _refuse(
+    message: Message,
+    command: CommandObject,
+    ctx: BotContext,
+    actor: Actor,
+    bot: SupportsBot,
+    *,
+    status: UserStatus,
+    confirmation: str,
+) -> None:
+    """``/reject`` and ``/suspend`` — the same three steps with a different word."""
+    user_id = _parse_user_id(command.args)
+    if user_id is None:
+        await message.answer(USAGE)
+        return
+    if user_id == actor.user_id:
+        await message.answer(
+            "That is you. Suspending the owner would leave the system with no one "
+            "able to operate it."
+        )
+        return
+    updated = await _decide(ctx, user_id, status, by=actor.user_id)
+    if updated is None:
+        await message.answer(f"No user with id <code>{user_id}</code>. {escape(USAGE)}")
+        return
+    await clear_for(bot, user_id)
+    await _tell(bot, ctx, updated)
+    log.info("bot.user_decided", user_id=user_id, status=status.value, by_user_id=actor.user_id)
+    await message.answer(confirmation.format(user_id=user_id))
+
+
+async def _decide(
+    ctx: BotContext, user_id: int, status: UserStatus, *, by: int
+) -> UserAccount | None:
+    async with ctx.database.session() as session:
+        updated = await ctx.repositories.users(session).set_status(
+            user_id, status, at=ctx.clock.now(), by_user_id=by
+        )
+        await session.commit()
+    return updated
+
+
+async def _greet(bot: SupportsBot, ctx: BotContext, account: UserAccount) -> None:
+    """Welcome, then the note that gates everything until it is acknowledged."""
+    parse_mode = ctx.settings.config.telegram.parse_mode
+    await bot.send_message(
+        chat_id=account.telegram_user_id,
+        text=welcome_card(account),
+        parse_mode=parse_mode,
+        reply_markup=None,  # type: ignore[arg-type]
+        reply_to_message_id=None,
+    )
+    await bot.send_message(
+        chat_id=account.telegram_user_id,
+        text=acknowledgement_card(),
+        parse_mode=parse_mode,
+        reply_markup=acknowledge_keyboard(),
+        reply_to_message_id=None,
+    )
+
+
+async def _tell(bot: SupportsBot, ctx: BotContext, account: UserAccount) -> None:
+    """Tell somebody their standing changed. Rejection in silence is worse."""
+    try:
+        await bot.send_message(
+            chat_id=account.telegram_user_id,
+            text=standing_card(account),
+            parse_mode=ctx.settings.config.telegram.parse_mode,
+            reply_markup=None,  # type: ignore[arg-type]
+            reply_to_message_id=None,
+        )
+    except Exception:
+        # A user who blocked the bot cannot be told, and that must not fail the
+        # owner's command: the standing change is already committed.
+        log.warning("bot.notice_undeliverable", user_id=account.telegram_user_id, exc_info=True)
+
+
+# --------------------------------------------------------------------------- #
+# §3 — the operator's view of the pipeline
+# --------------------------------------------------------------------------- #
+
+
+@admin_router.message(Command("status"))
+async def status(message: Message, ctx: BotContext, actor: Actor) -> None:
+    """§3 ``/status`` — pipeline health, plus **the caller's own** rails.
+
+    The signal counts and the risk figures are the owner's book, not a sum over
+    everybody's: they are the numbers the owner's next signal is gated against, and
+    a total across users would be a number no rail ever compares anything to.
+    """
+    account = actor.known()
+    now = ctx.clock.now()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    async with ctx.database.session() as session:
+        system_pause = await ctx.repositories.risk_state(session).load()
+        stored = await ctx.repositories.settings(session).all()
+        signals_repo = ctx.repositories.signals(session)
+        recent = await signals_repo.recent(user_id=actor.user_id, limit=200)
+        undecided = await signals_repo.undecided_count(user_id=actor.user_id)
+        taken = await signals_repo.with_decision(
+            SignalDecision.TAKEN, user_id=actor.user_id, limit=200
+        )
+        snapshots = await ctx.repositories.snapshots(session).latest_per_symbol()
+        stuck = await ctx.repositories.messages(session).stuck()
+        open_taken = await signals_repo.open_taken(user_id=actor.user_id)
+        open_symbols = await signals_repo.open_symbols(user_id=actor.user_id)
+        signals_today = await signals_repo.published_since(day_start, user_id=actor.user_id)
+        cycles_repo = ctx.repositories.cycles(session)
+        last_cycle = await cycles_repo.latest()
+        completed, started = await cycles_repo.completion_since(now - timedelta(days=30))
+        totals = await ctx.repositories.llm_calls(session).spend_totals(
+            day_start=day_start,
+            month_start=day_start.replace(day=1),
+            priced_models=tuple(ctx.settings.config.llm.pricing),
+        )
+
+    config = effective_config(ctx.settings, stored)
+    effective, scope = _effective_pause(system_pause, account, now=now)
+    view = StatusView(
+        paused=effective.is_active(now),
+        pause_reason=None if effective.reason is None else effective.reason.value,
+        paused_until=effective.until,
+        pause_scope=scope,
+        capital_eur=account.capital_eur,
+        risk_per_trade_pct=risk_pct_of(account, config),
+        watchlist_size=len(config.watchlist),
+        signals_total=len(recent),
+        signals_undecided=undecided,
+        signals_taken=len(taken),
+        stuck_messages=len(stuck),
+        data_sources=tuple(
+            DataSourceView(
+                symbol=row.symbol,
+                quality=row.data_quality,
+                captured_at=row.captured_at,
+                degraded_fields=tuple(row.degraded_fields),
+            )
+            for row in snapshots
+        ),
+        dry_run=config.dry_run,
+        last_cycle_at=None
+        if last_cycle is None
+        else (last_cycle.finished_at or last_cycle.started_at),
+        last_cycle_status=None if last_cycle is None else last_cycle.status,
+        cycles_completed=completed,
+        cycles_started=started,
+        open_risk_pct=open_risk_pct(
+            [TradePlan.model_validate(row.plan).risk_per_trade_pct for row in open_taken]
+        ),
+        max_open_risk_pct=config.risk.max_open_risk_pct,
+        open_positions=len(open_taken),
+        max_positions=config.risk.max_positions,
+        signals_today=signals_today,
+        max_signals_per_day=config.risk.max_signals_per_day,
+        signals_open=len(open_symbols),
+        spend=spend_view(totals, config.llm),
+    )
+    await message.answer(status_card(view, ctx.tz))
+
+
+def _effective_pause(
+    system: PauseState, account: UserAccount, *, now: datetime
+) -> tuple[PauseState, str]:
+    """Which pause is holding this caller, and whose it is.
+
+    The operator's ``/pause`` wins when both are active: it is the wider statement,
+    and reporting the narrower one would understate what is stopped.
+    """
+    if system.is_active(now):
+        return system, "system"
+    if account.pause.is_active(now):
+        return account.pause, "you"
+    return PauseState(), ""
+
+
+@admin_router.message(Command("pause"))
+async def pause(message: Message, ctx: BotContext, actor: Actor) -> None:
+    """§3 ``/pause`` — manual, no expiry, survives a restart (RISK_ENGINE §7).
+
+    System-wide, and owner-only. Members cannot pause themselves (they have no
+    ``/pause``), so a per-user pause here would leave the operator with no stop
+    button for the system they run.
+    """
+    async with ctx.database.session() as session:
+        await ctx.repositories.risk_state(session).save(
+            PauseState(paused=True, reason=PauseReason.MANUAL, until=None)
+        )
+        await session.commit()
+    log.info("bot.paused", reason=PauseReason.MANUAL.value, user_id=actor.user_id)
+    await message.answer(
+        "⏸️ <b>Paused.</b> No new signals will be gated through for anyone until "
+        "/resume.\nThe tracker keeps following everything already open."
+    )
+
+
+@admin_router.message(Command("resume"))
+async def resume(message: Message, ctx: BotContext, actor: Actor) -> None:
+    """§3 ``/resume`` — a loss-limit pause needs an explicit confirmation button.
+
+    The asymmetry is the point, and M8.1 keeps it across the split: a manual pause
+    was a deliberate act and lifting it is another one, but a daily-loss pause exists
+    precisely because the day has gone badly, and that is when a reflexive tap does
+    the most damage. The loss pause now lives on the caller's own ``users`` row; the
+    manual one is still the single ``risk_state`` row.
+    """
+    account = actor.known()
+    now = ctx.clock.now()
+    async with ctx.database.session() as session:
+        system = await ctx.repositories.risk_state(session).load()
+
+        if account.pause.is_active(now):
+            await message.answer(
+                "⚠️ This is a <b>daily loss-limit</b> pause on your own book, not a "
+                "manual one.\nResuming now overrides a rail that exists to stop a "
+                "cascade day. Confirm if that is what you want.",
+                reply_markup=resume_keyboard(),
+            )
+            return
+        if not system.is_active(now):
+            await message.answer("▶️ Not paused — nothing to resume.")
+            return
+        await ctx.repositories.risk_state(session).save(PauseState())
+        await session.commit()
+    log.info("bot.resumed", user_id=actor.user_id)
+    await message.answer("▶️ <b>Resumed.</b> New signals will be gated normally again.")
+
+
+@admin_router.message(Command("watchlist"))
+async def watchlist(
+    message: Message, command: CommandObject, ctx: BotContext, actor: Actor
+) -> None:
+    """§3 ``/watchlist [add|remove SYMBOL]`` — owner-only, because it spends money.
+
+    The watchlist decides what the shared deep analyst is pointed at, and an analyst
+    call is ~$0.32 on the owner's key. A member adding twelve symbols would be
+    spending somebody else's budget, so members do not have this command at all.
+
+    A symbol is checked against the exchange's own instrument list before it is
+    stored. It is one keyless public call, and the alternative is a typo that
+    silently produces a skipped symbol every cycle for as long as nobody notices.
+    """
+    async with ctx.database.session() as session:
+        settings_repo = ctx.repositories.settings(session)
+        stored = await settings_repo.all()
+        config = effective_config(ctx.settings, stored)
+        current: tuple[str, ...] = tuple(config.watchlist)
+
+        if not command.args:
+            await message.answer(watchlist_card(current, source_of(WATCHLIST, stored)))
+            return
+
+        parts = command.args.split()
+        if len(parts) != 2 or parts[0].lower() not in {"add", "remove"}:
+            await message.answer(
+                "❌ Usage: /watchlist · /watchlist add SOLUSDT · /watchlist remove SOLUSDT"
+            )
+            return
+
+        action, raw_symbol = parts[0].lower(), parts[1]
+        parsed = parse_symbol(raw_symbol)
+        if isinstance(parsed, Invalid):
+            await message.answer(f"❌ {escape(parsed.message)}")
+            return
+
+        if action == "add":
+            if parsed in current:
+                await message.answer(f"{escape(parsed)} is already on the watchlist.")
+                return
+            known = await ctx.repositories.instruments(session).get(parsed)
+            unknown = await verify_symbol(parsed, known, ctx.symbol_checker)
+            if isinstance(unknown, Invalid):
+                await message.answer(f"❌ {escape(unknown.message)}")
+                return
+            updated = (*current, parsed)
+        else:
+            if parsed not in current:
+                await message.answer(f"{escape(parsed)} is not on the watchlist.")
+                return
+            updated = tuple(symbol for symbol in current if symbol != parsed)
+            if not updated:
+                await message.answer(
+                    "❌ That would empty the watchlist, and an empty watchlist means "
+                    "the scan cycle has nothing to do. Add another symbol first."
+                )
+                return
+
+        await settings_repo.set(WATCHLIST, list(updated), at=ctx.clock.now(), user_id=actor.user_id)
+        await session.commit()
+
+    log.info("bot.watchlist_changed", action=action, symbol=parsed, size=len(updated))
+    await message.answer(watchlist_card(updated, "db"))
+
+
+@admin_router.message(Command("settings"))
+async def settings(message: Message, ctx: BotContext, actor: Actor) -> None:
+    """§3 ``/settings`` — every runtime value that shapes a signal, with its source.
+
+    ``capital_eur`` and ``risk_per_trade_pct`` are tagged ``you`` rather than ``db``
+    from M8.1: they are no longer one global setting, and a card that still said
+    ``db`` would imply the value applies to everybody.
+    """
+    account = actor.known()
+    async with ctx.database.session() as session:
+        stored = await ctx.repositories.settings(session).all()
+    config = effective_config(ctx.settings, stored)
+    risk_config, costs, telegram = config.risk, config.costs, config.telegram
+
+    view = SettingsView(
+        groups=(
+            (
+                "Sizing — yours (specs/RISK_ENGINE.md §1)",
+                (
+                    (
+                        "capital_eur",
+                        "not set" if account.capital_eur is None else f"€{account.capital_eur}",
+                        "you" if account.capital_eur is not None else "unset",
+                    ),
+                    (
+                        "risk_per_trade_pct",
+                        f"{risk_pct_of(account, config)}%",
+                        "you" if account.risk_per_trade_pct is not None else "yaml",
+                    ),
+                    ("max_open_risk_pct", f"{risk_config.max_open_risk_pct}%", "yaml"),
+                    ("max_positions", str(risk_config.max_positions), "yaml"),
+                    ("max_leverage", f"{risk_config.max_leverage}x", "yaml"),
+                    ("margin_budget_pct", f"{risk_config.margin_budget_pct}%", "yaml"),
+                ),
+            ),
+            (
+                "Gate thresholds",
+                (
+                    ("min_rr_tp1", f"{risk_config.min_rr_tp1}R (net of costs)", "yaml"),
+                    ("min_confidence", str(risk_config.min_confidence), "yaml"),
+                    ("max_entry_distance_pct", f"{risk_config.max_entry_distance_pct}%", "yaml"),
+                    (
+                        "stop_atr_multiple",
+                        f"{risk_config.stop_atr_min_multiple} to "
+                        f"{risk_config.stop_atr_max_multiple}",
+                        "yaml",
+                    ),
+                    ("liq_buffer_multiple", f"{risk_config.liq_buffer_multiple}x", "yaml"),
+                    ("daily_loss_limit_pct", f"{risk_config.daily_loss_limit_pct}%", "yaml"),
+                    ("signal_cooldown_hours", f"{risk_config.signal_cooldown_hours}h", "yaml"),
+                ),
+            ),
+            (
+                "Costs (specs/RISK_ENGINE.md §4.2)",
+                (
+                    ("maker_fee_pct", f"{costs.maker_fee_pct}%", "yaml"),
+                    ("taker_fee_pct", f"{costs.taker_fee_pct}%", "yaml"),
+                    ("funding_interval_hours", f"{costs.funding_interval_hours}h", "yaml"),
+                    (
+                        "credit_favourable_funding",
+                        str(costs.credit_favourable_funding).lower(),
+                        "yaml",
+                    ),
+                ),
+            ),
+            (
+                "Pipeline",
+                (
+                    ("watchlist", f"{len(config.watchlist)} symbols", source_of(WATCHLIST, stored)),
+                    ("scan_interval_minutes", str(config.schedule.scan_interval_minutes), "yaml"),
+                    ("screener_model", config.llm.screener_model, "yaml"),
+                    ("analyst_model", config.llm.analyst_model, "yaml"),
+                    ("owner_timezone", telegram.owner_timezone, "yaml"),
+                    ("card_charts", ", ".join(telegram.card_chart_timeframes), "yaml"),
+                ),
+            ),
+        )
+    )
+    await message.answer(settings_card(view))
+
+
+__all__ = ["USAGE", "admin_router"]

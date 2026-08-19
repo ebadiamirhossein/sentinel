@@ -31,6 +31,16 @@ Manually scanning crypto markets across timeframes, news, volume, funding, and s
 
 Single persona: the **owner-trader** (executes manually on their exchange, EUR-denominated capital).
 
+> **Correction (2026-08-19, from M8.1) — there is a second persona.** The owner can
+> approve **members**: people who receive the same analysis, sized against their own
+> capital and their own risk %, with their own rails, their own decisions and their
+> own statistics. Nothing else about this document changes — every story below is
+> still the owner's, execution is still manual, and there is still no trade
+> execution anywhere. What is new is that "the owner's capital" is one book among
+> several, and that no user can see another's. See specs/TELEGRAM_UX.md §7.
+>
+> The analyst is **not** run per user. One judgment about a market, N sized plans.
+
 - As the owner, I want the system to scan my watchlist 24/7 so that I never miss a 1–4h setup while asleep or working.
 - As the owner, I want each signal to state EUR margin, notional, and leverage computed from my configured total capital so that I can place the trade in under 2 minutes without any math.
 - As the owner, I want multi-entry ladders when the setup benefits from scaling in, so that I get a better average entry in pullback setups.

@@ -21,6 +21,7 @@ from sentinel.ingestion.models import OHLCVSeries
 from sentinel.risk.models import PauseReason, TradePlan
 from sentinel.tracker.loop import TrackerLoop
 from sentinel.tracker.prices import PriceFeed
+from tests.bot_double import OWNER_ID, owner_account
 from tests.tracker_double import (
     FakeDatabase,
     FakeSignalRow,
@@ -52,7 +53,7 @@ def loop(
 
 
 def signal(store: FakeStore, plan: TradePlan, **overrides: object) -> FakeSignalRow:
-    return store.add_signal(SignalRecord(plan=plan, number=1), **overrides)
+    return store.add_signal(SignalRecord(plan=plan, user_id=OWNER_ID, number=1), **overrides)
 
 
 # --------------------------------------------------------------------------- #
@@ -184,12 +185,17 @@ async def test_one_symbol_failing_does_not_stop_the_others(
 # --------------------------------------------------------------------------- #
 
 
-async def test_a_losing_day_pauses_the_system(
+async def test_a_losing_day_pauses_that_user(
     store: FakeStore, settings: Settings, plan: TradePlan
 ) -> None:
     """§7's limit is 3% of capital. Four taken signals closed today at -0.75% of
-    a EUR 10,000 account each is -3.0%, which reaches it."""
-    store.settings["capital_eur"] = "10000"
+    a EUR 10,000 account each is -3.0%, which reaches it.
+
+    Per user from M8.1: the pause lands on the ``users`` row, because the limit is a
+    percentage of *somebody's* capital and there is no longer one capital. The
+    operator's system-wide ``/pause`` is a different row and is untouched.
+    """
+    store.users[OWNER_ID] = owner_account(capital_eur=Decimal("10000"))
     for _ in range(4):
         row = signal(store, plan)
         row.decision = SignalDecision.TAKEN.value
@@ -199,10 +205,12 @@ async def test_a_losing_day_pauses_the_system(
 
     result = await loop(store, settings, ScriptedFeed()).tick()
 
-    assert result.paused is True
-    assert store.pause.paused is True
-    assert store.pause.reason is PauseReason.DAILY_LOSS_LIMIT
-    assert store.pause.until == TICK + timedelta(hours=24)
+    assert result.paused_users == [OWNER_ID]
+    paused = store.users[OWNER_ID].pause
+    assert paused.paused is True
+    assert paused.reason is PauseReason.DAILY_LOSS_LIMIT
+    assert paused.until == TICK + timedelta(hours=24)
+    assert store.pause.paused is False, "the operator's own /pause is a separate rail"
 
 
 async def test_a_recovered_day_does_not_pause(
@@ -210,7 +218,7 @@ async def test_a_recovered_day_does_not_pause(
 ) -> None:
     """§7 limits the *realized* daily loss, so an afternoon that gives most of a
     bad morning back is not a 3% day."""
-    store.settings["capital_eur"] = "10000"
+    store.users[OWNER_ID] = owner_account(capital_eur=Decimal("10000"))
     for amount in ("-150", "-150", "270"):
         row = signal(store, plan)
         row.decision = SignalDecision.TAKEN.value
@@ -220,8 +228,8 @@ async def test_a_recovered_day_does_not_pause(
 
     result = await loop(store, settings, ScriptedFeed()).tick()
 
-    assert result.paused is False
-    assert store.pause.paused is False
+    assert result.paused_users == []
+    assert store.users[OWNER_ID].pause.paused is False
 
 
 async def test_a_paper_loss_cannot_pause_a_real_account(
@@ -229,7 +237,7 @@ async def test_a_paper_loss_cannot_pause_a_real_account(
 ) -> None:
     """Dry-run signals are tracked and measured, and they commit nothing. A bad
     rehearsal day must not stop the system it is rehearsing for."""
-    store.settings["capital_eur"] = "10000"
+    store.users[OWNER_ID] = owner_account(capital_eur=Decimal("10000"))
     for _ in range(4):
         row = signal(store, plan, dry_run=True)
         row.decision = SignalDecision.TAKEN.value
@@ -239,8 +247,8 @@ async def test_a_paper_loss_cannot_pause_a_real_account(
 
     result = await loop(store, settings, ScriptedFeed()).tick()
 
-    assert result.paused is False
-    assert store.pause.paused is False
+    assert result.paused_users == []
+    assert store.users[OWNER_ID].pause.paused is False
 
 
 async def test_the_pause_is_not_re_raised_on_every_later_tick(
@@ -248,7 +256,7 @@ async def test_the_pause_is_not_re_raised_on_every_later_tick(
 ) -> None:
     """One notice per pause. Re-saving it every 60 seconds would extend the 24h
     window forever and post the §4 message on every tick."""
-    store.settings["capital_eur"] = "10000"
+    store.users[OWNER_ID] = owner_account(capital_eur=Decimal("10000"))
     row = signal(store, plan)
     row.decision = SignalDecision.TAKEN.value
     row.status = SignalStatus.STOPPED.value
@@ -256,13 +264,15 @@ async def test_the_pause_is_not_re_raised_on_every_later_tick(
     row.realized_eur = Decimal("-400")
 
     first = await loop(store, settings, ScriptedFeed()).tick()
-    until = store.pause.until
+    until = store.users[OWNER_ID].pause.until
 
     second = await loop(store, settings, ScriptedFeed(), now=TICK + timedelta(minutes=1)).tick()
 
-    assert first.paused is True
-    assert second.paused is False
-    assert store.pause.until == until, "the 24h window must not slide forward each tick"
+    assert first.paused_users == [OWNER_ID]
+    assert second.paused_users == []
+    assert store.users[OWNER_ID].pause.until == until, (
+        "the 24h window must not slide forward each tick"
+    )
 
 
 async def test_a_signal_older_than_the_tracker_is_replayed_from_its_creation(

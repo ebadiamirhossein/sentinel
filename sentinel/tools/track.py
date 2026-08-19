@@ -22,11 +22,13 @@ from decimal import Decimal
 
 from sentinel.bot.app import build_bot
 from sentinel.bot.notifier import TrackerNotifier
+from sentinel.core.clock import SystemClock
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
 from sentinel.core.wiring import market_adapter
 from sentinel.ingestion.models import Candle, OHLCVSeries
 from sentinel.storage.db import Database
+from sentinel.storage.repositories import UserRepository
 from sentinel.tracker.loop import TickResult, TrackerLoop
 from sentinel.tracker.prices import PriceFeed
 
@@ -85,8 +87,6 @@ async def run(settings: Settings, *, simulate: Decimal | None, notify: bool) -> 
     bot = None
     try:
         if simulate is not None:
-            from sentinel.core.clock import SystemClock
-
             source: object = SimulatedSource(
                 simulate, at=SystemClock().now() - timedelta(minutes=1)
             )
@@ -104,11 +104,19 @@ async def run(settings: Settings, *, simulate: Decimal | None, notify: bool) -> 
 
         sent = 0
         if notify and settings.secrets.telegram_bot_token is not None:
+            # Everyone eligible right now, each about their own signals only (M8.1).
+            async with database.session() as session:
+                approved = await UserRepository(session).approved()
+            eligible = tuple(
+                user.telegram_user_id
+                for user in approved
+                if user.eligible_for_signals(SystemClock().now())
+            )
             bot = build_bot(settings)
             sent = await TrackerNotifier(
                 database,
                 bot,
-                chat_ids=settings.secrets.allowed_user_ids,
+                chat_ids=eligible,
                 telegram=settings.config.telegram,
             ).deliver()
     finally:

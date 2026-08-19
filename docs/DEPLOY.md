@@ -147,7 +147,8 @@ Fill in exactly these:
 | `POSTGRES_PASSWORD` | a long random string: `openssl rand -base64 24` |
 | `ANTHROPIC_API_KEY` | your key |
 | `TELEGRAM_BOT_TOKEN` | your bot token |
-| `TELEGRAM_ALLOWED_USER_IDS` | your numeric id — everyone else gets silence |
+| `TELEGRAM_OWNER_USER_ID` | **your numeric id.** Required — see the note below |
+| `TELEGRAM_ALLOWED_USER_IDS` | your numeric id (pre-M8.1; kept as a fallback for the line above) |
 | `CRYPTOPANIC_API_KEY` | optional |
 | `SENTINEL_HTTP_PORT` | `18080`, or whatever §3 said was free |
 | `BACKUP_DIR` | `/opt/sentinel/backups` |
@@ -160,6 +161,18 @@ server reads the value in `.env`).
 ```bash
 mkdir -p /opt/sentinel/backups
 ```
+
+> **`TELEGRAM_OWNER_USER_ID` is not optional (M8.1).** It names the OWNER row: the
+> only account that can approve, reject or suspend anybody, and the only destination
+> for spend and failure alerts. Migration `0007` **refuses to run** without it on a
+> database that already has signals or settings to attribute, and says so by name —
+> guessing an owner would hand somebody else your signals and your measured history.
+> A completely fresh database migrates fine and the app seeds the row at boot.
+>
+> `@userinfobot` on Telegram tells you your id. If your `.env` already has exactly
+> one id in `TELEGRAM_ALLOWED_USER_IDS`, that is used as a fallback and nothing
+> breaks — but set the explicit variable anyway, because a second id in that list
+> makes the fallback decline rather than guess.
 
 ## 6. `config.yaml` — start in dry run
 
@@ -230,10 +243,14 @@ Expect `app.started`, `scheduler.pipeline_scheduled` (with `dry_run=true`) and
 > in an old container on this box — the two fight over `getUpdates` and the logs
 > fill with `TelegramConflictError`. See §14.
 
-Message your bot `/status` from the allowlisted account. You should get the status
-card — pause state, sizing, data sources, signals, cycle and LLM spend. If nothing
-comes back, the id in `TELEGRAM_ALLOWED_USER_IDS` is not yours; the allowlist
-answers strangers with silence, by design.
+Message your bot `/status` from your own account. You should get the status card —
+pause state, sizing, data sources, signals, cycle and LLM spend. If nothing comes
+back, `TELEGRAM_OWNER_USER_ID` is not your id: `/status` is owner-only and everyone
+else gets silence, by design. Try `/start` — if the bot answers with an access
+*request* being filed, the id in `.env` is somebody else's.
+
+Typing `/` should also list the commands. If the menu is empty, check the logs for
+`bot.menu_failed`; a failed menu never stops the bot from working.
 
 Set your capital if this is a fresh database — until you do, every signal is
 rejected with `NO_CAPITAL`:
@@ -496,6 +513,35 @@ docker compose logs --tail=20 app | grep pipeline_scheduled   # dry_run=False
 The next approved plan is posted for real. `/pause` stops new signals at any time;
 the tracker keeps managing anything already open.
 
+## 13a. Letting somebody else in (M8.1)
+
+Nothing here needs a deploy. The person messages your bot:
+
+1. They send `/start`. You get a card with their @username and numeric id, and
+   `[✅ Approve] [❌ Reject]` under it. **One request per id, ever** — tapping
+   `/start` again reaches you no further.
+2. Tap Approve (or run `/approve <id>`). They receive a welcome, the note they must
+   accept — experimental, win rate not yet measured, research not advice, they place
+   every trade themselves, they can lose money — and a `/` menu.
+3. They tap **I understand**, then set `/capital`. Until both are done nothing is
+   sent to them, and they are told which one is missing.
+
+They now receive the same analysis you do, sized against **their** capital and risk
+%, with their own rails, decisions and `/stats`. They cannot see your numbers and
+you cannot see theirs: `/users` shows standing, join date, whether a capital is set
+at all, and whether a loss pause is holding them — no amounts, no P&L, no decisions.
+
+`/suspend <id>` stops delivery without deleting anything, and `/approve <id>` puts
+them back. They can remove themselves at any time with `/leave`; their history is
+kept and they show as LEFT.
+
+```bash
+docker compose run --rm --no-deps app python -m sentinel.tools.stats --user <id>
+```
+
+is how you would read somebody else's book from the server if you ever had to —
+deliberately a shell command on the box, not a Telegram command.
+
 ## 14. Troubleshooting
 
 **`/health` returns 503, `"database":"error"`**
@@ -505,8 +551,11 @@ that is deliberate, so the probe can tell you *which* part is broken.
 
 **Nothing arrives in Telegram**
 `docker compose logs app | grep -E "bot\.|telegram"`. `bot.disabled` = no token.
-Silence with no error = your user id is not in `TELEGRAM_ALLOWED_USER_IDS`.
-Remember that `dry_run: true` is *supposed* to produce a silent phone.
+Silence with no error = the gate dropped the update. For your own account that
+means `TELEGRAM_OWNER_USER_ID` is not your id; for somebody else's it means they are
+not APPROVED, have not tapped **I understand**, or have no `/capital` set (they are
+told which, at most once a day). Remember that `dry_run: true` is *supposed* to
+produce a silent phone.
 
 **`TelegramConflictError: terminated by other getUpdates request`**
 Two processes are polling the same bot token. Telegram allows one. Almost always

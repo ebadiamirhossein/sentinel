@@ -27,10 +27,27 @@ approves.
 the same renderer and logged verbatim, and the signal is stored with
 ``dry_run=True`` so the tracker resolves it silently. A rehearsal that skipped the
 analyst call would rehearse nothing worth knowing.
+
+**One analysis per cycle, shared; sizing per user (M8.1).** Steps 1-4 — snapshot,
+features, screener, charts, deep analyst, and the ``analyst_reports`` row — happen
+**exactly once per symbol per cycle** no matter how many people are approved. The
+analyst produces a judgment about a market, not about a person, and it costs ~$0.32
+a call. Only step 5 fans out: for each eligible user, their own ``AccountState`` and
+``PortfolioState``, their own ``RiskEngine.evaluate``, their own ``gate_decisions``
+row, their own signal and their own card. ``sentinel/risk/`` is unchanged — it was
+already a pure function of (account, portfolio), so multi-user is a matter of what is
+handed to it.
+
+The pre-analyst guard runs on the **union** of eligible users: a symbol is analysed
+if *any* of them could receive a signal for it, because one person's cooldown must
+not suppress a shared analysis for everybody. ARCHITECTURE §3 already says the early
+check is an optimisation and never the only one; the per-user check runs again inside
+the fan-out, where it is authoritative.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -39,15 +56,16 @@ from uuid import UUID, uuid4
 from sentinel.analyst.history import build_history_block
 from sentinel.analyst.models import AnalystReport, CandidateStatus
 from sentinel.analyst.providers.anthropic_fable import AnthropicFableAnalyst
-from sentinel.bot.cards import signal_card
+from sentinel.bot.cards import no_capital_card, signal_card
 from sentinel.bot.formatting import zone_info
-from sentinel.bot.models import SignalRecord
+from sentinel.bot.models import SignalRecord, UserAccount
+from sentinel.bot.notices import UserNotifier, no_capital_key
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.bot.runtime import account_state, effective_config
 from sentinel.charts.models import ChartImage, ChartSpec
 from sentinel.charts.renderer import render_album
 from sentinel.core.clock import Clock, SystemClock
-from sentinel.core.config import Settings
+from sentinel.core.config import AppConfig, Settings
 from sentinel.core.logging import get_logger
 from sentinel.core.wiring import assemble_with_features, snapshot_assembler
 from sentinel.features.models import SymbolFeatures
@@ -62,6 +80,7 @@ from sentinel.risk.models import (
     GateStatus,
     MarketContext,
     PortfolioState,
+    RejectionReason,
     TradePlan,
 )
 from sentinel.risk.rails import cooldown_until, open_risk_pct
@@ -78,6 +97,7 @@ from sentinel.storage.repositories import (
     RuntimeSettingsRepository,
     SignalRepository,
     SnapshotRepository,
+    UserRepository,
 )
 
 log = get_logger(__name__)
@@ -98,6 +118,7 @@ class CycleRepositories:
     risk_state: type[RiskStateRepository] = RiskStateRepository
     settings: type[RuntimeSettingsRepository] = RuntimeSettingsRepository
     fx: type[FxRateRepository] = FxRateRepository
+    users: type[UserRepository] = UserRepository
 
 
 def select_symbols(
@@ -114,8 +135,11 @@ def select_symbols(
     ARCHITECTURE §3 step 6's dedup guard, PRD F11's "max 1 active signal per
     symbol", and specs/TELEGRAM_UX.md §6's daily cap — applied **before** the
     expensive tier, because an analyst call is ~$0.32 and a symbol that cannot
-    produce a signal should not cost one. The risk gate re-checks all of it
-    afterwards; this is an optimisation and never the only check.
+    produce a signal should not cost one. The risk gate re-checks the cooldown and
+    the cap afterwards; it has no dedup rail of its own, which is why this function
+    is also applied **per user** inside the fan-out (M8.1) rather than only over the
+    union. Without that second application, a symbol another user was owed would
+    hand this user a second signal on a position they already hold.
 
     Pure, and returning the reasons rather than only the survivors: a cycle that
     analysed nothing has to be explicable from its own row, not from the logs.
@@ -158,8 +182,14 @@ class CycleResult:
     spend_state_before: SpendState | None = None
     spend_state_after: SpendState | None = None
     #: Why each symbol was dropped before the analyst — a quiet cycle explains
-    #: itself from the row rather than only from the logs.
+    #: itself from the row rather than only from the logs. Union-level from M8.1: a
+    #: symbol appears here only when *no* eligible user could have received it.
     skipped: dict[str, str] = field(default_factory=dict)
+    #: How many users the fan-out sized plans for (M8.1). Zero means the deep
+    #: analyst was not called at all — nobody should pay $0.32 for a plan with no
+    #: recipient. Not stored on ``cycles``: it is a property of the moment, and
+    #: ``gate_decisions.user_id`` is the durable record of who was evaluated.
+    recipients: int = 0
     error: str | None = None
 
 
@@ -171,13 +201,19 @@ class CycleOrchestrator:
         settings: Settings,
         database: Database,
         *,
-        publisher: SignalPublisher | None = None,
+        publisher_factory: Callable[[int], SignalPublisher] | None = None,
+        notices: UserNotifier | None = None,
         clock: Clock | None = None,
         repositories: CycleRepositories | None = None,
     ) -> None:
         self._settings = settings
         self._database = database
-        self._publisher = publisher
+        #: One publisher per recipient (M8.1). A factory rather than an instance,
+        #: because each user's card goes to their own chat and carries their own
+        #: ``user_id`` onto the signal row. ``None`` means no bot is configured — the
+        #: plan is still gated, stored and logged.
+        self._publisher_factory = publisher_factory
+        self._notices = notices
         self._clock = clock or SystemClock()
         self._repos = repositories or CycleRepositories()
 
@@ -292,7 +328,8 @@ class CycleOrchestrator:
         config = effective_config(self._settings, stored)
         calls: list[LLMCall] = []
 
-        # 2. Screener over everything that survived ingestion.
+        # 2. Screener over everything that survived ingestion. Shared: one call for
+        #    the whole watchlist, whoever is approved.
         screener = Screener(client, config, cycle_id=result.cycle_id)
         verdicts = await screener.screen(snapshots, features)
         calls.extend(verdicts.calls)
@@ -300,8 +337,13 @@ class CycleOrchestrator:
         result.candidates = len(interesting)
 
         # 3. Guards, before the expensive tier. Each drop is recorded with a
-        #    reason so a silent cycle is explicable.
-        allowed = await self._allowed(interesting, result, started=started, config=config)
+        #    reason so a silent cycle is explicable. Who could receive anything is
+        #    part of that: with nobody set up, the deep analyst is not called at all.
+        recipients = await self._recipients(now=started)
+        result.recipients = len(recipients)
+        allowed = await self._allowed(
+            interesting, result, started=started, config=config, recipients=recipients
+        )
 
         # Read once, before anything expensive runs. The screener's own calls are
         # not recorded yet, so this is genuinely "where the day stood when this
@@ -342,13 +384,21 @@ class CycleOrchestrator:
             )
             allowed = set()
 
-        # 4-5. Deep analysis, gate, publish.
+        # 4-5. Deep analysis once per symbol, then the gate and the card once per
+        #      eligible user. The owner's book is what the history block calibrates on.
+        owner_id = await self._owner_id()
         for snapshot in snapshots:
             if snapshot.symbol not in allowed:
                 continue
             calls.extend(
                 await self._analyse_symbol(
-                    result, snapshot=snapshot, features=features, stored=stored, client=client
+                    result,
+                    snapshot=snapshot,
+                    features=features,
+                    stored=stored,
+                    client=client,
+                    recipients=recipients,
+                    owner_id=owner_id,
                 )
             )
 
@@ -370,12 +420,14 @@ class CycleOrchestrator:
         features: dict[str, SymbolFeatures],
         stored: dict[str, object],
         client: AnthropicClient,
+        recipients: Sequence[UserAccount],
+        owner_id: int | None,
     ) -> list[LLMCall]:
         config = effective_config(self._settings, stored)
         charts = list(
             render_album(snapshot, features[snapshot.symbol], self._chart_specs(snapshot.symbol))
         )
-        history = await self._history_block(snapshot.symbol)
+        history = await self._history_block(snapshot.symbol, owner_id=owner_id)
 
         analyst = AnthropicFableAnalyst(client, config, cycle_id=result.cycle_id)
         try:
@@ -409,7 +461,12 @@ class CycleOrchestrator:
             return list(analyst.calls)
 
         await self._gate_and_publish(
-            result, report=report, snapshot=snapshot, stored=stored, charts=charts
+            result,
+            report=report,
+            snapshot=snapshot,
+            stored=stored,
+            charts=charts,
+            recipients=recipients,
         )
         return list(analyst.calls)
 
@@ -421,9 +478,50 @@ class CycleOrchestrator:
         snapshot: MarketSnapshot,
         stored: dict[str, object],
         charts: list[ChartImage],
+        recipients: Sequence[UserAccount],
+    ) -> None:
+        """Step 5, once per eligible user — the whole of the fan-out.
+
+        The report and the charts above are shared and already paid for. Everything
+        from here is personal: the capital, the risk %, the rails, the plan, the card
+        and the row it is stored in.
+        """
+        for user in recipients:
+            await self._gate_for(
+                result,
+                user=user,
+                report=report,
+                snapshot=snapshot,
+                stored=stored,
+                charts=charts,
+            )
+
+    async def _gate_for(
+        self,
+        result: CycleResult,
+        *,
+        user: UserAccount,
+        report: AnalystReport,
+        snapshot: MarketSnapshot,
+        stored: dict[str, object],
+        charts: list[ChartImage],
     ) -> None:
         config = effective_config(self._settings, stored)
-        account, portfolio = await self._gate_inputs(stored, symbol=snapshot.symbol)
+        account, portfolio, dedup = await self._gate_inputs(
+            user, stored=stored, symbol=snapshot.symbol
+        )
+        if dedup is not None:
+            # The gate has no dedup rail of its own (§2 rule 7 covers cooldown, the
+            # cap, positions and open risk, not "already holding this symbol"), so
+            # the pure guard is applied again here per user. Recorded in the log and
+            # not in ``gate_decisions``: nothing was evaluated, so there is no verdict.
+            log.info(
+                "cycle.user_skipped",
+                symbol=snapshot.symbol,
+                user_id=user.telegram_user_id,
+                reason=dedup,
+            )
+            return
 
         features_model = (
             SymbolFeatures.model_validate(snapshot.features) if snapshot.features else None
@@ -436,48 +534,74 @@ class CycleOrchestrator:
         )
 
         async with self._database.session() as session:
-            await self._repos.gate_decisions(session).record(decision, cycle_id=result.cycle_id)
+            await self._repos.gate_decisions(session).record(
+                decision, cycle_id=result.cycle_id, user_id=user.telegram_user_id
+            )
             await session.commit()
 
         if decision.status is not GateStatus.APPROVED_FOR_HUMAN or decision.plan is None:
             log.info(
                 "cycle.not_approved",
                 symbol=snapshot.symbol,
+                user_id=user.telegram_user_id,
                 status=decision.status.value,
                 reason=None if decision.reason is None else decision.reason.value,
             )
+            if decision.reason is RejectionReason.NO_CAPITAL:
+                await self._say_no_capital(user)
             return
 
         result.approved += 1
         if config.dry_run:
-            await self._record_dry_run(result, decision.plan, charts)
+            await self._record_dry_run(result, decision.plan, charts, user_id=user.telegram_user_id)
             return
 
-        if self._publisher is None:
+        if self._publisher_factory is None:
             log.warning(
                 "cycle.no_publisher",
                 symbol=snapshot.symbol,
+                user_id=user.telegram_user_id,
                 detail="plan approved but no Telegram bot is configured — it is stored, not sent",
             )
             return
 
-        published = await self._publisher.publish(
+        published = await self._publisher_factory(user.telegram_user_id).publish(
             decision.plan, tuple(charts), cycle_id=result.cycle_id
         )
         if published.published:
             result.published += 1
 
+    async def _say_no_capital(self, user: UserAccount) -> None:
+        """Tell an approved user why an approved plan did not reach them (M8.1).
+
+        Fired from the gate's own ``NO_CAPITAL`` verdict rather than from a check up
+        front, so the message is only ever sent on a day when it actually cost them
+        something. Once per UTC day per user, claimed in ``telegram_messages``.
+        """
+        if self._notices is None:
+            return
+        await self._notices.notice(
+            user.telegram_user_id,
+            key=no_capital_key(user.telegram_user_id, self._clock.now()),
+            text=no_capital_card(),
+        )
+
     async def _record_dry_run(
-        self, result: CycleResult, plan: TradePlan, charts: list[ChartImage]
+        self, result: CycleResult, plan: TradePlan, charts: list[ChartImage], *, user_id: int
     ) -> None:
         """Store the signal and log the card that would have been sent.
 
         Rendered by the *same* function the publisher calls, so what the log holds
         is what the owner would have read — not a summary of it. Nothing reaches
         Telegram, and the tracker picks the signal up on its next tick.
+
+        Inside the fan-out from M8.1, so a rehearsal rehearses the fan-out: each
+        user gets their own row, sized against their own capital, and the logged card
+        is theirs.
         """
         record = SignalRecord(
             plan=plan,
+            user_id=user_id,
             cycle_id=result.cycle_id,
             chart_params=tuple(chart.params.to_json_dict() for chart in charts),
             dry_run=True,
@@ -494,6 +618,7 @@ class CycleOrchestrator:
             "cycle.dry_run_card",
             cycle_id=str(result.cycle_id),
             symbol=plan.symbol,
+            user_id=user_id,
             number=claimed.number,
             detail="not sent — dry_run is on",
             card=signal_card(claimed, tz),
@@ -507,38 +632,93 @@ class CycleOrchestrator:
         result: CycleResult,
         *,
         started: datetime,
-        config: object,
+        config: AppConfig,
+        recipients: Sequence[UserAccount],
     ) -> set[str]:
         """Dedup, cooldown and the daily cap — ARCHITECTURE §3 step 6 and §6.
 
         Run before the analyst so a symbol that cannot produce a signal does not
         cost one. The risk gate checks the same rails again on the way out; this
         is an optimisation, never the only check.
+
+        **Over the union of eligible users (M8.1).** A symbol survives if it survives
+        for at least one of them, because the analysis is shared: letting one member's
+        four-hour cooldown suppress a BTC analysis for everybody would make the
+        cheapest guard in the system the most expensive mistake. The reason recorded
+        against a dropped symbol is the *first* user's — they agree in the common case
+        of one user, and where they disagree the symbol was not dropped at all.
+
+        Only users with capital set count towards the union: a plan that cannot be
+        sized is not a reason to spend $0.32 (they are still evaluated in the
+        fan-out, and told why nothing arrived).
         """
-        risk = self._settings.config.risk
+        risk = config.risk
         day_start = started.replace(hour=0, minute=0, second=0, microsecond=0)
+        funded = [user for user in recipients if user.capital_set]
+        if not funded:
+            for symbol in sorted(interesting):
+                result.skipped[symbol] = "no user is set up to receive a signal"
+            self._log_skips(result)
+            return set()
 
         async with self._database.session() as session:
             signals = self._repos.signals(session)
-            open_symbols = await signals.open_symbols()
-            resolutions = await signals.resolutions_since(
+            open_by_user = await signals.open_symbols_by_user()
+            resolutions_by_user = await signals.resolutions_by_user_since(
                 started - timedelta(hours=risk.signal_cooldown_hours)
             )
-            today = await signals.published_since(day_start)
+            today_by_user = await signals.published_by_user_since(day_start)
 
-        allowed, skipped = select_symbols(
-            interesting,
-            open_symbols=open_symbols,
-            cooldowns=cooldown_until(resolutions, hours=risk.signal_cooldown_hours),
-            published_today=today,
-            max_per_day=risk.max_signals_per_day,
-            now=started,
-        )
-        result.skipped.update(skipped)
+        allowed: set[str] = set()
+        reasons: dict[str, str] = {}
+        for user in funded:
+            uid = user.telegram_user_id
+            mine, skipped = select_symbols(
+                interesting,
+                open_symbols=open_by_user.get(uid, set()),
+                cooldowns=cooldown_until(
+                    resolutions_by_user.get(uid, []), hours=risk.signal_cooldown_hours
+                ),
+                published_today=today_by_user.get(uid, 0),
+                max_per_day=risk.max_signals_per_day,
+                now=started,
+            )
+            allowed |= mine
+            for symbol, reason in skipped.items():
+                reasons.setdefault(symbol, reason)
 
+        result.skipped.update({s: r for s, r in reasons.items() if s not in allowed})
+        self._log_skips(result)
+        return allowed
+
+    @staticmethod
+    def _log_skips(result: CycleResult) -> None:
         for symbol, reason in result.skipped.items():
             log.info("cycle.symbol_skipped", symbol=symbol, reason=reason)
-        return allowed
+
+    async def _recipients(self, *, now: datetime) -> list[UserAccount]:
+        """Everyone a plan may be sized for this cycle, in a stable order.
+
+        APPROVED, has accepted the current first-run note, and not held by their own
+        daily-loss pause. Capital is *not* required here — a user who is set up but
+        has no capital still goes through the gate so that the ``NO_CAPITAL`` verdict
+        can tell them why nothing arrived (``_say_no_capital``).
+
+        Ordered by Telegram id so a cycle's fan-out is reproducible, which matters
+        when the daily cap or the open-risk budget is what decides who gets the last
+        signal of the day.
+        """
+        async with self._database.session() as session:
+            approved = await self._repos.users(session).approved()
+        return [user for user in approved if user.eligible_for_signals(now)]
+
+    async def _owner_id(self) -> int | None:
+        """Whose book calibrates the analyst (specs/PROMPTS.md §3, M8.1)."""
+        async with self._database.session() as session:
+            owner = await self._repos.users(session).owner()
+        if owner is not None:
+            return owner.telegram_user_id
+        return self._settings.secrets.owner_user_id
 
     async def _paused(self) -> bool:
         async with self._database.session() as session:
@@ -567,42 +747,75 @@ class CycleOrchestrator:
             return await self._repos.settings(session).all()
 
     async def _gate_inputs(
-        self, stored: dict[str, object], *, symbol: str
-    ) -> tuple[AccountState, PortfolioState]:
-        """Everything §2 rule 7 reads, built from the database (M4's note to M7)."""
+        self, user: UserAccount, *, stored: dict[str, object], symbol: str
+    ) -> tuple[AccountState, PortfolioState, str | None]:
+        """Everything §2 rule 7 reads for **one user**, built from the database.
+
+        Re-read per (user, symbol) rather than once per cycle, deliberately: the
+        counts have to include what this same cycle published a moment ago, or a
+        single cycle could hand one user three cards against a cap of one.
+
+        The third return value is the dedup verdict — the one rail the gate does not
+        carry (see :func:`select_symbols`). ``None`` means "nothing in the way".
+
+        ``pause`` composes the two rails M8.1 splits apart: the operator's
+        system-wide ``/pause`` wins when active, because it is the wider statement;
+        otherwise it is this user's own daily-loss pause.
+        """
         config = effective_config(self._settings, stored)
         risk = config.risk
         now = self._clock.now()
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        uid = user.telegram_user_id
 
         async with self._database.session() as session:
             fx = await self._repos.fx(session).get()
-            pause = await self._repos.risk_state(session).load()
+            system_pause = await self._repos.risk_state(session).load()
             signals = self._repos.signals(session)
-            open_taken = await signals.open_taken()
+            open_taken = await signals.open_taken(user_id=uid)
+            open_symbols = await signals.open_symbols(user_id=uid)
             resolutions = await signals.resolutions_since(
-                now - timedelta(hours=risk.signal_cooldown_hours)
+                now - timedelta(hours=risk.signal_cooldown_hours), user_id=uid
             )
-            today = await signals.published_since(day_start)
+            today = await signals.published_since(day_start, user_id=uid)
 
-        account = account_state(stored, config, fx.rate if fx is not None else Decimal("1"))
+        cooldowns = cooldown_until(resolutions, hours=risk.signal_cooldown_hours)
+        account = account_state(user, config, fx.rate if fx is not None else Decimal("1"))
         plans = [TradePlan.model_validate(row.plan) for row in open_taken]
         portfolio = PortfolioState(
             open_risk_pct=open_risk_pct([plan.risk_per_trade_pct for plan in plans]),
             open_positions=len(plans),
-            cooldown_until=cooldown_until(resolutions, hours=risk.signal_cooldown_hours),
-            pause=pause,
+            cooldown_until=cooldowns,
+            pause=system_pause if system_pause.is_active(now) else user.pause,
             signals_today=today,
         )
-        return account, portfolio
+        _, skipped = select_symbols(
+            {symbol},
+            open_symbols=open_symbols,
+            cooldowns=cooldowns,
+            published_today=today,
+            max_per_day=risk.max_signals_per_day,
+            now=now,
+        )
+        return account, portfolio, skipped.get(symbol)
 
-    async def _history_block(self, symbol: str) -> str:
-        """specs/PROMPTS.md §3 — and from M7 both halves are real."""
+    async def _history_block(self, symbol: str, *, owner_id: int | None) -> str:
+        """specs/PROMPTS.md §3 — and from M7 both halves are real.
+
+        Owner-scoped from M8.1 (owner ruling): one shared analysis produces one
+        signal row per user, so counting all of them would multiply the sample size by
+        the number of users and make the win rate a weighted average of everybody's
+        execution. Without an owner row there is no calibration book, and both halves
+        degrade to their "nothing measured yet" wording rather than to somebody else's
+        numbers.
+        """
+        if owner_id is None:
+            return build_history_block(symbol, [], [])
         async with self._database.session() as session:
             verdicts = await self._repos.reports(session).recent_for_symbol(
-                symbol, limit=self._settings.config.llm.history_verdicts
+                symbol, limit=self._settings.config.llm.history_verdicts, owner_id=owner_id
             )
-            stats = await setup_stats(session, now=self._clock.now())
+            stats = await setup_stats(session, now=self._clock.now(), owner_id=owner_id)
         return build_history_block(symbol, verdicts, stats)
 
     async def _last_known_good_fx(self) -> FxRate | None:

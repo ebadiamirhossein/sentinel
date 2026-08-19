@@ -4,6 +4,12 @@ Handlers are called directly with a fake message and a context wired to fake
 repositories, so every command is exercised on every run rather than only when a
 developer has a Postgres to point at. The fakes subclass the real repositories,
 so a drifting signature fails ``mypy --strict``.
+
+**M8.1 split the commands in two**, and this file follows: ``commands`` holds the
+member set (``/capital /risk /positions /stats``, all scoped to the caller) and
+``admin`` holds the operator's (``/status /settings /watchlist /pause /resume``),
+behind :class:`~sentinel.bot.auth.OwnerOnly`. Every handler now receives the
+``Actor`` the gate loaded, which is why ``run`` passes one.
 """
 
 from __future__ import annotations
@@ -15,15 +21,23 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from sentinel.bot.auth import Actor
 from sentinel.bot.context import BotContext
-from sentinel.bot.handlers import commands
+from sentinel.bot.handlers import admin, commands
 from sentinel.bot.models import SignalDecision
-from sentinel.bot.runtime import CAPITAL_EUR, RISK_PER_TRADE_PCT, WATCHLIST
+from sentinel.bot.runtime import WATCHLIST
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.models import PauseReason, PauseState
-from tests.bot_double import FakeDatabase, FakeStore, _SignalRow, _SnapshotRow, fake_repositories
+from tests.bot_double import (
+    FakeDatabase,
+    FakeStore,
+    _SignalRow,
+    _SnapshotRow,
+    fake_repositories,
+    owner_account,
+)
 from tests.risk_double import approved_plan
 
 OWNER = 111
@@ -60,7 +74,14 @@ class FakeCommand:
 
 @pytest.fixture
 def store() -> FakeStore:
-    return FakeStore()
+    store = FakeStore()
+    store.users[OWNER] = owner_account(OWNER)
+    return store
+
+
+def actor_of(store: FakeStore) -> Actor:
+    """The caller as the gate hands them over, re-read so it is never stale."""
+    return Actor(user_id=OWNER, account=store.users[OWNER])
 
 
 @pytest.fixture
@@ -75,14 +96,19 @@ def ctx(store: FakeStore, tz: ZoneInfo, clock: FrozenClock) -> BotContext:
     )
 
 
-async def run(handler: Any, ctx: BotContext, args: str | None = None) -> FakeMessage:
+#: Handlers that take no ``CommandObject`` — they have no arguments to parse.
+NO_ARGS = (commands.positions, admin.status, admin.settings, admin.pause, admin.resume)
+
+
+async def run(
+    handler: Any, ctx: BotContext, args: str | None = None, *, store: FakeStore | None = None
+) -> FakeMessage:
     message = FakeMessage()
-    if (
-        args is None and handler in (commands.status, commands.positions, commands.settings)
-    ) or handler in (commands.pause, commands.resume):
-        await handler(message, ctx)
+    actor = actor_of(store) if store is not None else Actor(user_id=OWNER, account=owner_account())
+    if handler in NO_ARGS:
+        await handler(message, ctx, actor)
     else:
-        await handler(message, FakeCommand(args), ctx)
+        await handler(message, FakeCommand(args), ctx, actor)
     return message
 
 
@@ -93,7 +119,7 @@ async def run(handler: Any, ctx: BotContext, args: str | None = None) -> FakeMes
 
 async def test_capital_is_stored_and_confirmed_back(ctx: BotContext, store: FakeStore) -> None:
     message = await run(commands.capital, ctx, "10000")
-    assert store.settings[CAPITAL_EUR] == "10000"
+    assert store.users[OWNER].capital_eur == Decimal("10000")
     assert "€10000" in message.last
     assert "new signals only" in message.last
 
@@ -104,7 +130,7 @@ async def test_capital_must_be_greater_than_zero(
 ) -> None:
     message = await run(commands.capital, ctx, raw)
     assert "greater than zero" in message.last
-    assert CAPITAL_EUR not in store.settings, "a rejected value must not be stored"
+    assert store.users[OWNER].capital_eur is None, "a rejected value must not be stored"
 
 
 @pytest.mark.parametrize("raw", ["ten thousand", "", "1e", "nan"])
@@ -112,7 +138,7 @@ async def test_capital_rejects_anything_that_is_not_a_positive_number(
     ctx: BotContext, store: FakeStore, raw: str
 ) -> None:
     message = await run(commands.capital, ctx, raw or None)
-    assert CAPITAL_EUR not in store.settings
+    assert store.users[OWNER].capital_eur is None
     assert "not a number" in message.last or "not set" in message.last
 
 
@@ -120,28 +146,28 @@ async def test_capital_accepts_the_way_a_human_types_money(
     ctx: BotContext, store: FakeStore
 ) -> None:
     await run(commands.capital, ctx, "€12,500.50")
-    assert store.settings[CAPITAL_EUR] == "12500.50"
+    assert store.users[OWNER].capital_eur == Decimal("12500.50")
 
 
 async def test_capital_with_no_argument_reports_the_current_value(
     ctx: BotContext, store: FakeStore
 ) -> None:
-    unset = await run(commands.capital, ctx, None)
-    assert "NO_CAPITAL" in unset.last
+    unset = await run(commands.capital, ctx, None, store=store)
+    assert "not set" in unset.last
 
-    store.settings[CAPITAL_EUR] = "8000"
-    shown = await run(commands.capital, ctx, None)
+    store.users[OWNER] = owner_account(OWNER, capital_eur=Decimal("8000"))
+    shown = await run(commands.capital, ctx, None, store=store)
     assert "€8000" in shown.last
 
 
 async def test_setting_capital_writes_an_audit_row(ctx: BotContext, store: FakeStore) -> None:
     """PRD F10 stores config *changes*, so "why was this sized against €8,000"
     has a timestamped answer rather than an inference."""
-    await run(commands.capital, ctx, "8000")
-    await run(commands.capital, ctx, "9000")
+    await run(commands.capital, ctx, "8000", store=store)
+    await run(commands.capital, ctx, "9000", store=store)
     assert store.changes == [
-        (CAPITAL_EUR, None, "8000", OWNER),
-        (CAPITAL_EUR, "8000", "9000", OWNER),
+        (f"user.{OWNER}.capital_eur", None, "8000", OWNER),
+        (f"user.{OWNER}.capital_eur", "8000", "9000", OWNER),
     ]
 
 
@@ -155,7 +181,7 @@ async def test_risk_accepts_the_configured_range(
     ctx: BotContext, store: FakeStore, raw: str
 ) -> None:
     message = await run(commands.risk, ctx, raw)
-    assert store.settings[RISK_PER_TRADE_PCT] == str(Decimal(raw))
+    assert store.users[OWNER].risk_per_trade_pct == Decimal(raw)
     assert f"{Decimal(raw)}%" in message.last
 
 
@@ -164,7 +190,7 @@ async def test_risk_rejects_anything_outside_it(
     ctx: BotContext, store: FakeStore, raw: str
 ) -> None:
     message = await run(commands.risk, ctx, raw)
-    assert RISK_PER_TRADE_PCT not in store.settings
+    assert store.users[OWNER].risk_per_trade_pct is None
     assert "between 0.25% and 1.5%" in message.last
     assert raw.lstrip("+") in message.last or Decimal(raw) is not None
 
@@ -189,18 +215,18 @@ async def test_risk_with_no_argument_reports_the_default(ctx: BotContext) -> Non
 
 
 async def test_pause_then_resume(ctx: BotContext, store: FakeStore) -> None:
-    paused = await run(commands.pause, ctx)
+    paused = await run(admin.pause, ctx)
     assert store.pause.paused is True
     assert store.pause.reason is PauseReason.MANUAL
     assert "Paused" in paused.last
 
-    resumed = await run(commands.resume, ctx)
+    resumed = await run(admin.resume, ctx)
     assert store.pause == PauseState(), "resume clears the whole pause row, not just the flag"
     assert "Resumed" in resumed.last
 
 
 async def test_resuming_when_not_paused_says_so(ctx: BotContext) -> None:
-    message = await run(commands.resume, ctx)
+    message = await run(admin.resume, ctx)
     assert "Not paused" in message.last
 
 
@@ -211,16 +237,18 @@ async def test_a_loss_limit_pause_needs_a_confirmation_button(
 
     The asymmetry with a manual pause is the point: a loss-limit pause exists
     because the day has gone badly, which is exactly when a reflexive tap costs
-    the most.
+    the most. From M8.1 the loss pause lives on the caller's own ``users`` row —
+    it is their book that went badly — while the manual one stays system-wide.
     """
-    store.pause = PauseState(
+    loss = PauseState(
         paused=True,
         reason=PauseReason.DAILY_LOSS_LIMIT,
         until=datetime(2026, 8, 19, 12, 0, tzinfo=UTC),
     )
-    message = await run(commands.resume, ctx)
+    store.users[OWNER] = owner_account(OWNER, pause=loss)
+    message = await run(admin.resume, ctx, store=store)
 
-    assert store.pause.paused is True, "the pause must survive an unconfirmed /resume"
+    assert store.users[OWNER].pause.paused is True, "it must survive an unconfirmed /resume"
     assert "daily loss-limit" in message.last
     assert message.markups[-1] is not None, "the confirmation button must be attached"
 
@@ -231,11 +259,11 @@ async def test_a_loss_limit_pause_needs_a_confirmation_button(
 
 
 async def test_status_reflects_real_state(ctx: BotContext, store: FakeStore) -> None:
-    store.settings[CAPITAL_EUR] = "10000"
+    store.users[OWNER] = owner_account(OWNER, capital_eur=Decimal("10000"))
     store.snapshots.append(_SnapshotRow("BTCUSDT", "OK", datetime(2026, 8, 18, 11, 0, tzinfo=UTC)))
-    store.signals[_uuid(1)] = _SignalRow(_uuid(1), _uuid(2), number=1)
+    store.signals[_uuid(1)] = _SignalRow(_uuid(1), _uuid(2), number=1, user_id=OWNER)
 
-    message = await run(commands.status, ctx)
+    message = await run(admin.status, ctx, store=store)
     assert "capital: €10000" in message.last
     assert "BTCUSDT OK" in message.last
     assert "awaiting your call: 1" in message.last
@@ -269,21 +297,23 @@ async def test_positions_lists_only_taken_signals(ctx: BotContext, store: FakeSt
 
 
 async def test_settings_shows_the_source_of_every_value(ctx: BotContext, store: FakeStore) -> None:
-    store.settings[CAPITAL_EUR] = "10000"
-    message = await run(commands.settings, ctx)
-    assert "capital_eur: €10000 <i>[db]</i>" in message.last
+    store.users[OWNER] = owner_account(OWNER, capital_eur=Decimal("10000"))
+    message = await run(admin.settings, ctx, store=store)
+    # "you" rather than "db": it is no longer one setting for the whole system, and
+    # a card that still said db would imply it applied to everybody.
+    assert "capital_eur: €10000 <i>[you]</i>" in message.last
     assert "max_leverage: 10x <i>[yaml]</i>" in message.last
     assert "min_rr_tp1: 1.5R (net of costs) <i>[yaml]</i>" in message.last
 
 
 async def test_settings_fits_one_telegram_message(ctx: BotContext) -> None:
     """Why /settings is a curated list and not a dump of AppConfig."""
-    message = await run(commands.settings, ctx)
+    message = await run(admin.settings, ctx)
     assert len(message.last) < 4096
 
 
 async def test_watchlist_shows_the_configured_symbols(ctx: BotContext) -> None:
-    message = await run(commands.watchlist, ctx, None)
+    message = await run(admin.watchlist, ctx, None)
     assert "BTCUSDT" in message.last
     assert "<i>[yaml]</i>" in message.last
 
@@ -298,7 +328,7 @@ async def test_watchlist_add_verifies_the_symbol_against_the_exchange(
             raise ValueError("no such market")
 
     checked = BotContext(**{**ctx.__dict__, "symbol_checker": Checker()})
-    message = await run(commands.watchlist, checked, "add NOTREALUSDT")
+    message = await run(admin.watchlist, checked, "add NOTREALUSDT")
 
     assert WATCHLIST not in store.settings
     assert "not a Binance" in message.last
@@ -310,13 +340,13 @@ async def test_watchlist_add_accepts_a_symbol_the_exchange_knows(
     from tests.risk_double import SOLUSDT as SOL_META
 
     store.instruments["INJUSDT"] = SOL_META
-    message = await run(commands.watchlist, ctx, "add INJUSDT")
+    message = await run(admin.watchlist, ctx, "add INJUSDT")
     assert "INJUSDT" in store.settings[WATCHLIST]
     assert "INJUSDT" in message.last
 
 
 async def test_watchlist_remove_drops_a_symbol(ctx: BotContext, store: FakeStore) -> None:
-    message = await run(commands.watchlist, ctx, "remove BTCUSDT")
+    message = await run(admin.watchlist, ctx, "remove BTCUSDT")
     assert "BTCUSDT" not in store.settings[WATCHLIST]
     assert "BTCUSDT" not in message.last
 
@@ -324,7 +354,7 @@ async def test_watchlist_remove_drops_a_symbol(ctx: BotContext, store: FakeStore
 async def test_watchlist_refuses_to_empty_itself(ctx: BotContext, store: FakeStore) -> None:
     """An empty watchlist means the scan cycle has nothing to do."""
     store.settings[WATCHLIST] = ["BTCUSDT"]
-    message = await run(commands.watchlist, ctx, "remove BTCUSDT")
+    message = await run(admin.watchlist, ctx, "remove BTCUSDT")
     assert store.settings[WATCHLIST] == ["BTCUSDT"]
     assert "empty the watchlist" in message.last
 
@@ -333,7 +363,7 @@ async def test_watchlist_refuses_to_empty_itself(ctx: BotContext, store: FakeSto
 async def test_watchlist_rejects_malformed_arguments(
     ctx: BotContext, store: FakeStore, args: str
 ) -> None:
-    message = await run(commands.watchlist, ctx, args)
+    message = await run(admin.watchlist, ctx, args)
     assert WATCHLIST not in store.settings
     assert "Usage" in message.last or "does not look like a symbol" in message.last
 

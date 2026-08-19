@@ -100,6 +100,28 @@ VPS deploy runbook (`docs/DEPLOY.md`); pg_dump backup cron; failure alerts to Te
 > * **A host watchdog** (`ops/healthcheck.sh`, cron): nothing inside the app can
 >   alert when the app is not running, which is the failure that matters most.
 
+## M8.1 — Usability & multi-user (1 day)
+Command menu via `setMyCommands`; plain-language `/help`; the `users` table with
+owner approval (`/start` → request → `[Approve]/[Reject]`), `/users /approve /reject
+/suspend`, a first-run acknowledgement recorded with its wording version, and
+`/leave` so a member can remove themselves without asking. Per user: capital, risk %,
+sized `TradePlan`, portfolio rails, decisions and statistics — from **one** shared
+analysis per cycle.
+**Demo:** two Telegram accounts receive the same setup, sized differently, and
+neither `/stats` contains the other's decision.
+
+> **The design constraint, and the two owner rulings (2026-08-19).**
+>
+> * **One analysis per cycle, shared.** The `AnalystReport` and the charts are
+>   computed once; only sizing, rails, decisions and stats are per user. The analyst
+>   is never run per person.
+> * **`/pause` stays system-wide; the daily-loss pause becomes per user.** Members
+>   have no `/pause`, so an owner without a system stop button would be worse than
+>   the asymmetry.
+> * **`/users` shows standing, join date, capital-set (yes/no) and loss-paused —
+>   and nothing else.** No amount, no P&L, no decisions. Operating a system for
+>   friends does not require watching them trade.
+
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.

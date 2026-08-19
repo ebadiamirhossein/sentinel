@@ -2,6 +2,22 @@
 
 **Module:** `sentinel/bot/` (aiogram 3). Single authorized user (Telegram user-id allowlist in `.env`; all other users get silence).
 
+> **Correction (2026-08-19, from M8.1) — the allowlist is now a table, and one
+> update is answered.** "Single authorized user … all other users get silence" was
+> right for a system with one user and is impossible for one somebody has to be able
+> to *join*. Authorization moved to the `users` table (§7); `TELEGRAM_ALLOWED_USER_IDS`
+> survives only to name the owner, alongside the new `TELEGRAM_OWNER_USER_ID`.
+>
+> **Silence is narrowed, not dropped.** Exactly one update from an unknown id is
+> answered — `/start`, which files an access request. Everything else from anyone
+> not approved gets nothing at all: no refusal, no toast, no confirmation that a live
+> private bot is there. `tests/bot/test_auth.py` states the whole rule as a truth
+> table over (standing × update kind) and fails if a cell is missing.
+>
+> This supersedes M6 decision 6 ("an empty allowlist admits nobody"). The
+> fail-closed *posture* is kept: an owner id that cannot be resolved is a fatal
+> misconfiguration for migration 0007 and a loud warning at boot, never an open door.
+
 ---
 
 ## 1. Signal card (the core message)
@@ -111,6 +127,37 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 | `/watchlist [add|remove SYMBOL]` | View/edit watchlist |
 | `/pause` / `/resume` | Manual pause; resume from loss-limit pause requires confirming button "Yes, resume" |
 | `/settings` | Show all runtime config values (see the M6 note below) |
+| `/start` | **M8.1.** Request access (unknown id), or a set-up summary (approved) |
+| `/help` | **M8.1.** What every number on a card means, in plain language |
+| `/leave` | **M8.1.** Remove yourself; one confirmation, effective immediately |
+| `/users` | **M8.1, owner only.** Who has access, who is waiting, who is stuck |
+| `/approve <id>` / `/reject <id>` / `/suspend <id>` | **M8.1, owner only** |
+
+> **Scope at M8.1 (2026-08-19, owner ruling) — the commands split in two.**
+>
+> A **member** may run `/start /help /capital /risk /positions /stats /leave`. Each
+> is scoped to the caller: their own capital, their own risk %, their own signals,
+> their own statistics.
+>
+> Everything else is **owner-only**: `/status`, `/settings`, `/watchlist`, `/pause`,
+> `/resume`, `/users`, `/approve`, `/reject`, `/suspend`. `/status` and `/settings`
+> because they report LLM spend and pipeline health, which are the operator's
+> business and nothing a member could act on; `/watchlist` because it decides what
+> the shared analyst spends the owner's key on; `/pause` because it is the system's
+> stop button (see §7's split from the per-user loss pause).
+>
+> **A non-owner gets silence, not a refusal.** Owner handlers sit behind an
+> `OwnerOnly` filter on their own router, and a filter that does not match means no
+> handler runs — so a member typing `/approve` learns nothing: not that the command
+> exists, not that they lack the role, not that anybody has it.
+>
+> **The `/` menu is registered** with `setMyCommands` at startup, in three scopes:
+> `/start` and `/help` for every private chat, the member set for an approved
+> member's own chat, and both halves for the owner's. The menu is therefore also an
+> access-control surface — advertising `/approve` to everyone would undo the silence
+> above. Scopes are re-published on approval and cleared on rejection, suspension
+> and `/leave`. A failed `setMyCommands` never stops polling: the menu is a
+> convenience, the signals are the product.
 
 > **Scope at M6 (2026-08-18) — degrade explicitly rather than fabricate.**
 > Three entries in this table ask for state the tracker and the cycle orchestrator
@@ -252,3 +299,51 @@ Daily 08:00 (owner timezone, config): yesterday's signals & outcomes, running we
 > Local is what the owner acts on at 3am; the UTC figure is what every log line and
 > database row carries, so a card can always be matched to its audit trail by eye.
 - Every card footer: `Research tool — not financial advice. Past stats ≠ future results.`
+
+## 7. Users, roles and approval (M8.1, 2026-08-19)
+
+One analysis per cycle, shared. Sizing, rails, decisions and statistics per user.
+The analyst is never run per person: its output is a judgment about a market, and
+at ~$0.32 a call it is the most expensive thing in the system.
+
+**Standing.** A row in `users` per Telegram id, with one of five states —
+`PENDING`, `APPROVED`, `REJECTED`, `SUSPENDED`, `LEFT`. Only `APPROVED` receives
+anything; the other four are the same silence and four different facts, so each has
+its own sentence when the person asks.
+
+**Joining.** An unknown id sends `/start`. That files a request and messages the
+owner once, with a `[✅ Approve] [❌ Reject]` row — **once per id, ever**, guaranteed
+by the table's primary key rather than by a counter, so a restart can neither lose
+nor duplicate it and a stranger cannot spam the owner by tapping. Re-`/start` is a
+no-op that answers them with where they stand, throttled to one reply per hour.
+
+**Approval and the first-run acknowledgement.** Approving publishes the member's
+command menu and sends two messages: a welcome, and a note they must accept before
+anything is delivered — *this system is experimental, its win rate is not yet
+measured, signals are research and not advice, you place every trade yourself, and
+you can lose money*. The acknowledgement is stored with a timestamp **and the
+wording's version**: a disclaimer somebody agreed to only means something if the
+words they saw are identifiable, so bumping `ACK_VERSION` asks everybody again.
+
+**Leaving.** `/leave` is a member's own decision, one confirmation deep. Standing
+becomes `LEFT`, the menu is cleared and delivery stops immediately. Their history
+stays — deleting measured history is never automatic — and they appear as `LEFT` to
+the owner, who can re-approve them if they ask.
+
+**Per user:** capital, risk %, sized `TradePlan`, portfolio rails (open risk, max
+positions, cooldowns, daily-loss pause), decisions, and statistics. A user whose
+capital is unset is still evaluated by the gate, rejected with `NO_CAPITAL`, and
+**told why** — at most once per UTC day, and only on a day when a plan was actually
+approved and could not be sized for them.
+
+**Owner-only channels.** The spend guard, cycle-failure alerts and ops notices go to
+the owner alone. A member has no lever to pull in response to any of them.
+
+**`/users`, and the boundary it keeps (owner ruling).** The card shows each member's
+standing, when they joined, whether a capital is set (**yes or no**), and whether a
+daily-loss pause is currently holding them. It shows **no amount, no risk %, no
+P&L, no win rate and no decision.** Operating a system for friends requires knowing
+who is set up and who is stuck; it does not require watching them trade, and a card
+that showed both would make the second happen by accident every time the first was
+needed. The boundary is a type — `UserView` carries no field a future card could
+print — and `tests/bot/test_registration.py` asserts that it stays that way.

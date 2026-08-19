@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sentinel.bot.models import SignalRecord
+from sentinel.bot.models import SignalRecord, UserAccount, UserStatus
 from sentinel.core.config import Secrets, Settings, load_config
 from sentinel.risk.models import PauseState
 
@@ -61,6 +61,14 @@ class CycleStore:
     open_symbols: set[str] = field(default_factory=set)
     resolutions: list[tuple[str, datetime]] = field(default_factory=list)
     published_today: int = 0
+    #: M8.1 — who the cycle fans out to. Empty means nobody is set up, and the
+    #: orchestrator must then skip the deep analyst entirely.
+    users: list[UserAccount] = field(default_factory=list)
+    #: The same three guard inputs as above, partitioned by user — which is what the
+    #: union guard and the per-user dedup check actually read from M8.1.
+    open_by_user: dict[int, set[str]] = field(default_factory=dict)
+    cooldowns_by_user: dict[int, list[tuple[str, datetime]]] = field(default_factory=dict)
+    today_by_user: dict[int, int] = field(default_factory=dict)
     committed: int = 0
 
 
@@ -87,6 +95,28 @@ class CycleDatabase:
         return _session()
 
 
+class CycleUsers:
+    """``UserRepository``'s read half, from ``CycleStore.users`` (M8.1)."""
+
+    def __init__(self, session: Any) -> None:
+        self._store: CycleStore = session.store
+
+    async def get(self, user_id: int) -> UserAccount | None:
+        return next((u for u in self._store.users if u.telegram_user_id == user_id), None)
+
+    async def owner(self) -> UserAccount | None:
+        return next((u for u in self._store.users if u.is_owner), None)
+
+    async def all(self) -> list[UserAccount]:
+        return list(self._store.users)
+
+    async def approved(self) -> list[UserAccount]:
+        return sorted(
+            (u for u in self._store.users if u.status is UserStatus.APPROVED),
+            key=lambda u: u.telegram_user_id,
+        )
+
+
 def signal_row(record: SignalRecord) -> Any:
     """A ``SignalRow``-shaped object for the store, without a database."""
     plan = record.plan
@@ -97,6 +127,7 @@ def signal_row(record: SignalRecord) -> Any:
             "id": record.signal_id,
             "plan_id": plan.plan_id,
             "number": record.number or 1,
+            "user_id": record.user_id,
             "symbol": plan.symbol,
             "plan": plan.model_dump(mode="json"),
             "status": record.status.value,
@@ -108,4 +139,11 @@ def signal_row(record: SignalRecord) -> Any:
     )()
 
 
-__all__ = ["NOW", "CycleDatabase", "CycleSession", "CycleStore", "signal_row"]
+__all__ = [
+    "NOW",
+    "CycleDatabase",
+    "CycleSession",
+    "CycleStore",
+    "CycleUsers",
+    "signal_row",
+]

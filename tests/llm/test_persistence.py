@@ -24,6 +24,7 @@ from sentinel.storage.repositories import (
     analyst_report_row,
     llm_call_row,
 )
+from tests.bot_double import OWNER_ID
 from tests.db_guard import TEST_DB_URL, requires_db
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
@@ -162,7 +163,7 @@ async def test_recent_for_symbol_returns_newest_first(session: AsyncSession) -> 
         )
     await session.flush()
 
-    verdicts = await repo.recent_for_symbol(symbol, limit=3)
+    verdicts = await repo.recent_for_symbol(symbol, limit=3, owner_id=OWNER_ID)
 
     assert len(verdicts) == 3
     assert [v.confidence for v in verdicts] == [73, 72, 71]
@@ -191,7 +192,7 @@ async def test_shadow_reports_do_not_pollute_primary_history(session: AsyncSessi
     )
     await session.flush()
 
-    assert len(await repo.recent_for_symbol(symbol)) == 1
+    assert len(await repo.recent_for_symbol(symbol, owner_id=OWNER_ID)) == 1
     total = await session.execute(
         select(func.count()).select_from(AnalystReportRow).where(AnalystReportRow.symbol == symbol)
     )

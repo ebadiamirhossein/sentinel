@@ -20,19 +20,23 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from sentinel.bot.context import Repositories
 from sentinel.bot.models import (
+    ACK_VERSION,
     OPEN_STATUSES,
     MessageKind,
     MessageStatus,
     PostedMessage,
     SignalDecision,
     SignalStatus,
+    UserAccount,
+    UserRole,
+    UserStatus,
 )
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.llm.spend import SpendTotals
@@ -49,7 +53,49 @@ from sentinel.storage.repositories import (
     SignalRepository,
     SnapshotRepository,
     TelegramMessageRepository,
+    UserRepository,
 )
+
+#: Every fake account's ``requested_at``/``decided_at``. Frozen, like the clock.
+ACCOUNT_NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+
+
+#: The default owner in the M6/M7 suites, kept as the default ``user_id`` on a fake
+#: signal row so tests written before M8.1 keep asserting the same thing.
+OWNER_ID = 111
+
+
+def owner_account(
+    user_id: int = OWNER_ID,
+    *,
+    capital_eur: Decimal | None = None,
+    risk_per_trade_pct: Decimal | None = None,
+    acknowledged: bool = True,
+    status: UserStatus = UserStatus.APPROVED,
+    role: UserRole = UserRole.OWNER,
+    username: str | None = None,
+    pause: PauseState | None = None,
+) -> UserAccount:
+    """A ``users`` row for a test, approved and acknowledged unless told otherwise."""
+    return UserAccount(
+        telegram_user_id=user_id,
+        status=status,
+        role=role,
+        username=username,
+        requested_at=ACCOUNT_NOW,
+        decided_at=ACCOUNT_NOW,
+        capital_eur=capital_eur,
+        risk_per_trade_pct=risk_per_trade_pct,
+        acknowledged_at=ACCOUNT_NOW if acknowledged else None,
+        acknowledged_version=ACK_VERSION if acknowledged else "",
+        pause=pause or PauseState(),
+    )
+
+
+def member_account(user_id: int, **kwargs: Any) -> UserAccount:
+    """A member row — the same thing without the OWNER role."""
+    kwargs.setdefault("role", UserRole.MEMBER)
+    return owner_account(user_id, **kwargs)
 
 
 @dataclass
@@ -91,6 +137,30 @@ class FakeBot:
         self._record("answer_callback_query", kwargs)
         return True
 
+    # -- the command menu (M8.1) ------------------------------------------- #
+
+    async def set_my_commands(self, **kwargs: Any) -> bool:
+        self._record("set_my_commands", kwargs)
+        return True
+
+    async def delete_my_commands(self, **kwargs: Any) -> bool:
+        self._record("delete_my_commands", kwargs)
+        return True
+
+    def scopes(self, method: str = "set_my_commands") -> dict[str, list[str]]:
+        """``{scope description: command names}`` — what the "/" menu would show.
+
+        A ``BotCommandScopeChat`` is keyed by its chat id and everything else by its
+        type name, which is exactly the distinction the M8.1 menu makes: the default
+        scope is what a stranger sees and a per-chat scope is what standing earns.
+        """
+        out: dict[str, list[str]] = {}
+        for call in self.of(method):
+            scope = call.kwargs["scope"]
+            key = str(getattr(scope, "chat_id", type(scope).__name__))
+            out[key] = [command.command for command in call.kwargs.get("commands", [])]
+        return out
+
     # -- assertion surface ------------------------------------------------- #
 
     @property
@@ -119,6 +189,8 @@ class _SignalRow:
     signal_id: UUID
     plan_id: UUID
     number: int
+    #: M8.1 — whose signal this is. Every read model filters on it.
+    user_id: int = OWNER_ID
     decision: str | None = None
     decided_at: datetime | None = None
     decided_by_user_id: int | None = None
@@ -126,6 +198,8 @@ class _SignalRow:
     symbol: str = "SOLUSDT"
     direction: str = "long"
     setup_type: str = "trend_pullback"
+    #: /stats breaks its populations down by this (specs/PROMPTS.md §5 step 3).
+    prompt_version: str | None = "fable_v1"
     plan: dict[str, Any] = field(default_factory=dict)
     expires_at: datetime | None = None
     status: str = "PENDING_ENTRY"
@@ -137,6 +211,7 @@ class _SignalRow:
     tp_hits: int = 0
     realized_r: Decimal | None = None
     realized_eur: Decimal | None = None
+    realized_costs_eur: Decimal | None = None
     outcome: str | None = None
     closed_at: datetime | None = None
 
@@ -172,6 +247,9 @@ class FakeStore:
     """Shared state that survives a "restart" — exactly what a database is for."""
 
     signals: dict[UUID, _SignalRow] = field(default_factory=dict)
+    #: M8.1's ``users`` table, keyed by its primary key so ``request``'s
+    #: ON CONFLICT DO NOTHING behaves exactly as Postgres does.
+    users: dict[int, UserAccount] = field(default_factory=dict)
     messages: dict[tuple[UUID, str, int, str], _MessageRow] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
     changes: list[tuple[str, Any, Any, int | None]] = field(default_factory=list)
@@ -338,6 +416,108 @@ class FakeSettingsRepository(RuntimeSettingsRepository):
         return list(self._store.changes[:limit])
 
 
+class FakeUserRepository(UserRepository):
+    """The ``users`` table in memory, with its primary key doing the real work."""
+
+    def __init__(self, session: Any) -> None:
+        self._store: FakeStore = session.store
+
+    async def get(self, user_id: int) -> UserAccount | None:
+        return self._store.users.get(user_id)
+
+    async def owner(self) -> UserAccount | None:
+        return next((a for a in self._store.users.values() if a.is_owner), None)
+
+    async def all(self) -> list[UserAccount]:
+        return sorted(
+            self._store.users.values(), key=lambda a: (a.requested_at, a.telegram_user_id)
+        )
+
+    async def approved(self) -> list[UserAccount]:
+        return sorted(
+            (a for a in self._store.users.values() if a.status is UserStatus.APPROVED),
+            key=lambda a: a.telegram_user_id,
+        )
+
+    async def request(
+        self, user_id: int, *, username: str | None, display_name: str | None, at: datetime
+    ) -> UserAccount | None:
+        if user_id in self._store.users:
+            return None  # ON CONFLICT DO NOTHING — a re-request writes nothing
+        created = UserAccount(
+            telegram_user_id=user_id,
+            status=UserStatus.PENDING,
+            role=UserRole.MEMBER,
+            username=username,
+            display_name=display_name,
+            requested_at=at,
+        )
+        self._store.users[user_id] = created
+        return created
+
+    async def ensure_owner(
+        self, user_id: int, *, at: datetime, acknowledged_version: str
+    ) -> UserAccount:
+        existing = self._store.users.get(user_id)
+        if existing is not None:
+            return existing
+        seeded = UserAccount(
+            telegram_user_id=user_id,
+            status=UserStatus.APPROVED,
+            role=UserRole.OWNER,
+            requested_at=at,
+            decided_at=at,
+            decided_by_user_id=user_id,
+            acknowledged_at=at,
+            acknowledged_version=acknowledged_version,
+        )
+        self._store.users[user_id] = seeded
+        return seeded
+
+    async def set_status(
+        self, user_id: int, status: UserStatus, *, at: datetime, by_user_id: int | None
+    ) -> UserAccount | None:
+        return self._update(user_id, status=status, decided_at=at, decided_by_user_id=by_user_id)
+
+    async def acknowledge(self, user_id: int, *, version: str, at: datetime) -> UserAccount | None:
+        return self._update(user_id, acknowledged_at=at, acknowledged_version=version)
+
+    async def set_capital(
+        self, user_id: int, capital_eur: Decimal, *, at: datetime
+    ) -> UserAccount | None:
+        return self._audited(user_id, "capital_eur", capital_eur)
+
+    async def set_risk_pct(
+        self, user_id: int, risk_per_trade_pct: Decimal, *, at: datetime
+    ) -> UserAccount | None:
+        return self._audited(user_id, "risk_per_trade_pct", risk_per_trade_pct)
+
+    def _audited(self, user_id: int, column: str, value: Decimal) -> UserAccount | None:
+        """Mirrors the real repository: the sizing inputs append a config_changes row."""
+        previous = self._store.users.get(user_id)
+        if previous is None:
+            return None
+        old = getattr(previous, column)
+        self._store.changes.append(
+            (f"user.{user_id}.{column}", None if old is None else str(old), str(value), user_id)
+        )
+        return self._update(user_id, **{column: value})
+
+    async def set_pause(self, user_id: int, state: PauseState, *, at: datetime) -> None:
+        self._update(user_id, pause=state)
+
+    async def touch_notice(self, user_id: int, *, at: datetime) -> None:
+        self._update(user_id, notice_at=at)
+
+    def _update(self, user_id: int, **fields: Any) -> UserAccount | None:
+        existing = self._store.users.get(user_id)
+        if existing is None:
+            return None
+        updated = existing.model_copy(update=fields)
+        self._store.users[user_id] = updated
+        return updated
+
+
 class FakeRiskStateRepository(RiskStateRepository):
     def __init__(self, session: Any) -> None:
         self._store: FakeStore = session.store
@@ -369,30 +549,38 @@ class FakeSignalRepository(SignalRepository):
         row.decided_by_user_id = user_id
         return row, True
 
-    async def with_decision(self, decision: Any, *, limit: int = 50) -> list[Any]:
-        return [row for row in self._store.signals.values() if row.decision == decision.value]
+    def _mine(self, user_id: int) -> list[_SignalRow]:
+        return [row for row in self._store.signals.values() if row.user_id == user_id]
 
-    async def recent(self, limit: int = 20) -> list[Any]:
-        return list(self._store.signals.values())[:limit]
+    async def with_decision(self, decision: Any, *, user_id: int, limit: int = 50) -> list[Any]:
+        return [row for row in self._mine(user_id) if row.decision == decision.value][:limit]
 
-    async def undecided_count(self) -> int:
-        return sum(1 for row in self._store.signals.values() if row.decision is None)
+    async def recent(self, *, user_id: int, limit: int = 20) -> list[Any]:
+        return self._mine(user_id)[:limit]
 
-    async def open_taken(self) -> list[Any]:
+    async def undecided_count(self, *, user_id: int) -> int:
+        return sum(1 for row in self._mine(user_id) if row.decision is None)
+
+    async def open_taken(self, *, user_id: int) -> list[Any]:
         return [
             row
-            for row in self._store.signals.values()
+            for row in self._mine(user_id)
             if SignalStatus(row.status) in OPEN_STATUSES
             and row.decision == SignalDecision.TAKEN.value
             and not row.dry_run
         ]
 
-    async def open_symbols(self) -> set[str]:
+    async def open_symbols(self, *, user_id: int) -> set[str]:
         return {
-            getattr(row, "symbol", "")
-            for row in self._store.signals.values()
-            if SignalStatus(row.status) in OPEN_STATUSES
+            row.symbol for row in self._mine(user_id) if SignalStatus(row.status) in OPEN_STATUSES
         }
+
+    async def open_symbols_by_user(self) -> dict[int, set[str]]:
+        grouped: dict[int, set[str]] = {}
+        for row in self._store.signals.values():
+            if SignalStatus(row.status) in OPEN_STATUSES:
+                grouped.setdefault(row.user_id, set()).add(row.symbol)
+        return grouped
 
     async def get(self, signal_id: UUID) -> Any:
         return self._store.signals.get(signal_id)
@@ -407,12 +595,71 @@ class FakeSignalRepository(SignalRepository):
             setattr(row, key, value)
         return row
 
-    async def published_since(self, since: datetime) -> int:
+    async def published_since(self, since: datetime, *, user_id: int) -> int:
         return sum(
             1
-            for row in self._store.signals.values()
+            for row in self._mine(user_id)
             if row.created_at is not None and row.created_at >= since
         )
+
+    async def published_by_user_since(self, since: datetime) -> dict[int, int]:
+        grouped: dict[int, int] = {}
+        for row in self._store.signals.values():
+            if row.created_at is not None and row.created_at >= since:
+                grouped[row.user_id] = grouped.get(row.user_id, 0) + 1
+        return grouped
+
+    async def resolutions_since(
+        self, since: datetime, *, user_id: int
+    ) -> list[tuple[str, datetime]]:
+        return [
+            (row.symbol, row.closed_at)
+            for row in self._mine(user_id)
+            if row.closed_at is not None
+            and row.closed_at >= since
+            and row.status in _ARMING_STATUSES
+        ]
+
+    async def resolutions_by_user_since(
+        self, since: datetime
+    ) -> dict[int, list[tuple[str, datetime]]]:
+        grouped: dict[int, list[tuple[str, datetime]]] = {}
+        for row in self._store.signals.values():
+            if (
+                row.closed_at is not None
+                and row.closed_at >= since
+                and row.status in _ARMING_STATUSES
+            ):
+                grouped.setdefault(row.user_id, []).append((row.symbol, row.closed_at))
+        return grouped
+
+    async def realized_eur_by_user_since(self, since: datetime) -> dict[int, list[Decimal]]:
+        grouped: dict[int, list[Decimal]] = {}
+        for row in self._store.signals.values():
+            if (
+                row.decision == SignalDecision.TAKEN.value
+                and not row.dry_run
+                and row.closed_at is not None
+                and row.closed_at >= since
+                and row.realized_eur is not None
+            ):
+                grouped.setdefault(row.user_id, []).append(row.realized_eur)
+        return grouped
+
+    async def resolved_since(self, since: datetime | None = None, *, user_id: int) -> list[Any]:
+        return [
+            row
+            for row in self._mine(user_id)
+            if row.closed_at is not None and (since is None or row.closed_at >= since)
+        ]
+
+
+#: Which statuses arm a cooldown, mirroring ``repositories._COOLDOWN_ARMING``.
+_ARMING_STATUSES = (
+    SignalStatus.STOPPED.value,
+    SignalStatus.EXPIRED.value,
+    SignalStatus.INVALIDATED.value,
+)
 
 
 class _Row:
@@ -498,14 +745,17 @@ class FakeEventRepository(SignalEventRepository):
         self._store.events[key] = {"signal_id": signal_id, "event_key": event_key, **fields}
         return True
 
-    async def unposted(self, chat_id: int, *, limit: int = 100) -> list[Any]:
+    async def unposted(self, chat_id: int, *, user_id: int, limit: int = 100) -> list[Any]:
         posted = {
             key[3] for key in self._store.messages if key[1] == "update" and key[2] == chat_id
         }
+        mine = {
+            signal_id for signal_id, row in self._store.signals.items() if row.user_id == user_id
+        }
         return [
             _Row(values)
-            for (_, event_key), values in self._store.events.items()
-            if event_key not in posted
+            for (signal_id, event_key), values in self._store.events.items()
+            if event_key not in posted and signal_id in mine
         ]
 
 
@@ -638,6 +888,7 @@ def fake_repositories() -> Repositories:
         signals=FakeSignalRepository,
         messages=FakeMessageRepository,
         settings=FakeSettingsRepository,
+        users=FakeUserRepository,
         risk_state=FakeRiskStateRepository,
         snapshots=FakeSnapshotRepository,
         instruments=FakeInstrumentRepository,
@@ -650,12 +901,17 @@ def fake_repositories() -> Repositories:
 
 
 __all__ = [
+    "ACCOUNT_NOW",
+    "OWNER_ID",
     "FakeBot",
     "FakeDatabase",
     "FakeMessageStore",
     "FakeSession",
     "FakeSignalStore",
     "FakeStore",
+    "FakeUserRepository",
     "SentMessage",
     "fake_repositories",
+    "member_account",
+    "owner_account",
 ]

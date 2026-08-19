@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 
+from sentinel.bot.auth import Actor
 from sentinel.bot.context import BotContext
 from sentinel.bot.handlers import callbacks
 from sentinel.bot.keyboards import DecisionCallback, ResumeCallback, decision_keyboard
@@ -25,9 +26,17 @@ from sentinel.bot.models import SignalDecision
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
 from sentinel.risk.models import PauseReason, PauseState
-from tests.bot_double import FakeDatabase, FakeStore, _SignalRow, fake_repositories
+from tests.bot_double import (
+    FakeDatabase,
+    FakeStore,
+    _SignalRow,
+    fake_repositories,
+    owner_account,
+)
 
 OWNER = 111
+#: The gate has already loaded the caller's row by the time a handler runs (M8.1).
+ACTOR = Actor(user_id=OWNER, account=owner_account(OWNER))
 SIGNAL_ID = UUID(int=1)
 
 
@@ -125,6 +134,7 @@ async def test_a_button_press_is_persisted(
         query,
         DecisionCallback(signal_id=SIGNAL_ID, decision=decision),
         ctx,
+        ACTOR,
     )
 
     row = store.signals[SIGNAL_ID]
@@ -140,6 +150,7 @@ async def test_the_keyboard_reflects_the_decision(ctx: BotContext) -> None:
         query,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN),
         ctx,
+        ACTOR,
     )
     marked = [
         button.text
@@ -155,11 +166,11 @@ async def test_pressing_the_same_button_twice_changes_nothing(
 ) -> None:
     callback = DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN)
     first = FakeQuery()
-    await callbacks.decision(first, callback, ctx)
+    await callbacks.decision(first, callback, ctx, ACTOR)
     decided_at = store.signals[SIGNAL_ID].decided_at
 
     second = FakeQuery(FakeQueryMessage(decision_keyboard(SIGNAL_ID, SignalDecision.TAKEN)))
-    await callbacks.decision(second, callback, ctx)
+    await callbacks.decision(second, callback, ctx, ACTOR)
 
     assert store.signals[SIGNAL_ID].decided_at == decided_at
     assert second.message.edits == [], "Telegram rejects an edit that changes nothing"
@@ -174,11 +185,13 @@ async def test_a_mistap_can_be_corrected(ctx: BotContext, store: FakeStore) -> N
         query,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN),
         ctx,
+        ACTOR,
     )
     await callbacks.decision(
         FakeQuery(),
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.SKIPPED),
         ctx,
+        ACTOR,
     )
     assert store.signals[SIGNAL_ID].decision == SignalDecision.SKIPPED.value
 
@@ -198,6 +211,7 @@ async def test_a_failed_keyboard_edit_does_not_lose_the_decision(
         query,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.WATCHING),
         ctx,
+        ACTOR,
     )
     assert store.signals[SIGNAL_ID].decision == SignalDecision.WATCHING.value
 
@@ -208,6 +222,7 @@ async def test_a_button_for_an_unknown_signal_says_so(ctx: BotContext) -> None:
         query,
         DecisionCallback(signal_id=UUID(int=99), decision=SignalDecision.TAKEN),
         ctx,
+        ACTOR,
     )
     assert "no longer in the database" in query.answers[0]
 
@@ -218,7 +233,7 @@ async def test_confirming_a_loss_limit_resume_lifts_the_pause(
     store.pause = PauseState(paused=True, reason=PauseReason.DAILY_LOSS_LIMIT)
     query = FakeQuery()
 
-    await callbacks.resume_confirmation(query, ResumeCallback(confirm=True), ctx)
+    await callbacks.resume_confirmation(query, ResumeCallback(confirm=True), ctx, ACTOR)
 
     assert store.pause.paused is False
     assert "Resumed" in query.message.texts[-1]
@@ -230,7 +245,7 @@ async def test_declining_the_confirmation_keeps_the_pause(
     store.pause = PauseState(paused=True, reason=PauseReason.DAILY_LOSS_LIMIT)
     query = FakeQuery()
 
-    await callbacks.resume_confirmation(query, ResumeCallback(confirm=False), ctx)
+    await callbacks.resume_confirmation(query, ResumeCallback(confirm=False), ctx, ACTOR)
 
     assert store.pause.paused is True
     assert "Still paused" in query.message.texts[-1]
@@ -256,6 +271,7 @@ async def test_a_decision_posts_a_visible_confirmation(ctx: BotContext) -> None:
         query,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN),
         ctx,
+        ACTOR,
     )
     assert query.message.replies, "a decision must say so in the thread, not only on the button"
     assert "marked <b>Taken</b>" in query.message.replies[0]
@@ -273,6 +289,7 @@ async def test_the_confirmation_is_edited_when_the_decision_changes(
             query,
             DecisionCallback(signal_id=SIGNAL_ID, decision=decision),
             ctx,
+            ACTOR,
         )
 
     assert len(query.message.replies) == 1, "no second reply — the thread stays readable"
@@ -289,6 +306,7 @@ async def test_the_confirmation_claim_survives_a_restart(
         FakeQuery(),
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN),
         ctx,
+        ACTOR,
     )
     restarted = BotContext(
         settings=ctx.settings,
@@ -302,6 +320,7 @@ async def test_the_confirmation_claim_survives_a_restart(
         after,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.WATCHING),
         restarted,
+        ACTOR,
     )
     assert after.message.replies == [], "a restart must not post a second acknowledgement"
     assert after.bot.edits
@@ -318,6 +337,7 @@ async def test_a_failed_confirmation_never_loses_the_decision(
         query,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN),
         ctx,
+        ACTOR,
     )
     assert store.signals[SIGNAL_ID].decision == SignalDecision.TAKEN.value
 
@@ -332,6 +352,7 @@ async def test_the_manage_row_appears_only_once_something_has_filled(
         unfilled,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN),
         ctx,
+        ACTOR,
     )
     assert len(unfilled.message.edits[-1].inline_keyboard) == 1
 
@@ -341,6 +362,7 @@ async def test_the_manage_row_appears_only_once_something_has_filled(
         filled,
         DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.WATCHING),
         ctx,
+        ACTOR,
     )
     rows = filled.message.edits[-1].inline_keyboard
     assert len(rows) == 2

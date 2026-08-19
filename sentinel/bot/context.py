@@ -33,6 +33,7 @@ from sentinel.storage.repositories import (
     SignalRepository,
     SnapshotRepository,
     TelegramMessageRepository,
+    UserRepository,
 )
 
 
@@ -43,6 +44,9 @@ class Repositories:
     signals: type[SignalRepository] = SignalRepository
     messages: type[TelegramMessageRepository] = TelegramMessageRepository
     settings: type[RuntimeSettingsRepository] = RuntimeSettingsRepository
+    #: M8.1 — read on *every* update by the auth middleware, so it is the one
+    #: repository the bot cannot function without.
+    users: type[UserRepository] = UserRepository
     risk_state: type[RiskStateRepository] = RiskStateRepository
     snapshots: type[SnapshotRepository] = SnapshotRepository
     instruments: type[InstrumentMetaRepository] = InstrumentMetaRepository

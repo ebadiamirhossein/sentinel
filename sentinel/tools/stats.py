@@ -63,13 +63,15 @@ def render(report: StatsReport) -> str:
     return "\n".join(lines)
 
 
-async def run(settings: Settings, window: str) -> int:
+async def run(settings: Settings, window: str, user_id: int) -> int:
     from sentinel.core.clock import SystemClock
 
     database = Database(settings.secrets.database_url)
     try:
         async with database.session() as session:
-            report = await build_report(session, window=window, now=SystemClock().now())
+            report = await build_report(
+                session, window=window, now=SystemClock().now(), user_id=user_id
+            )
     finally:
         await database.dispose()
 
@@ -80,11 +82,24 @@ async def run(settings: Settings, window: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sentinel performance statistics.")
     parser.add_argument("window", nargs="?", default="30d", help="30d | 90d | all")
+    parser.add_argument(
+        "--user",
+        type=int,
+        default=None,
+        help="Telegram user id whose book to report. Defaults to the owner "
+        "(TELEGRAM_OWNER_USER_ID) — statistics are per user from M8.1.",
+    )
     args = parser.parse_args()
 
     settings = load_settings()
     configure_logging(settings.secrets.log_level, json_logs=settings.secrets.json_logs)
-    raise SystemExit(asyncio.run(run(settings, parse_window(args.window))))
+    user_id = args.user if args.user is not None else settings.secrets.owner_user_id
+    if user_id is None:
+        raise SystemExit(
+            "No user to report on. Set TELEGRAM_OWNER_USER_ID in .env, or pass --user <id>. "
+            "Statistics are per user from M8.1 and there is no combined book."
+        )
+    raise SystemExit(asyncio.run(run(settings, parse_window(args.window), user_id)))
 
 
 if __name__ == "__main__":  # pragma: no cover — CLI entrypoint

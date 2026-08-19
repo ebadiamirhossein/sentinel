@@ -84,11 +84,17 @@ def as_plain_text(card: str) -> str:
     return html.unescape(TAGS.sub("", card))
 
 
+#: The ``user_id`` on a card rendered for the documentation. Zero rather than a real
+#: id: the §1 example is not anybody's signal, and a real id in a committed spec
+#: would be a Telegram account number in a public file.
+DOC_USER_ID = 0
+
+
 def render(decision: GateDecision, settings: Settings, at: datetime, number: int = 1) -> str:
     tz = zone_info(settings.config.telegram.owner_timezone)
     if decision.plan is None:
         return as_plain_text(rejection_card(decision, tz, at))
-    record = SignalRecord(plan=decision.plan, number=number)
+    record = SignalRecord(plan=decision.plan, user_id=DOC_USER_ID, number=number)
     return as_plain_text(signal_card(record, tz))
 
 
@@ -102,10 +108,11 @@ async def post(decision: GateDecision, settings: Settings) -> int:
     if decision.plan is None:
         print("nothing to post — the gate did not approve this fixture")
         return 1
-    chat_ids = settings.secrets.allowed_user_ids
-    if not chat_ids:
-        print("TELEGRAM_ALLOWED_USER_IDS is empty — nobody to post to. See .env.example.")
+    owner_id = settings.secrets.owner_user_id
+    if owner_id is None:
+        print("TELEGRAM_OWNER_USER_ID is not set — nobody to post to. See .env.example.")
         return 2
+    chat_ids = (owner_id,)
 
     database = Database(settings.secrets.database_url)
     bot = build_bot(settings)
@@ -113,6 +120,7 @@ async def post(decision: GateDecision, settings: Settings) -> int:
         publisher = SignalPublisher(
             database,
             bot,
+            user_id=owner_id,
             chat_ids=chat_ids,
             telegram=settings.config.telegram,
             tz=zone_info(settings.config.telegram.owner_timezone),

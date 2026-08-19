@@ -15,7 +15,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from sentinel.bot.cards import DECISION_LABEL
-from sentinel.bot.models import SignalDecision
+from sentinel.bot.models import ACK_VERSION, SignalDecision
 
 #: §2's three buttons, in the spec's order.
 DECISION_ORDER = (SignalDecision.TAKEN, SignalDecision.WATCHING, SignalDecision.SKIPPED)
@@ -112,6 +112,97 @@ def manage_row(signal_id: UUID) -> list[InlineKeyboardButton]:
     ]
 
 
+#: M8.1's callback prefixes. ``ACK_PREFIX`` is a module constant because
+#: ``auth.py`` has to recognise the acknowledgement button *before* routing — it is
+#: the one press that must work while everything else is still gated.
+ACK_PREFIX = "ack"
+ADMIN_PREFIX = "adm"
+LEAVE_PREFIX = "leave"
+
+
+class AckCallback(CallbackData, prefix=ACK_PREFIX):
+    """The first-run acknowledgement (specs/TELEGRAM_UX.md §7).
+
+    Carries the wording's version, so what is recorded is what was on screen. A
+    stale button from a superseded note therefore records the old version and the
+    current one is asked for again, rather than a bare timestamp implying consent to
+    words the user never saw.
+    """
+
+    version: str
+
+
+class AdminAction(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
+
+
+class AdminCallback(CallbackData, prefix=ADMIN_PREFIX):
+    """The owner's Approve/Reject buttons on a registration request.
+
+    The handler re-checks the role against the database rather than trusting this
+    payload: a callback is client-supplied, and a forwarded request card carries its
+    buttons to whoever it was forwarded to.
+    """
+
+    user_id: int
+    action: AdminAction
+
+
+class LeaveCallback(CallbackData, prefix=LEAVE_PREFIX):
+    """``/leave``'s confirmation. Leaving is one tap away, but not zero."""
+
+    confirm: bool
+
+
+def acknowledge_keyboard(version: str | None = None) -> InlineKeyboardMarkup:
+    """One button under the first-run note. No "decline" — that is ``/leave``."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ I understand",
+                    callback_data=AckCallback(version=version or ACK_VERSION).pack(),
+                )
+            ]
+        ]
+    )
+
+
+def approval_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """§7's Approve/Reject row on the request that reaches the owner."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Approve",
+                    callback_data=AdminCallback(user_id=user_id, action=AdminAction.APPROVE).pack(),
+                ),
+                InlineKeyboardButton(
+                    text="❌ Reject",
+                    callback_data=AdminCallback(user_id=user_id, action=AdminAction.REJECT).pack(),
+                ),
+            ]
+        ]
+    )
+
+
+def leave_keyboard() -> InlineKeyboardMarkup:
+    """``/leave``'s confirmation, worded so neither button is the accidental one."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🚪 Yes, remove me", callback_data=LeaveCallback(confirm=True).pack()
+                ),
+                InlineKeyboardButton(
+                    text="↩️ Stay", callback_data=LeaveCallback(confirm=False).pack()
+                ),
+            ]
+        ]
+    )
+
+
 def resume_keyboard() -> InlineKeyboardMarkup:
     """§3's "Yes, resume" confirmation for a loss-limit pause."""
     return InlineKeyboardMarkup(
@@ -129,14 +220,24 @@ def resume_keyboard() -> InlineKeyboardMarkup:
 
 
 __all__ = [
+    "ACK_PREFIX",
+    "ADMIN_PREFIX",
     "BUTTON_LABEL",
     "DECISION_ORDER",
+    "LEAVE_PREFIX",
+    "AckCallback",
+    "AdminAction",
+    "AdminCallback",
     "DecisionCallback",
+    "LeaveCallback",
     "ManageAction",
     "ManageCallback",
     "ResumeCallback",
+    "acknowledge_keyboard",
+    "approval_keyboard",
     "decision_keyboard",
     "decision_keyboard_with_manage",
+    "leave_keyboard",
     "manage_row",
     "resume_keyboard",
 ]

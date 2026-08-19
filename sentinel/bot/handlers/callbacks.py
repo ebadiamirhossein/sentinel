@@ -10,6 +10,12 @@ it.
 Pressing the same button twice is a no-op with an acknowledgement. Pressing a
 different one records the change: a mis-tap the owner cannot correct would
 quietly corrupt the real-vs-hypothetical split for good.
+
+**M8.1: a decision is checked against the signal's owner.** A card forwarded to
+another approved user carries its buttons with it, and the callback payload names a
+signal id. Without the check, one member could write a decision onto another
+member's signal — which is the one write in this system that must never be wrong,
+because it decides whose real statistics an outcome joins.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 
+from sentinel.bot.auth import Actor
 from sentinel.bot.cards import DECISION_LABEL, decision_ack_card
 from sentinel.bot.context import BotContext
 from sentinel.bot.keyboards import (
@@ -43,21 +50,36 @@ callbacks_router = Router(name="callbacks")
 
 
 @callbacks_router.callback_query(DecisionCallback.filter())
-async def decision(query: CallbackQuery, callback_data: DecisionCallback, ctx: BotContext) -> None:
+async def decision(
+    query: CallbackQuery, callback_data: DecisionCallback, ctx: BotContext, actor: Actor
+) -> None:
     """Record ✅ Taken / 👀 Watching / ❌ Skip and reflect it on the keyboard."""
-    assert query.from_user is not None
     chosen = callback_data.decision
 
     async with ctx.database.session() as session:
-        result = await ctx.repositories.signals(session).record_decision(
+        signals = ctx.repositories.signals(session)
+        existing = await signals.get(callback_data.signal_id)
+        if existing is None:
+            await query.answer("That signal is no longer in the database.", show_alert=True)
+            return
+        if existing.user_id != actor.user_id:
+            # Not an error worth explaining to the presser: they are being told they
+            # touched somebody else's signal, and the answer is the same either way.
+            log.warning(
+                "bot.decision_rejected",
+                signal_id=str(callback_data.signal_id),
+                user_id=actor.user_id,
+                detail="the signal belongs to another user",
+            )
+            await query.answer("That signal is not yours.", show_alert=True)
+            return
+        result = await signals.record_decision(
             callback_data.signal_id,
             chosen,
             at=ctx.clock.now(),
-            user_id=query.from_user.id,
+            user_id=actor.user_id,
         )
-        if result is None:
-            await query.answer("That signal is no longer in the database.", show_alert=True)
-            return
+        assert result is not None  # the row was loaded a statement ago
         _row, changed = result
         await session.commit()
 
@@ -65,7 +87,7 @@ async def decision(query: CallbackQuery, callback_data: DecisionCallback, ctx: B
         "bot.decision_recorded",
         signal_id=str(callback_data.signal_id),
         decision=chosen.value,
-        user_id=query.from_user.id,
+        user_id=actor.user_id,
         # A re-press writes nothing. Without this flag the audit trail shows two
         # "recorded" lines for one decision, which M9 would have to disentangle.
         changed=changed,
@@ -184,22 +206,29 @@ def _keyboard_already_shows(query: CallbackQuery, chosen: SignalDecision) -> boo
 
 @callbacks_router.callback_query(ResumeCallback.filter())
 async def resume_confirmation(
-    query: CallbackQuery, callback_data: ResumeCallback, ctx: BotContext
+    query: CallbackQuery, callback_data: ResumeCallback, ctx: BotContext, actor: Actor
 ) -> None:
-    """§3 — "resume from loss-limit pause requires confirming button "Yes, resume"."""
-    assert query.from_user is not None
+    """§3 — "resume from loss-limit pause requires confirming button "Yes, resume"".
+
+    M8.1 clears **both** pauses on confirmation: the caller's own daily-loss pause,
+    which now lives on their ``users`` row, and the system pause if one is also in
+    force. Half-resuming would report "resumed" and then deliver nothing, which is
+    the worst of the three possible outcomes.
+    """
     if not callback_data.confirm:
         await query.answer("Still paused.")
         await _replace(query, "⏸️ Still paused. The loss-limit rail stays in place.")
         return
 
+    now = ctx.clock.now()
     async with ctx.database.session() as session:
+        await ctx.repositories.users(session).set_pause(actor.user_id, PauseState(), at=now)
         await ctx.repositories.risk_state(session).save(PauseState())
         await session.commit()
 
     log.warning(
         "bot.loss_limit_pause_overridden",
-        user_id=query.from_user.id,
+        user_id=actor.user_id,
         detail="owner confirmed resume from a daily-loss-limit pause",
     )
     await query.answer("Resumed.")

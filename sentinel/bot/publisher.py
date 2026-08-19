@@ -23,6 +23,15 @@ The album goes first and the card replies to it. A Telegram media group cannot
 carry an inline keyboard, and its caption caps at 1024 characters against a card
 of roughly 1,600 — so "charts attached as an album above the card" has to be two
 messages, not a captioned one.
+
+**One publisher per recipient (M8.1).** The ``chat_ids`` tuple used to be the env
+allowlist, and one identical plan was broadcast to all of it — which is precisely
+what multi-user cannot be, because the plan is sized against one person's capital.
+The orchestrator now builds a publisher per approved user with that user's own plan,
+so this class keeps its whole shape and its guarantee, and ``chat_ids`` becomes the
+one chat the ``user_id`` on the record belongs to. The plan's own ``plan_id`` stays
+the idempotency key: each user's evaluation produces its own plan, so N users make N
+distinct claims rather than colliding on one.
 """
 
 from __future__ import annotations
@@ -139,13 +148,14 @@ class PublishResult:
 
 
 class SignalPublisher:
-    """Deliver one approved plan to the owner's chats, idempotently."""
+    """Deliver one approved plan to one user's chats, idempotently."""
 
     def __init__(
         self,
         database: Database,
         bot: SupportsSending,
         *,
+        user_id: int,
         chat_ids: tuple[int, ...],
         telegram: TelegramConfig,
         tz: Any,
@@ -155,6 +165,7 @@ class SignalPublisher:
     ) -> None:
         self._database = database
         self._bot = bot
+        self._user_id = user_id
         self._chat_ids = chat_ids
         self._telegram = telegram
         self._tz = tz
@@ -171,6 +182,7 @@ class SignalPublisher:
     ) -> PublishResult:
         record = SignalRecord(
             plan=plan,
+            user_id=self._user_id,
             cycle_id=cycle_id,
             chart_params=tuple(chart.params.to_json_dict() for chart in charts),
         )

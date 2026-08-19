@@ -52,6 +52,7 @@ from sentinel.storage.repositories import (
     SignalExitRepository,
     SignalFillRepository,
     SignalRepository,
+    UserRepository,
 )
 from sentinel.tracker.detect import observe
 from sentinel.tracker.machine import advance
@@ -92,6 +93,7 @@ class TrackerRepositories:
     events: type[SignalEventRepository] = SignalEventRepository
     risk_state: type[RiskStateRepository] = RiskStateRepository
     settings: type[RuntimeSettingsRepository] = RuntimeSettingsRepository
+    users: type[UserRepository] = UserRepository
 
 
 @dataclass
@@ -102,8 +104,17 @@ class TickResult:
     events: int = 0
     resolved: int = 0
     skipped: int = 0
-    paused: bool = False
+    #: Users whose own daily-loss pause was raised by this tick (M8.1). A list
+    #: rather than a bool because the rail is per user now, and because the caller
+    #: has to tell each of them: a member has no ``/status`` and would otherwise
+    #: just stop hearing from the system.
+    paused_users: list[int] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+
+    @property
+    def paused(self) -> bool:
+        """Whether this tick paused anybody. Kept for the log line and the tools."""
+        return bool(self.paused_users)
 
 
 def already_paused_for_loss(current: PauseState, now: datetime) -> bool:
@@ -140,6 +151,9 @@ class TrackerLoop:
     async def tick(self) -> TickResult:
         now = self._clock.now()
         result = TickResult()
+        # One tick, one set of candles. Several users' signals on the same symbol are
+        # asking the exchange the identical question (M8.1).
+        self._feed.reset()
 
         async with self._database.session() as session:
             rows = await self._repos.signals(session).open_signals()
@@ -161,14 +175,14 @@ class TrackerLoop:
                     error_type=type(exc).__name__,
                 )
 
-        result.paused = await self._enforce_daily_loss(now=now)
+        result.paused_users = await self._enforce_daily_loss(now=now)
         log.info(
             "tracker.tick",
             checked=result.checked,
             events=result.events,
             resolved=result.resolved,
             skipped=result.skipped,
-            paused=result.paused,
+            paused_users=result.paused_users,
         )
         return result
 
@@ -399,46 +413,68 @@ class TrackerLoop:
 
     # ---- the rail that runs on every tick (§7) -----------------------------
 
-    async def _enforce_daily_loss(self, *, now: datetime) -> bool:
+    async def _enforce_daily_loss(self, *, now: datetime) -> list[int]:
         """§7: "checked before every signal AND on every tracker tick".
 
         The window is the UTC calendar day (owner ruling, M7), so it resets at the
         same instant every stored row is stamped against. A quiet day never lifts
         an existing pause — only ``/resume`` does, and a loss-limit pause needs the
         confirmation button (§3).
+
+        **Per user from M8.1**, and it has to be: the limit is a percentage of
+        *somebody's* capital, and there is no longer one capital. Each user's realized
+        EUR is divided by their own, compared against the same configured limit, and
+        the pause is written to their own ``users`` row where it holds back their cards
+        and nobody else's. The operator's system-wide ``/pause`` is untouched and still
+        lives in ``risk_state``.
+
+        Returns the ids newly paused, so the caller can tell them — a member has no
+        ``/status`` to consult and would otherwise just stop hearing from us.
         """
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        limit_pct = self._settings.config.risk.daily_loss_limit_pct
         async with self._database.session() as session:
-            realized = await self._repos.signals(session).realized_eur_since(day_start)
-            stored = await self._repos.settings(session).all()
-            current = await self._repos.risk_state(session).load()
+            realized_by_user = await self._repos.signals(session).realized_eur_by_user_since(
+                day_start
+            )
+            accounts = {
+                account.telegram_user_id: account
+                for account in await self._repos.users(session).approved()
+            }
 
-        capital = stored.get("capital_eur")
-        loss_pct = realized_loss_pct(
-            realized, capital_eur=None if capital is None else Decimal(str(capital))
-        )
-        state = evaluate_daily_loss(
-            realized_loss_pct=loss_pct,
-            limit_pct=self._settings.config.risk.daily_loss_limit_pct,
-            now=now,
-            current=current,
-        )
-        newly_paused = (
-            state.paused
-            and state.reason is PauseReason.DAILY_LOSS_LIMIT
-            and not already_paused_for_loss(current, now)
-        )
-        if newly_paused:
+        paused: list[int] = []
+        for user_id, realized in sorted(realized_by_user.items()):
+            account = accounts.get(user_id)
+            if account is None:
+                # Suspended, rejected or left mid-day. Their signals still resolve —
+                # the measurement is theirs — but a pause on a book nothing will be
+                # delivered to would be bookkeeping for its own sake.
+                continue
+            loss_pct = realized_loss_pct(realized, capital_eur=account.capital_eur)
+            state = evaluate_daily_loss(
+                realized_loss_pct=loss_pct,
+                limit_pct=limit_pct,
+                now=now,
+                current=account.pause,
+            )
+            if not (
+                state.paused
+                and state.reason is PauseReason.DAILY_LOSS_LIMIT
+                and not already_paused_for_loss(account.pause, now)
+            ):
+                continue
             async with self._database.session() as session:
-                await self._repos.risk_state(session).save(state)
+                await self._repos.users(session).set_pause(user_id, state, at=now)
                 await session.commit()
+            paused.append(user_id)
             log.warning(
                 "tracker.daily_loss_limit",
+                user_id=user_id,
                 realized_loss_pct=str(loss_pct),
-                limit_pct=str(self._settings.config.risk.daily_loss_limit_pct),
+                limit_pct=str(limit_pct),
                 until=None if state.until is None else state.until.isoformat(),
             )
-        return newly_paused
+        return paused
 
 
 __all__ = [

@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Callable
 
 from sentinel.bot.app import build_bot
 from sentinel.bot.formatting import zone_info
+from sentinel.bot.notices import UserNotifier
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
@@ -37,7 +39,7 @@ def render(result: CycleResult) -> str:
         f"({result.symbols_skipped} skipped at ingestion)",
         f"screener      {result.candidates} candidate(s)",
         f"analyst       {result.analyzed} analysed",
-        f"gate          {result.approved} approved",
+        f"gate          {result.approved} approved for {result.recipients} user(s)",
         f"telegram      {result.published} "
         f"{'stored (nothing sent)' if result.dry_run else 'published'}",
         f"spend         ~${result.spend_usd_estimate} (estimate)",
@@ -59,24 +61,35 @@ async def run(settings: Settings, *, dry_run: bool) -> int:
         )
 
     database = Database(settings.secrets.database_url)
-    publisher = None
+    factory: Callable[[int], SignalPublisher] | None = None
+    notices = None
     bot = None
     if settings.secrets.telegram_bot_token is not None and not settings.config.dry_run:
         bot = build_bot(settings)
-        publisher = SignalPublisher(
-            database,
-            bot,
-            chat_ids=settings.secrets.allowed_user_ids,
-            telegram=settings.config.telegram,
-            tz=zone_info(settings.config.telegram.owner_timezone),
-        )
+        sender = bot
+        tz = zone_info(settings.config.telegram.owner_timezone)
+
+        def factory(user_id: int) -> SignalPublisher:
+            """One publisher per recipient, exactly as core/app.py builds them."""
+            return SignalPublisher(
+                database,
+                sender,
+                user_id=user_id,
+                chat_ids=(user_id,),
+                telegram=settings.config.telegram,
+                tz=tz,
+            )
+
+        notices = UserNotifier(database, bot, telegram=settings.config.telegram)
     elif settings.config.dry_run:
         print("dry run: the cycle will run in full and publish nothing.\n")
     else:
         print("no TELEGRAM_BOT_TOKEN — an approved plan will be stored, not sent.\n")
 
     try:
-        result = await CycleOrchestrator(settings, database, publisher=publisher).run()
+        result = await CycleOrchestrator(
+            settings, database, publisher_factory=factory, notices=notices
+        ).run()
     finally:
         if bot is not None:
             await bot.session.close()

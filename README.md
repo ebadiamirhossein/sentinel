@@ -11,6 +11,11 @@ rather than assumed.
 execution code, and no exchange credential with trade or withdraw permission
 exists anywhere in this repository.
 
+You can also approve other people. One analysis is computed per cycle and shared;
+each approved user gets it sized against *their own* capital and risk %, with their
+own rails, their own decisions and their own statistics — and nobody can see anybody
+else's (docs/specs/TELEGRAM_UX.md §7).
+
 ---
 
 ## How it works
@@ -42,6 +47,7 @@ outputs the numbers, and a human decides.
 | M6 | Telegram bot | ✅ |
 | M7 | Orchestrator, tracker, stats, spend guard | ✅ |
 | M8 | Hardening & deploy | ✅ |
+| M8.1 | Usability (`/help`, command menu) + multi-user with owner approval | ✅ |
 | M9 | Two-week shakedown, signals only | ← next |
 
 ## Running it on a server
@@ -54,7 +60,7 @@ The short version:
 
 ```bash
 git clone <repo> /opt/sentinel && cd /opt/sentinel
-cp .env.example .env && nano .env      # keys, Telegram token, allowlist
+cp .env.example .env && nano .env      # keys, Telegram token, your user id
 docker compose up -d --build
 curl -fsS localhost:18080/health
 ```
@@ -79,7 +85,7 @@ python -m sentinel.tools.snapshot BTCUSDT     # a full validated market snapshot
 python -m sentinel.tools.size --fixture examples/sol_long.json
 python -m sentinel.tools.cycle --once --dry-run
 python -m sentinel.tools.track --once
-python -m sentinel.tools.stats
+python -m sentinel.tools.stats               # your own book (--user <id> for another)
 python -m sentinel.tools.spend                # what the LLM has cost today
 python -m sentinel.tools.alert --simulate 3   # what an admin alert looks like
 ```

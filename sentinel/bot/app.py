@@ -17,10 +17,18 @@ from typing import Any
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
-from sentinel.bot.allowlist import AllowlistMiddleware
+from sentinel.bot.auth import AuthMiddleware
 from sentinel.bot.context import BotContext, Repositories
 from sentinel.bot.formatting import zone_info
-from sentinel.bot.handlers import callbacks_router, commands_router, replies_router
+from sentinel.bot.handlers import (
+    admin_router,
+    callbacks_router,
+    commands_router,
+    membership_router,
+    replies_router,
+)
+from sentinel.bot.menu import publish_menu
+from sentinel.bot.models import UserRole
 from sentinel.bot.runtime import SymbolChecker
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import Settings
@@ -49,23 +57,29 @@ def build_context(
 
 
 def build_dispatcher(ctx: BotContext) -> Dispatcher:
-    """Routers, the allowlist, and the context every handler receives.
+    """Routers, the authorization gate, and the context every handler receives.
 
-    The allowlist is attached to messages **and** callback queries: a card
-    forwarded to a stranger carries its buttons with it, and a button is a
-    perfectly good way to try to write to someone else's database.
+    The gate is attached to messages **and** callback queries: a card forwarded to a
+    stranger carries its buttons with it, and a button is a perfectly good way to try
+    to write to someone else's database.
+
+    Router order is load-bearing. ``membership`` first, because ``/start`` and
+    ``/help`` are the only things a caller without full standing may reach.
+    ``admin`` after the member commands, so an owner-only name never shadows one
+    everybody has. ``replies`` last, because it matches any reply and must not shadow
+    a command that happens to be sent as one.
     """
     dispatcher = Dispatcher()
     dispatcher["ctx"] = ctx
 
-    allowlist = AllowlistMiddleware(ctx.settings.secrets.allowed_user_ids)
-    dispatcher.message.middleware(allowlist)
-    dispatcher.callback_query.middleware(allowlist)
+    gate = AuthMiddleware(ctx)
+    dispatcher.message.middleware(gate)
+    dispatcher.callback_query.middleware(gate)
 
+    dispatcher.include_router(membership_router)
     dispatcher.include_router(commands_router)
+    dispatcher.include_router(admin_router)
     dispatcher.include_router(callbacks_router)
-    # Last: it matches any reply, so it must not shadow a command that happens to
-    # be sent as one.
     dispatcher.include_router(replies_router)
     return dispatcher
 
@@ -83,9 +97,10 @@ def build_bot(settings: Settings) -> Bot:
 class BotRunner:
     """Owns the polling task; started and stopped by the app lifespan."""
 
-    def __init__(self, bot: Bot, dispatcher: Dispatcher) -> None:
+    def __init__(self, bot: Bot, dispatcher: Dispatcher, ctx: BotContext) -> None:
         self.bot = bot
         self.dispatcher = dispatcher
+        self.ctx = ctx
         self._task: asyncio.Task[Any] | None = None
 
     async def start(self) -> None:
@@ -95,8 +110,26 @@ class BotRunner:
         # certainly button presses on cards that have since been answered, and
         # replaying them would rewrite decisions the owner already made.
         await self.bot.delete_webhook(drop_pending_updates=True)
+        await self.publish_menu()
         self._task = asyncio.create_task(self.dispatcher.start_polling(self.bot))
         log.info("bot.polling_started")
+
+    async def publish_menu(self) -> None:
+        """Register the ``/`` menu for every scope (M8.1).
+
+        Done at every start rather than once at approval, because the command set is
+        code: a release that adds a command must reach the menus of people who were
+        approved before it existed. ``publish_menu`` swallows its own failures — the
+        menu is a convenience and the signals are the product.
+        """
+        async with self.ctx.database.session() as session:
+            accounts = await self.ctx.repositories.users(session).approved()
+        owner = next((a for a in accounts if a.role is UserRole.OWNER), None)
+        await publish_menu(
+            self.bot,
+            owner_id=None if owner is None else owner.telegram_user_id,
+            member_ids=[a.telegram_user_id for a in accounts],
+        )
 
     async def stop(self) -> None:
         if self._task is None:  # pragma: no cover — stop mirrors start
@@ -125,7 +158,7 @@ def build_runner(
     symbol_checker: SymbolChecker | None = None,
 ) -> BotRunner:
     ctx = build_context(settings, database, clock=clock, symbol_checker=symbol_checker)
-    return BotRunner(build_bot(settings), build_dispatcher(ctx))
+    return BotRunner(build_bot(settings), build_dispatcher(ctx), ctx)
 
 
 __all__ = ["BotRunner", "build_bot", "build_context", "build_dispatcher", "build_runner"]

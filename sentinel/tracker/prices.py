@@ -73,11 +73,36 @@ def lookback(
 
 
 class PriceFeed:
-    """Candles for one tick, per symbol."""
+    """Candles for one tick, per symbol.
+
+    **Requests are memoised within a tick (M8.1).** Since one shared analysis now
+    produces one signal per approved user, several open signals routinely differ only
+    in whose they are: same symbol, same timeframe, same window. Fetched naively that
+    is N identical calls to a rate-limited public endpoint every 60 seconds, growing
+    with the number of members. The cache is keyed on
+    ``(symbol, timeframe, limit)`` — the whole of what determines the answer — and
+    :meth:`reset` clears it at the top of each tick, because candles go stale in
+    exactly one minute and a feed that remembered them across ticks would be the
+    polled-mark-price bug M7 removed, reintroduced through a cache.
+    """
 
     def __init__(self, source: CandleSource, config: TrackerConfig) -> None:
         self._source = source
         self._config = config
+        self._cache: dict[tuple[str, str, int], tuple[Candle, ...]] = {}
+
+    def reset(self) -> None:
+        """Forget this tick's candles. Called at the start of every tick."""
+        self._cache.clear()
+
+    async def _fetch(self, symbol: str, timeframe: str, limit: int) -> tuple[Candle, ...]:
+        key = (symbol, timeframe, limit)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        series = await self._source.ohlcv(symbol, timeframe, limit)
+        self._cache[key] = series.candles
+        return series.candles
 
     async def fill_candles(
         self, symbol: str, *, since: datetime | None, now: datetime
@@ -98,8 +123,7 @@ class PriceFeed:
                 detail="the gap since the last tick exceeds one request; "
                 "fills older than the window cannot be detected",
             )
-        series = await self._source.ohlcv(symbol, self._config.fill_timeframe, limit)
-        return series.candles
+        return await self._fetch(symbol, self._config.fill_timeframe, limit)
 
     async def invalidation_candles(self, symbol: str, *, limit: int = 3) -> tuple[Candle, ...]:
         """Closed candles on the invalidation timeframe, oldest first.
@@ -107,8 +131,8 @@ class PriceFeed:
         The last row from the exchange is the in-progress candle and is dropped:
         specs/TELEGRAM_UX.md §4 measures invalidation on a *close*.
         """
-        series = await self._source.ohlcv(symbol, self._config.invalidation_timeframe, limit + 1)
-        return series.candles[:-1]
+        candles = await self._fetch(symbol, self._config.invalidation_timeframe, limit + 1)
+        return candles[:-1]
 
 
 __all__ = ["MAX_CANDLES", "CandleSource", "PriceFeed", "lookback"]

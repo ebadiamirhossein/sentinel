@@ -18,7 +18,7 @@ timestamp would report "never ran" after every deploy — precisely the moment
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,7 +31,10 @@ from pydantic import BaseModel
 from sentinel import __version__
 from sentinel.bot.alerts import AdminAlerter
 from sentinel.bot.app import BotRunner, build_runner
+from sentinel.bot.cards import loss_pause_card
 from sentinel.bot.formatting import zone_info
+from sentinel.bot.models import ACK_VERSION
+from sentinel.bot.notices import UserNotifier, loss_pause_key
 from sentinel.bot.notifier import TrackerNotifier
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.core.clock import utc_now
@@ -40,7 +43,7 @@ from sentinel.core.logging import configure_logging, get_logger
 from sentinel.core.orchestrator import CycleOrchestrator
 from sentinel.core.wiring import market_adapter
 from sentinel.storage.db import Database, SupportsPing
-from sentinel.storage.repositories import CycleRepository
+from sentinel.storage.repositories import CycleRepository, UserRepository
 from sentinel.tracker.loop import TrackerLoop
 from sentinel.tracker.prices import PriceFeed
 
@@ -112,9 +115,12 @@ def _schedule_pipeline(
     schedule = settings.config.schedule
 
     async def scan() -> None:
-        publisher = None if state.bot is None else _publisher_for(state, settings, database)
+        factory = None if state.bot is None else _publisher_factory(state, settings, database)
+        notices = None if state.bot is None else _notices_for(state, settings, database)
         try:
-            result = await CycleOrchestrator(settings, database, publisher=publisher).run()
+            result = await CycleOrchestrator(
+                settings, database, publisher_factory=factory, notices=notices
+            ).run()
         except Exception as exc:  # pragma: no cover — the orchestrator catches its own
             log.error("scheduler.scan_failed", error=str(exc), error_type=type(exc).__name__)
         else:
@@ -131,9 +137,14 @@ def _schedule_pipeline(
         try:
             async with market_adapter(settings) as adapter:
                 loop = TrackerLoop(database, PriceFeed(adapter, settings.config.tracker), settings)
-                await loop.tick()
+                result = await loop.tick()
             if state.bot is not None:
-                await _notifier_for(state, settings, database).deliver()
+                eligible = await _eligible_user_ids(database, now=utc_now())
+                await _notifier_for(state, settings, database, eligible).deliver()
+                # specs/TELEGRAM_UX.md §4's daily-loss notice. It goes to the user
+                # whose book hit the limit, not to the owner: the pause holds back
+                # that person's cards, and they have no /status to find out why.
+                await _announce_pauses(state, settings, database, result.paused_users)
         except Exception as exc:
             log.error("scheduler.tick_failed", error=str(exc), error_type=type(exc).__name__)
 
@@ -163,35 +174,127 @@ def _schedule_pipeline(
     )
 
 
-def _publisher_for(state: AppState, settings: Settings, database: Database) -> SignalPublisher:
+def _publisher_factory(
+    state: AppState, settings: Settings, database: Database
+) -> Callable[[int], SignalPublisher]:
+    """One publisher per recipient (M8.1).
+
+    A private chat id equals the user id on Telegram, so ``chat_ids`` is that one
+    chat. What changed is not the delivery mechanism but what is delivered: each
+    user's own plan, sized against their own capital, stored under their own
+    ``user_id``.
+    """
     assert state.bot is not None
-    return SignalPublisher(
-        database,
-        state.bot.bot,
-        chat_ids=settings.secrets.allowed_user_ids,
-        telegram=settings.config.telegram,
-        tz=zone_info(settings.config.telegram.owner_timezone),
-    )
+    bot = state.bot.bot
+    telegram = settings.config.telegram
+    tz = zone_info(telegram.owner_timezone)
+
+    def build(user_id: int) -> SignalPublisher:
+        return SignalPublisher(
+            database,
+            bot,
+            user_id=user_id,
+            chat_ids=(user_id,),
+            telegram=telegram,
+            tz=tz,
+        )
+
+    return build
 
 
 def _alerter_for(state: AppState, settings: Settings, database: Database) -> AdminAlerter:
+    """Cycle failures, recovery and spend notices — **to the owner alone** (M8.1).
+
+    A member has no lever to pull in response to a failed cycle or an LLM bill, and
+    telling them the system is broken would be alarming without being actionable.
+    """
     assert state.bot is not None
+    owner_id = settings.secrets.owner_user_id
     return AdminAlerter(
         database,
         state.bot.bot,
-        chat_ids=settings.secrets.allowed_user_ids,
+        chat_ids=() if owner_id is None else (owner_id,),
         settings=settings,
         tz=zone_info(settings.config.telegram.owner_timezone),
     )
 
 
-def _notifier_for(state: AppState, settings: Settings, database: Database) -> TrackerNotifier:
+async def _eligible_user_ids(database: Database, *, now: datetime) -> tuple[int, ...]:
+    """Who may be sent anything right now (M8.1).
+
+    Read per tick rather than cached on ``AppState``: an approval, a suspension or a
+    ``/leave`` must take effect on the next tick, not on the next restart.
+    """
+    async with database.session() as session:
+        approved = await UserRepository(session).approved()
+    return tuple(user.telegram_user_id for user in approved if user.eligible_for_signals(now))
+
+
+def _notifier_for(
+    state: AppState, settings: Settings, database: Database, chat_ids: tuple[int, ...]
+) -> TrackerNotifier:
+    """Tracker replies, to everyone eligible — each about their own signals only."""
     assert state.bot is not None
     return TrackerNotifier(
         database,
         state.bot.bot,
-        chat_ids=settings.secrets.allowed_user_ids,
+        chat_ids=chat_ids,
         telegram=settings.config.telegram,
+    )
+
+
+def _notices_for(state: AppState, settings: Settings, database: Database) -> UserNotifier:
+    assert state.bot is not None
+    return UserNotifier(database, state.bot.bot, telegram=settings.config.telegram)
+
+
+async def _announce_pauses(
+    state: AppState, settings: Settings, database: Database, user_ids: Sequence[int]
+) -> None:
+    """One daily-loss notice per newly paused user, at most once per UTC day."""
+    if not user_ids:
+        return
+    notices = _notices_for(state, settings, database)
+    at = utc_now()
+    tz = zone_info(settings.config.telegram.owner_timezone)
+    for user_id in user_ids:
+        await notices.notice(
+            user_id,
+            key=loss_pause_key(user_id, at),
+            text=loss_pause_card(limit_pct=settings.config.risk.daily_loss_limit_pct, at=at, tz=tz),
+        )
+
+
+async def _seed_owner(database: Database, settings: Settings) -> None:
+    """Make sure an OWNER row exists (M8.1).
+
+    Migration 0007 does this for a database that already had signals or settings to
+    attribute. This covers the one it deliberately cannot: an empty database, where
+    there was nothing to attribute and therefore no reason to fail.
+
+    Idempotent and never an update, so it cannot re-approve an owner who suspended
+    themselves or reset a capital they changed. Without ``TELEGRAM_OWNER_USER_ID`` the
+    app still boots — ``/health``, the scheduler and the tracker are all useful — and
+    says loudly that nobody can approve anybody until it is set.
+    """
+    owner_id = settings.secrets.owner_user_id
+    if owner_id is None:
+        log.warning(
+            "app.no_owner_configured",
+            detail="set TELEGRAM_OWNER_USER_ID — without it nobody can be approved "
+            "and no admin alert has a destination",
+        )
+        return
+    async with database.session() as session:
+        seeded = await UserRepository(session).ensure_owner(
+            owner_id, at=utc_now(), acknowledged_version=ACK_VERSION
+        )
+        await session.commit()
+    log.info(
+        "app.owner_ready",
+        user_id=seeded.telegram_user_id,
+        status=seeded.status.value,
+        capital_set=seeded.capital_set,
     )
 
 
@@ -228,6 +331,7 @@ def create_app(
         )
 
         if isinstance(db, Database):
+            await _seed_owner(db, resolved)
             state.last_cycle_at = await _last_cycle_at(db)
             _schedule_pipeline(scheduler, state, resolved, db)
         else:  # pragma: no cover — only an injected test double lands here

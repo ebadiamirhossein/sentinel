@@ -26,6 +26,7 @@ from sentinel.bot.models import SignalDecision, SignalRecord
 from sentinel.bot.views import DataSourceView, SettingsView, SpendView, StatusView
 from sentinel.core.config import AppConfig
 from sentinel.risk.models import GateStatus
+from tests.bot_double import OWNER_ID
 from tests.risk_double import PLAN_NOW, account, analyst_report, approved_plan, decide
 
 #: Telegram's hard limits — a card that exceeds either is not delivered at all.
@@ -101,7 +102,7 @@ def test_a_short_plan_renders_as_a_short(bot_config: AppConfig, tz: ZoneInfo) ->
         targets=("81.60", "80.20", "78.00"),
     )
     plan = approved_plan(bot_config, report=short)
-    card = signal_card(SignalRecord(plan=plan, number=2), tz)
+    card = signal_card(SignalRecord(plan=plan, user_id=OWNER_ID, number=2), tz)
     assert "🔴 SHORT — SOLUSDT" in card
     assert "🟢" not in card
 
@@ -130,7 +131,7 @@ def test_a_plan_without_funding_says_so_rather_than_showing_zero(
     from tests.risk_double import market_context
 
     plan = approved_plan(bot_config, market=market_context(funding_rate=None))
-    card = signal_card(SignalRecord(plan=plan, number=3), tz)
+    card = signal_card(SignalRecord(plan=plan, user_id=OWNER_ID, number=3), tz)
     assert "funding n/a — no funding rate in the snapshot" in card
     assert "funding ~€0.00" not in card
 
@@ -316,7 +317,7 @@ def test_the_card_handles_any_legal_number_of_targets(
         pytest.skip("the gate rejects a plan with no targets — covered in tests/risk")
     targets = ("85.20", "86.60", "88.90")[:count]
     plan = approved_plan(bot_config, report=analyst_report(targets=targets))
-    card = signal_card(SignalRecord(plan=plan, number=4), tz)
+    card = signal_card(SignalRecord(plan=plan, user_id=OWNER_ID, number=4), tz)
     assert f"🥅 TP{count}:" in card
     assert f"🥅 TP{count + 1}:" not in card
 

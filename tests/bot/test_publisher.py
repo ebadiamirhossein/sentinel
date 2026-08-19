@@ -32,6 +32,7 @@ def publisher(
     return SignalPublisher(
         database,  # type: ignore[arg-type]
         bot,
+        user_id=CHAT_ID,
         chat_ids=(CHAT_ID,),
         telegram=config.telegram,
         tz=tz,

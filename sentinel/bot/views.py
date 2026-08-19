@@ -13,6 +13,35 @@ from decimal import Decimal
 
 
 @dataclass(frozen=True)
+class UserView:
+    """One row of ``/users`` — and a privacy boundary expressed as a type (M8.1).
+
+    The owner needs to operate the system: who is waiting, who is set up, who is
+    stuck, who is currently held by a loss pause. The owner does **not** need to
+    watch anyone trade, and this milestone's owner ruling is that the two must not
+    be conflated.
+
+    So the boundary lives here rather than in the renderer's discretion: this view
+    has **no field** for a capital amount, a risk %, a P&L figure, a win rate, or a
+    decision. ``capital_set`` is a bool on purpose — "have they finished setting up"
+    is an operational fact, "how much are they trading with" is not the owner's.
+    A future card cannot quietly widen the boundary without adding a field here,
+    which is a visible change with a test against it.
+    """
+
+    user_id: int
+    #: ``@handle``, a display name, or the bare id — whatever identifies them.
+    label: str
+    status: str
+    role: str
+    #: When they were approved, or when they asked if they have not been.
+    since: datetime | None
+    since_label: str
+    capital_set: bool
+    loss_paused: bool
+
+
+@dataclass(frozen=True)
 class DataSourceView:
     """The freshness and quality of the newest snapshot for one symbol."""
 
@@ -88,6 +117,11 @@ class StatusView:
     max_signals_per_day: int = 0
     signals_open: int = 0
     spend: SpendView | None = None
+    #: M8.1 — which pause is holding. ``"system"`` is the operator's ``/pause`` and
+    #: stops everybody; ``"you"`` is this caller's own daily-loss pause and stops
+    #: only them. Two rails with the same effect and completely different causes, so
+    #: the card says which one it is rather than leaving the owner to guess.
+    pause_scope: str = ""
 
 
 @dataclass(frozen=True)
@@ -196,4 +230,5 @@ __all__ = [
     "StatsView",
     "StatusView",
     "TrackerEventView",
+    "UserView",
 ]

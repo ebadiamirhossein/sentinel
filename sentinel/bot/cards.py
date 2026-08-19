@@ -22,11 +22,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sentinel.analyst.models import Direction
 from sentinel.bot.formatting import DISCLAIMER, escape, local_and_utc, local_date_time
-from sentinel.bot.models import SignalDecision, SignalRecord
+from sentinel.bot.models import SignalDecision, SignalRecord, UserAccount, UserStatus
 from sentinel.bot.views import (
     AlertView,
     PositionView,
@@ -34,6 +35,7 @@ from sentinel.bot.views import (
     StatsView,
     StatusView,
     TrackerEventView,
+    UserView,
 )
 from sentinel.risk.models import GateDecision, TradePlan
 
@@ -195,7 +197,8 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
 
     if view.paused:
         until = "no expiry" if view.paused_until is None else local_date_time(view.paused_until, tz)
-        lines.append(f"⏸️ <b>PAUSED</b> — {view.pause_reason} · until: {until}")
+        scope = f" [{view.pause_scope}]" if view.pause_scope else ""
+        lines.append(f"⏸️ <b>PAUSED</b>{scope} — {view.pause_reason} · until: {until}")
         lines.append("/resume to lift it.")
     else:
         lines.append("▶️ Active — not paused.")
@@ -489,15 +492,303 @@ def watchlist_card(symbols: Sequence[str], source: str) -> str:
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# M8.1 — /help, and the messages a multi-user bot needs
+# --------------------------------------------------------------------------- #
+
+#: ``/help``, written for somebody who does not read the specs (M8.1). Every term a
+#: card uses is defined here in plain words, in the order a card presents them, and
+#: the two things that must never be misunderstood — that nothing is traded
+#: automatically, and what Taken actually commits — are said first and last.
+#:
+#: A tuple joined at render time rather than one long string, because this module is
+#: forbidden arithmetic and that includes ``+`` between strings.
+HELP_LINES = (
+    "🧭 <b>How this works</b>",
+    "",
+    "This system watches the market around the clock, analyses setups with an AI, "
+    "and sends you a complete trade plan. <b>It never trades.</b> There is no "
+    "connection to any exchange account and no order is ever placed for you — "
+    "<b>you place every order yourself</b>, by hand, on your own exchange.",
+    "",
+    "<b>Capital</b> — <code>/capital 10000</code>",
+    "The total money you are trading with, in euros. It is used only to work out "
+    "position sizes. The bot never sees your exchange balance, and you can change "
+    "this any time; open signals keep the sizing they were issued with.",
+    "",
+    "<b>Risk %</b> — <code>/risk 0.75</code>",
+    "The most one trade can lose you if the whole entry ladder fills and the stop "
+    "is hit. At 0.75% of €10,000 that is €75 — so €75 is what a card calls "
+    "<i>1R</i>, and every reward figure is measured in those units. Allowed range "
+    "is 0.25% to 1.5%.",
+    "",
+    "<b>Leverage</b>",
+    "You never choose it and it is not a bet size. It is worked out from your "
+    "margin budget, capped, and then reduced further until liquidation sits at "
+    "least twice as far away as your stop — so a planned stop-out can never "
+    "liquidate the position. <b>Leverage changes how much margin you post, not how "
+    "much you can lose.</b> Your loss is fixed by the stop and your risk %.",
+    "",
+    "<b>Reading a card</b>",
+    "· <b>Entry ladder</b> — one to three limit orders. “40% of risk” means that "
+    "rung carries 40% of your €75, not 40% of the money. That is what makes a "
+    "partial fill honest: if only the first rung fills and the stop is hit, you "
+    "lose about 0.4R, and the card can promise that.",
+    "· <b>Stop</b> — where the idea is wrong. Place it with the entries.",
+    "· <b>Invalidation</b> — the idea failing before you are even in. It is a "
+    "<i>close</i>, not a wick: a spike through it is noise, a candle closing "
+    "through it is not.",
+    "· <b>Targets</b> — TP1/TP2/TP3, with the management plan under them (take "
+    "some off at TP1, move the stop to breakeven, and so on).",
+    "· <b>net vs gross R</b> — gross is the raw reward-to-risk. <b>Net is after "
+    "fees and estimated funding, and net is what you actually collect.</b> The "
+    "cost line shows the round trip in euros and as a share of your risk budget. "
+    "Signals are approved on the net figure, never the flattering one.",
+    "",
+    "<b>Taken / Watching / Skip</b>",
+    "Three buttons under every card, and the distinction is the point of the whole system:",
+    "· <b>✅ Taken</b> — you placed it. It counts in your <b>real</b> statistics "
+    "and spends part of your open-risk budget.",
+    "· <b>👀 Watching</b> — you did not place it, but you want to see how it went. "
+    "Tracked and measured as <b>hypothetical</b>. No budget used.",
+    "· <b>❌ Skip</b> — not for you. Still followed to the end, still measured as "
+    "hypothetical, because what skipping cost or saved is worth knowing.",
+    "",
+    "Every outcome is resolved automatically either way. Answering honestly is "
+    "what makes the measured win rate <i>yours</i> rather than a backtest — and you "
+    "can change your answer at any time; the buttons stay live.",
+    "",
+    "<b>Getting started</b>",
+    "Set <code>/capital</code>, then <code>/risk</code> if you want something "
+    "other than the default, then wait. Quiet is normal: the system prefers saying "
+    "nothing to sending a weak setup. Use <code>/stats</code> to see your own "
+    "numbers and <code>/positions</code> for what is open.",
+    "",
+    "This is experimental software and its win rate is not yet measured. You can lose money.",
+    "",
+    f"<i>{DISCLAIMER}</i>",
+)
+
+#: The first-run note (specs/TELEGRAM_UX.md §7). Deliberately short, deliberately
+#: unflattering, and deliberately not a wall of legalese nobody reads.
+ACKNOWLEDGEMENT_LINES = (
+    "⚠️ <b>Before you get any signals — please read this.</b>",
+    "",
+    "· This system is <b>experimental</b>. Its win rate has <b>not been measured "
+    "yet</b>; there is no track record to rely on.",
+    "· What it sends is <b>research, not advice</b>. Nobody here is a licensed financial adviser.",
+    "· <b>It never trades.</b> You place every order yourself, on your own "
+    "exchange, with your own money.",
+    "· <b>You can lose money</b> — including on signals the system was confident about.",
+    "",
+    "Tap below to confirm you have read this. Use /help for what the numbers on a "
+    "card mean, and /leave at any time to stop receiving anything.",
+)
+
+
+def help_card() -> str:
+    """§3 ``/help`` — plain language, no jargon left undefined."""
+    return "\n".join(HELP_LINES)
+
+
+def acknowledgement_card() -> str:
+    """§7's first-run note. Nothing is delivered until it is acknowledged."""
+    return "\n".join(ACKNOWLEDGEMENT_LINES)
+
+
+def _who(account: UserAccount) -> str:
+    """How a user is identified to the owner: @username, name, or the bare id.
+
+    Escaped, because both a username and a display name are text the *user* chose
+    and this bot renders HTML.
+    """
+    if account.username:
+        return f"@{escape(account.username)}"
+    if account.display_name:
+        return escape(account.display_name)
+    return f"id {account.telegram_user_id}"
+
+
+def standing_card(account: UserAccount) -> str:
+    """Where a non-approved caller stands (§7). Clear, and never silence.
+
+    Silence for someone who has asked politely reads as a broken bot and produces
+    another ``/start`` a minute later. Each state says what it is and what, if
+    anything, the person can do — and none of them says who the owner is.
+    """
+    if account.status is UserStatus.PENDING:
+        return (
+            "⏳ <b>Your request is waiting.</b>\n"
+            "The owner has been asked to approve it. You will get a message here "
+            "either way — there is nothing else to do, and asking again will not "
+            "make it faster."
+        )
+    if account.status is UserStatus.REJECTED:
+        return "🚫 <b>This request was declined.</b>\nNothing will be sent to this chat."
+    if account.status is UserStatus.SUSPENDED:
+        return (
+            "⏸️ <b>Your access is suspended.</b>\n"
+            "Signals have stopped. Anything already open is still being tracked, "
+            "and your history is intact."
+        )
+    if account.status is UserStatus.LEFT:
+        return (
+            "👋 <b>You left.</b>\n"
+            "Nothing is being sent to this chat. Your past signals and statistics "
+            "were kept, not deleted — if you want back in, ask the owner to "
+            "re-approve you."
+        )
+    return (  # pragma: no cover — APPROVED never reaches a standing notice
+        "✅ You are set up. Use /help to see what the cards mean."
+    )
+
+
+def welcome_card(account: UserAccount) -> str:
+    """Sent on approval, above the acknowledgement note."""
+    return (
+        f"✅ <b>You're in.</b> Welcome, {_who(account)}.\n\nOne thing first, and then two settings:"
+    )
+
+
+def ready_card(*, capital_set: bool) -> str:
+    """Sent once the note is acknowledged — what is still missing, if anything."""
+    if capital_set:
+        return (
+            "🎉 <b>All set.</b> Signals will arrive here when the system finds "
+            "something worth sending. Quiet is normal.\n"
+            "/help · /stats · /positions"
+        )
+    return (
+        "🎉 <b>Thank you.</b> One thing left: <b>set your capital</b>, because "
+        "every position size is worked out from it.\n\n"
+        "<code>/capital 10000</code>\n\n"
+        "Until then no signals can be sized for you, so none will be sent. "
+        "/help explains what capital and risk % actually mean."
+    )
+
+
+def no_capital_card() -> str:
+    """Why a card that was approved for this user was not delivered to them."""
+    return (
+        "📭 <b>A signal was approved, and you did not get it.</b>\n"
+        "Your capital is not set, so there is no way to work out a position size — "
+        "sizing against a number you never chose would be worse than sending "
+        "nothing.\n\n"
+        "<code>/capital 10000</code>\n\n"
+        "This message is sent at most once a day."
+    )
+
+
+def loss_pause_card(*, limit_pct: Decimal, at: datetime, tz: ZoneInfo) -> str:
+    """specs/TELEGRAM_UX.md §4's daily-loss notice, delivered at last (M8.1).
+
+    §4 has listed this line since M6 and the tracker has been raising the pause since
+    M7, but nothing ever sent it — the same shape of gap M8 found in the spend guard.
+    It matters more now: the pause is per user, so without this message a member's
+    signals simply stop, and they have no ``/status`` to ask why.
+
+    The percentage is the configured limit, not a measured loss: the figure a card
+    shows must come from something computed, and the day's realized loss is not on
+    this message's inputs. Saying which rail fired is the useful part anyway.
+    """
+    return (
+        "⏸️ <b>Daily loss limit reached.</b>\n"
+        f"Your realized loss today has reached the {limit_pct}% limit, so no new "
+        "signals will be sized for you for the next 24 hours.\n"
+        "Anything already open is still being tracked and you will still get its "
+        "updates.\n"
+        f"<i>{local_and_utc(at, tz)}</i>"
+    )
+
+
+def left_card() -> str:
+    """Confirmation that a member has removed themselves."""
+    return (
+        "👋 <b>Done — you have been removed.</b>\n"
+        "No further signals, updates or messages will be sent to this chat. Your "
+        "past signals and statistics were kept rather than deleted; nobody can see "
+        "your capital or your decisions.\n"
+        "If you change your mind, ask the owner to re-approve you."
+    )
+
+
+def leave_confirm_card() -> str:
+    """``/leave``'s confirmation prompt."""
+    return (
+        "🚪 <b>Leave Sentinel?</b>\n"
+        "You will stop receiving signals and tracker updates immediately. Anything "
+        "you have open will no longer be reported here.\n"
+        "Your history is kept, not deleted."
+    )
+
+
+def registration_request_card(account: UserAccount, tz: ZoneInfo) -> str:
+    """The request that reaches the owner, with Approve/Reject below it."""
+    return (
+        "🙋 <b>Access request</b>\n"
+        f"{_who(account)}\n"
+        f"user id: <code>{account.telegram_user_id}</code>\n"
+        f"asked: {local_and_utc(account.requested_at, tz)}\n\n"
+        "Approving lets them set their own capital and receive their own sized "
+        "cards from the same analysis. They never see your numbers, and you never "
+        "see theirs."
+    )
+
+
+def users_card(views: Sequence[UserView], tz: ZoneInfo) -> str:
+    """§7 ``/users`` — enough to operate the system, and nothing more.
+
+    **The boundary is deliberate and it is the whole design of this card.** It shows
+    standing, when someone joined, whether they have set a capital at all (yes or
+    no), and whether a daily-loss pause is currently holding them. It does *not*
+    show the amount, the risk %, the P&L, the win rate, or a single decision.
+
+    Running a system for friends requires knowing who is set up and who is stuck.
+    It does not require watching them trade, and a card that showed both would make
+    the second one happen by accident every time the first was needed.
+    """
+    lines = [f"👥 <b>Users</b> ({len(views)})", ""]
+    for view in views:
+        flags = []
+        if not view.capital_set:
+            flags.append("no capital set")
+        if view.loss_paused:
+            flags.append("loss-paused")
+        suffix = f" <i>· {' · '.join(flags)}</i>" if flags else ""
+        lines.append(f"<b>{view.label}</b> — {view.status}{suffix}")
+        lines.append(f"  <code>{view.user_id}</code> · {view.role.lower()}")
+        if view.since is not None:
+            lines.append(f"  {view.since_label} {local_date_time(view.since, tz)}")
+        lines.append("")
+    lines.append("<i>/approve &lt;id&gt; · /reject &lt;id&gt; · /suspend &lt;id&gt;</i>")
+    lines.append(
+        "<i>Capital amounts, decisions and P&amp;L are each user's own and are not shown here.</i>"
+    )
+    return "\n".join(lines)
+
+
 __all__ = [
+    "ACKNOWLEDGEMENT_LINES",
     "DECISION_LABEL",
+    "HELP_LINES",
+    "acknowledgement_card",
     "decision_ack_card",
+    "help_card",
+    "leave_confirm_card",
+    "left_card",
+    "loss_pause_card",
+    "no_capital_card",
     "positions_card",
+    "ready_card",
+    "registration_request_card",
     "rejection_card",
     "settings_card",
     "signal_card",
+    "standing_card",
     "stats_card",
     "status_card",
     "tracker_update_card",
+    "users_card",
     "watchlist_card",
+    "welcome_card",
 ]

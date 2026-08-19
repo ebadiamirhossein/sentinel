@@ -28,7 +28,7 @@ from sentinel.core.orchestrator import (
 from sentinel.llm.models import LLMCall, LLMCallKind, LLMCallStatus
 from sentinel.llm.spend import SpendState, SpendTotals
 
-from .conftest import NOW, CycleDatabase, CycleStore
+from .conftest import NOW, CycleDatabase, CycleStore, CycleUsers
 
 
 def selected(
@@ -171,18 +171,20 @@ class _Screener:
 
 
 class _Signals:
-    """The three reads the pre-analyst guards make."""
+    """The three reads the pre-analyst guards make — grouped by user from M8.1."""
 
     def __init__(self, session: object) -> None: ...
 
-    async def open_symbols(self) -> set[str]:
-        return set()
+    async def open_symbols_by_user(self) -> dict[int, set[str]]:
+        return {}
 
-    async def resolutions_since(self, since: datetime) -> list[tuple[str, datetime]]:
-        return []
+    async def resolutions_by_user_since(
+        self, since: datetime
+    ) -> dict[int, list[tuple[str, datetime]]]:
+        return {}
 
-    async def published_since(self, since: datetime) -> int:
-        return 0
+    async def published_by_user_since(self, since: datetime) -> dict[int, int]:
+        return {}
 
 
 class _LLMCalls:
@@ -210,7 +212,11 @@ async def _spend_states(store: CycleStore, settings: Settings) -> CycleResult:
         settings,
         CycleDatabase(store),  # type: ignore[arg-type]
         clock=FrozenClock(NOW),
-        repositories=CycleRepositories(signals=_Signals, llm_calls=_LLMCalls),  # type: ignore[arg-type]
+        repositories=CycleRepositories(
+            signals=_Signals,  # type: ignore[arg-type]
+            llm_calls=_LLMCalls,  # type: ignore[arg-type]
+            users=CycleUsers,  # type: ignore[arg-type]
+        ),
     )
     with patch.object(orchestrator_module, "Screener", _Screener):
         await orchestrator._analyse(

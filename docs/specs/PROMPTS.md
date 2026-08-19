@@ -119,6 +119,16 @@ Assembled deterministically from Postgres and appended to the analyst's user mes
 
 This gives the system memory of its own performance — the key capability the reference build lacks.
 
+> **Correction (2026-08-19, from M8.1) — this block is the OWNER's book.**
+> One shared analysis now produces one signal row per approved user. Counting all of
+> them would multiply the sample size by the number of users and turn the win rate
+> into a weighted average of everybody's execution — a figure that changes when
+> somebody new joins, which is not a fact about the market. `stats.setup_stats` and
+> the per-symbol verdict outcomes are therefore scoped to the owner: exactly one row
+> per analysis, and the only book the owner controls. Members' decisions never reach
+> the prompt. Without an owner row both halves degrade to their "nothing measured
+> yet" wording rather than borrowing somebody else's numbers.
+
 ## 4. On-demand `/pulse` prompt (P1)
 
 Market-overview variant: BTC+ETH snapshots + breadth + F&G → 5-line regime summary, no trade candidates. Cheap tier model.

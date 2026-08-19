@@ -52,7 +52,15 @@ _SPEND_ALERTS = {
 
 
 class AdminAlerter:
-    """Sends what the last cycle justifies, to every allowlisted chat."""
+    """Sends what the last cycle justifies — **to the owner only** (M8.1).
+
+    Cycle failures, recovery, and the spend guard's warn/limit notices are operator
+    business: they are about the health of the pipeline and about money spent on the
+    owner's Anthropic key. A member has no lever to pull in response to any of them,
+    and telling them the system is broken would be alarming without being actionable.
+    The caller passes ``chat_ids=(owner_id,)``; there is nothing here that decides
+    who the owner is.
+    """
 
     def __init__(
         self,

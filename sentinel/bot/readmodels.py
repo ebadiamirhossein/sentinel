@@ -14,8 +14,10 @@ gap in a computing module, not a subtraction in the renderer.**
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from decimal import Decimal
 
+from sentinel.bot.models import UserAccount, UserStatus
 from sentinel.bot.views import (
     AlertView,
     PositionView,
@@ -24,6 +26,7 @@ from sentinel.bot.views import (
     StatsGroupView,
     StatsView,
     TrackerEventView,
+    UserView,
 )
 from sentinel.core.alerts import Alert, AlertKind
 from sentinel.core.config import LLMConfig
@@ -250,6 +253,32 @@ def stats_view(report: StatsReport) -> StatsView:
     )
 
 
+def user_view(account: UserAccount, *, now: datetime) -> UserView:
+    """One ``/users`` row, and the point at which the privacy boundary is applied.
+
+    Everything the owner is not entitled to see is dropped *here*, on the way out of
+    the account object, rather than left for the renderer to remember not to print:
+    ``capital_eur`` becomes a bool, and the risk %, the P&L and the decisions are
+    simply not carried. See :class:`~sentinel.bot.views.UserView`.
+    """
+    label = (
+        f"@{account.username}"
+        if account.username
+        else (account.display_name or f"id {account.telegram_user_id}")
+    )
+    approved = account.status is UserStatus.APPROVED
+    return UserView(
+        user_id=account.telegram_user_id,
+        label=label,
+        status=account.status.value,
+        role=account.role.value,
+        since=account.decided_at if approved else account.requested_at,
+        since_label="joined" if approved else "requested",
+        capital_set=account.capital_set,
+        loss_paused=account.pause.is_active(now),
+    )
+
+
 __all__ = [
     "POPULATION_NOTES",
     "alert_view",
@@ -257,4 +286,5 @@ __all__ = [
     "spend_view",
     "stats_view",
     "tracker_event_view",
+    "user_view",
 ]
