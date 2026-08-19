@@ -1,4 +1,4 @@
-"""The 15-minute scan cycle — ARCHITECTURE.md §3's six steps, wired.
+"""The scan cycle — ARCHITECTURE.md §3's six steps, wired.
 
 Everything the earlier milestones built exists; nothing ran it. This is the loop:
 ingestion and features (M1/M2) → screener (M5) → charts (M3) → analyst (M5) →
@@ -51,6 +51,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from uuid import UUID, uuid4
 
 from sentinel.analyst.history import build_history_block
@@ -72,7 +73,7 @@ from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import FxRate, MarketSnapshot
 from sentinel.llm.client import AnthropicClient
 from sentinel.llm.errors import AnalystUnavailable
-from sentinel.llm.models import LLMCall
+from sentinel.llm.models import LLMCall, LLMCallStatus
 from sentinel.llm.spend import SpendState, evaluate_spend, spend_window
 from sentinel.risk.engine import RiskEngine
 from sentinel.risk.models import (
@@ -121,6 +122,45 @@ class CycleRepositories:
     users: type[UserRepository] = UserRepository
 
 
+class SkipReason(StrEnum):
+    """Why a screened symbol never reached the deep analyst (M8.2).
+
+    A **fixed vocabulary**, stored on ``cycles.skipped`` rather than only logged.
+    M9 has to answer "what is the system declining to analyse, and why" in SQL:
+    logs rotate, a column does not, and free text cannot be grouped. The prose that
+    accompanied each of these through M7/M8.1 survives as ``Skip.detail`` — a
+    cooldown is more useful with its expiry attached — but the *key* is closed.
+    """
+
+    #: PRD F11 — this user already holds an open signal on the symbol.
+    OPEN_SIGNAL = "OPEN_SIGNAL"
+    #: ARCHITECTURE §3.6 — resolved too recently to re-signal.
+    COOLDOWN = "COOLDOWN"
+    #: specs/TELEGRAM_UX.md §6's anti-spam cap.
+    DAILY_CAP = "DAILY_CAP"
+    #: M8.1 — nobody approved has capital set, so no plan could be sized.
+    NO_FUNDED_USER = "NO_FUNDED_USER"
+    #: The operator's system-wide /pause.
+    PAUSED = "PAUSED"
+    #: The daily LLM spend limit was already reached when the cycle began.
+    SPEND_LIMIT = "SPEND_LIMIT"
+    #: M8.2 — the last deep analysis of this symbol said WATCHLIST or NO_SETUP and
+    #: the setup timeframe has not produced a new candle since. Re-asking costs
+    #: ~$0.28 to be told the same thing about the same unclosed bar.
+    RECENTLY_ANALYSED = "RECENTLY_ANALYSED"
+
+
+@dataclass(frozen=True)
+class Skip:
+    """One dropped symbol: a countable reason and the sentence a human wants."""
+
+    reason: SkipReason
+    detail: str
+
+    def to_json(self) -> dict[str, str]:
+        return {"reason": self.reason.value, "detail": self.detail}
+
+
 def select_symbols(
     interesting: set[str],
     *,
@@ -129,7 +169,8 @@ def select_symbols(
     published_today: int,
     max_per_day: int,
     now: datetime,
-) -> tuple[set[str], dict[str, str]]:
+    recently_analysed: dict[str, datetime] | None = None,
+) -> tuple[set[str], dict[str, Skip]]:
     """Which candidates may reach the deep analyst, and why the rest may not.
 
     ARCHITECTURE §3 step 6's dedup guard, PRD F11's "max 1 active signal per
@@ -145,15 +186,28 @@ def select_symbols(
     analysed nothing has to be explicable from its own row, not from the logs.
     """
     allowed: set[str] = set()
-    skipped: dict[str, str] = {}
+    skipped: dict[str, Skip] = {}
+    fresh = recently_analysed or {}
     for symbol in sorted(interesting):
         cooldown = cooldowns.get(symbol)
+        quiet_until = fresh.get(symbol)
         if symbol in open_symbols:
-            skipped[symbol] = "a signal is already open for this symbol (PRD F11)"
+            skipped[symbol] = Skip(
+                SkipReason.OPEN_SIGNAL, "a signal is already open for this symbol (PRD F11)"
+            )
         elif cooldown is not None and now < cooldown:
-            skipped[symbol] = f"on cooldown until {cooldown.isoformat()}"
+            skipped[symbol] = Skip(SkipReason.COOLDOWN, f"on cooldown until {cooldown.isoformat()}")
+        # Before the daily cap, deliberately: a symbol suppressed as already-analysed
+        # was never a signal, so it must not consume one of the day's slots.
+        elif quiet_until is not None and now < quiet_until:
+            skipped[symbol] = Skip(
+                SkipReason.RECENTLY_ANALYSED,
+                f"analysed since {quiet_until.isoformat()} and not a candidate then",
+            )
         elif published_today + len(allowed) >= max_per_day:
-            skipped[symbol] = f"daily signal cap reached ({max_per_day})"
+            skipped[symbol] = Skip(
+                SkipReason.DAILY_CAP, f"daily signal cap reached ({max_per_day})"
+            )
         else:
             allowed.add(symbol)
     return allowed, skipped
@@ -184,7 +238,7 @@ class CycleResult:
     #: Why each symbol was dropped before the analyst — a quiet cycle explains
     #: itself from the row rather than only from the logs. Union-level from M8.1: a
     #: symbol appears here only when *no* eligible user could have received it.
-    skipped: dict[str, str] = field(default_factory=dict)
+    skipped: dict[str, Skip] = field(default_factory=dict)
     #: How many users the fan-out sized plans for (M8.1). Zero means the deep
     #: analyst was not called at all — nobody should pay $0.32 for a plan with no
     #: recipient. Not stored on ``cycles``: it is a property of the moment, and
@@ -359,7 +413,7 @@ class CycleOrchestrator:
             result.analysis_suspended = True
             result.suspended_reason = "paused"
             for symbol in allowed:
-                result.skipped[symbol] = "paused"
+                result.skipped[symbol] = Skip(SkipReason.PAUSED, "paused")
             log.info(
                 "cycle.paused",
                 cycle_id=str(result.cycle_id),
@@ -374,7 +428,7 @@ class CycleOrchestrator:
             result.analysis_suspended = True
             result.suspended_reason = reason
             for symbol in allowed:
-                result.skipped[symbol] = "spend limit reached"
+                result.skipped[symbol] = Skip(SkipReason.SPEND_LIMIT, "spend limit reached")
             log.warning(
                 "cycle.analysis_suspended",
                 cycle_id=str(result.cycle_id),
@@ -442,6 +496,16 @@ class CycleOrchestrator:
             return list(analyst.calls)
 
         result.analyzed += 1
+        # Which call produced this report (M8.2). `save()` has taken `llm_call_id`
+        # since M5 and nothing ever passed it, so the column was NULL on every row —
+        # leaving `(cycle_id, symbol)` as the only way to join a verdict to its cost.
+        # That join is wrong exactly where it matters: a schema-invalid response is
+        # retried, so a symbol can have two calls in one cycle and the retry's cost
+        # would be attributed to the report the *other* call produced. The OK call is
+        # the last one, because `analyze` returns as soon as one parses.
+        ok_call = next(
+            (call for call in reversed(analyst.calls) if call.status is LLMCallStatus.OK), None
+        )
         async with self._database.session() as session:
             await self._repos.reports(session).save(
                 report,
@@ -449,6 +513,7 @@ class CycleOrchestrator:
                 provider=AnthropicFableAnalyst.name,
                 cycle_id=result.cycle_id,
                 snapshot_id=snapshot.snapshot_id,
+                llm_call_id=None if ok_call is None else ok_call.call_id,
             )
             await session.commit()
 
@@ -519,7 +584,8 @@ class CycleOrchestrator:
                 "cycle.user_skipped",
                 symbol=snapshot.symbol,
                 user_id=user.telegram_user_id,
-                reason=dedup,
+                reason=dedup.reason.value,
+                detail=dedup.detail,
             )
             return
 
@@ -657,7 +723,9 @@ class CycleOrchestrator:
         funded = [user for user in recipients if user.capital_set]
         if not funded:
             for symbol in sorted(interesting):
-                result.skipped[symbol] = "no user is set up to receive a signal"
+                result.skipped[symbol] = Skip(
+                    SkipReason.NO_FUNDED_USER, "no user is set up to receive a signal"
+                )
             self._log_skips(result)
             return set()
 
@@ -669,8 +737,15 @@ class CycleOrchestrator:
             )
             today_by_user = await signals.published_by_user_since(day_start)
 
+        # M8.2's re-analysis cooldown is deliberately **not** per user. The other
+        # rails ask "may this person receive a signal"; this one asks "did we already
+        # pay to have this symbol looked at". The analysis is shared, so the answer
+        # is too — making it per user would let a second member's fresh slate buy the
+        # same $0.28 verdict the owner was just given.
+        quiet_until = await self._recently_analysed(started, config=config)
+
         allowed: set[str] = set()
-        reasons: dict[str, str] = {}
+        reasons: dict[str, Skip] = {}
         for user in funded:
             uid = user.telegram_user_id
             mine, skipped = select_symbols(
@@ -682,19 +757,46 @@ class CycleOrchestrator:
                 published_today=today_by_user.get(uid, 0),
                 max_per_day=risk.max_signals_per_day,
                 now=started,
+                recently_analysed=quiet_until,
             )
             allowed |= mine
-            for symbol, reason in skipped.items():
-                reasons.setdefault(symbol, reason)
+            for symbol, skip in skipped.items():
+                reasons.setdefault(symbol, skip)
 
         result.skipped.update({s: r for s, r in reasons.items() if s not in allowed})
         self._log_skips(result)
         return allowed
 
+    async def _recently_analysed(
+        self, started: datetime, *, config: AppConfig
+    ) -> dict[str, datetime]:
+        """Symbols whose last deep analysis was not a candidate, and are still quiet.
+
+        Returns ``{symbol: quiet_until}``. The window is one setup-timeframe candle
+        (``schedule.reanalysis_cooldown_minutes``, 60): the analyst reads a 1h chart,
+        so asking again before that bar closes is asking about the same bar.
+
+        Only ``WATCHLIST`` and ``NO_SETUP`` count. A ``CANDIDATE`` that the *gate*
+        then rejected is not suppressed — the analysis was right and the rails were
+        what stopped it, and those rails have their own reasons above.
+        """
+        minutes = config.schedule.reanalysis_cooldown_minutes
+        if minutes <= 0:
+            return {}
+        since = started - timedelta(minutes=minutes)
+        async with self._database.session() as session:
+            latest = await self._repos.reports(session).latest_non_candidates(since=since)
+        return {symbol: at + timedelta(minutes=minutes) for symbol, at in latest.items()}
+
     @staticmethod
     def _log_skips(result: CycleResult) -> None:
-        for symbol, reason in result.skipped.items():
-            log.info("cycle.symbol_skipped", symbol=symbol, reason=reason)
+        for symbol, skip in result.skipped.items():
+            log.info(
+                "cycle.symbol_skipped",
+                symbol=symbol,
+                reason=skip.reason.value,
+                detail=skip.detail,
+            )
 
     async def _recipients(self, *, now: datetime) -> list[UserAccount]:
         """Everyone a plan may be sized for this cycle, in a stable order.
@@ -748,7 +850,7 @@ class CycleOrchestrator:
 
     async def _gate_inputs(
         self, user: UserAccount, *, stored: dict[str, object], symbol: str
-    ) -> tuple[AccountState, PortfolioState, str | None]:
+    ) -> tuple[AccountState, PortfolioState, Skip | None]:
         """Everything §2 rule 7 reads for **one user**, built from the database.
 
         Re-read per (user, symbol) rather than once per cycle, deliberately: the
@@ -847,6 +949,7 @@ class CycleOrchestrator:
                 status=status,
                 symbols_scanned=result.symbols_scanned,
                 symbols_skipped=result.symbols_skipped + len(result.skipped),
+                skipped={s: skip.to_json() for s, skip in result.skipped.items()},
                 candidates=result.candidates,
                 analyzed=result.analyzed,
                 approved=result.approved,

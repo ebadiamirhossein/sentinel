@@ -69,12 +69,40 @@ class CycleStore:
     open_by_user: dict[int, set[str]] = field(default_factory=dict)
     cooldowns_by_user: dict[int, list[tuple[str, datetime]]] = field(default_factory=dict)
     today_by_user: dict[int, int] = field(default_factory=dict)
+    #: M8.2 — ``{symbol: created_at}`` for the newest WATCHLIST/NO_SETUP verdict per
+    #: symbol, i.e. what the re-analysis cooldown reads. Empty means "nothing has
+    #: been analysed recently", which is the right default for every other test.
+    non_candidates: dict[str, datetime] = field(default_factory=dict)
     committed: int = 0
+
+
+class _EmptyRows:
+    """What the fake session returns for a SELECT: no rows.
+
+    The real ``AnalystReportRepository`` is used unmocked by several cycle tests —
+    only ``save()`` mattered until M8.2 added a query. Rather than make every one of
+    those tests wire a double they do not care about, the fake session answers reads
+    honestly: this database has no analyst_reports rows. Tests that exercise the
+    re-analysis rail override ``reports`` with a double backed by
+    ``CycleStore.non_candidates``.
+    """
+
+    def all(self) -> list[Any]:
+        return []
+
+    def scalars(self) -> _EmptyRows:
+        return self
+
+    def first(self) -> None:
+        return None
 
 
 class CycleSession:
     def __init__(self, store: CycleStore) -> None:
         self.store = store
+
+    async def execute(self, *args: Any, **kwargs: Any) -> _EmptyRows:
+        return _EmptyRows()
 
     async def commit(self) -> None:
         self.store.committed += 1

@@ -21,7 +21,7 @@ else's (docs/specs/TELEGRAM_UX.md §7).
 ## How it works
 
 ```
-every 15 min ─▶ ingestion ─▶ features ─▶ screener ─▶ deep analyst ─▶ risk gate ─▶ Telegram
+every 60 min ─▶ ingestion ─▶ features ─▶ screener ─▶ deep analyst ─▶ risk gate ─▶ Telegram
                  (ccxt,       (EMA/RSI/   (cheap      (Fable 5,      (math,        (card +
                   news, F&G)   ATR, S/R)   LLM)        + charts)      no LLM)       buttons)
                                                                           │

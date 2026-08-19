@@ -19,7 +19,7 @@ from sentinel.risk.ladder import build_ladder, collapse, effective_min_notional
 from sentinel.risk.models import GateStatus, LadderRung, RejectionReason
 from sentinel.risk.sizing import size_ladder
 
-from .conftest import BTCUSDT, SOLUSDT, account, market, portfolio, report
+from .conftest import BTCUSDT, SOLUSDT, account, margin_budget, market, portfolio, report
 
 ATR = Decimal("0.90")
 TICK = Decimal("0.01")
@@ -234,8 +234,12 @@ def test_account_too_small_for_even_one_rung_is_rejected(
 
 def test_btcusdt_uses_its_own_higher_minimum(config: AppConfig, clock: FrozenClock) -> None:
     """The same account size that keeps 3 rungs on SOLUSDT collapses on BTCUSDT,
-    because Binance's minimum there is 50 USDT, not the 20 USDT floor."""
-    engine = RiskEngine(config, clock=clock)
+    because Binance's minimum there is 50 USDT, not the 20 USDT floor.
+
+    The 0.31% stop here sizes to 240% of capital, which M8.2's hard margin budget
+    refuses — so the budget is widened to leave min-notional as the rail under test.
+    Leverage is deliberately not asserted below, so the wider band costs nothing."""
+    engine = RiskEngine(margin_budget(config, "100"), clock=clock)
     btc_report = report(
         symbol="BTCUSDT",
         zone=("63900", "64100"),

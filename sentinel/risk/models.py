@@ -82,6 +82,13 @@ class RejectionReason(StrEnum):
     MIN_NOTIONAL = "MIN_NOTIONAL"
     LIQ_BUFFER = "LIQ_BUFFER"
     INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
+    #: §4's ``margin_budget_pct`` as a hard limit (owner ruling 2026-08-19, M8.2).
+    #: Deliberately its own code rather than folded into ``INSUFFICIENT_MARGIN``:
+    #: "the owner cannot fund this at all" and "this exceeds the share of capital
+    #: they allocated to one trade" are different findings with different fixes —
+    #: the first needs a smaller setup, the second is a knob — and M9 cannot tell
+    #: them apart if they share a code.
+    MARGIN_BUDGET_EXCEEDED = "MARGIN_BUDGET_EXCEEDED"
 
 
 # --------------------------------------------------------------------------- #

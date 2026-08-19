@@ -88,7 +88,9 @@ check-image: ## Build the image AND import the app inside it
 		"import sentinel.main; \
 		 from sentinel.analyst.prompts.loader import load_prompt; \
 		 assert load_prompt('fable_v1').strip(), 'prompt text missing from the wheel'; \
-		 from sentinel.core.config import load_config; load_config(); \
+		 from sentinel.core.config import load_config; cfg = load_config(); \
+		 v = cfg.llm.screener_prompt_version; \
+		 assert load_prompt(v).strip(), f'configured screener prompt {v} is not in the wheel'; \
 		 print('image imports, prompts ship, config loads')"
 
 check-fast: test lint typecheck coverage-risk check-ops ## The gate without the image build

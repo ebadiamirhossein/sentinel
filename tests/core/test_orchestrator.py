@@ -23,6 +23,7 @@ from sentinel.core.orchestrator import (
     CycleOrchestrator,
     CycleRepositories,
     CycleResult,
+    SkipReason,
     select_symbols,
 )
 from sentinel.llm.models import LLMCall, LLMCallKind, LLMCallStatus
@@ -37,7 +38,8 @@ def selected(
     cooldowns: dict[str, object] | None = None,
     published_today: int = 0,
     max_per_day: int = 5,
-) -> tuple[set[str], dict[str, str]]:
+    recently_analysed: dict[str, Any] | None = None,
+) -> tuple[set[str], dict[str, Any]]:
     return select_symbols(
         set(symbols),
         open_symbols=open_symbols or set(),
@@ -45,7 +47,58 @@ def selected(
         published_today=published_today,
         max_per_day=max_per_day,
         now=NOW,
+        recently_analysed=recently_analysed,
     )
+
+
+# --------------------------------------------------------------------------- #
+# The re-analysis cooldown — M8.2
+# --------------------------------------------------------------------------- #
+
+
+def test_a_symbol_analysed_recently_and_not_a_candidate_is_held_back() -> None:
+    """The M8.2 rail. LINKUSDT was escalated in 8 of 8 cycles on 2026-08-19 and came
+    back WATCHLIST every time, at ~$0.28 a look, on a 1h setup timeframe whose candle
+    had not closed between any two of them."""
+    allowed, skipped = selected(
+        "LINKUSDT", "ETHUSDT", recently_analysed={"LINKUSDT": NOW + timedelta(minutes=45)}
+    )
+    assert allowed == {"ETHUSDT"}
+    assert skipped["LINKUSDT"].reason is SkipReason.RECENTLY_ANALYSED
+
+
+def test_the_re_analysis_cooldown_lapses() -> None:
+    """It is a cooldown, not a ban — the symbol comes back when the candle closes."""
+    allowed, _ = selected("LINKUSDT", recently_analysed={"LINKUSDT": NOW - timedelta(minutes=1)})
+    assert allowed == {"LINKUSDT"}
+
+
+def test_a_suppressed_symbol_does_not_consume_a_daily_cap_slot() -> None:
+    """Ordering, asserted rather than assumed.
+
+    A symbol held back as already-analysed was never going to become a signal, so
+    charging it against ``max_signals_per_day`` would let the cheapest guard in the
+    system spend the day's budget on symbols nobody was ever offered.
+    """
+    allowed, skipped = selected(
+        "AAAUSDT",
+        "BBBUSDT",
+        recently_analysed={"AAAUSDT": NOW + timedelta(minutes=45)},
+        published_today=4,
+        max_per_day=5,
+    )
+    assert allowed == {"BBBUSDT"}
+    assert skipped["AAAUSDT"].reason is SkipReason.RECENTLY_ANALYSED
+
+
+def test_an_open_signal_outranks_the_re_analysis_cooldown() -> None:
+    """Both are true; the more specific finding is the one M9 should count."""
+    _, skipped = selected(
+        "SOLUSDT",
+        open_symbols={"SOLUSDT"},
+        recently_analysed={"SOLUSDT": NOW + timedelta(minutes=45)},
+    )
+    assert skipped["SOLUSDT"].reason is SkipReason.OPEN_SIGNAL
 
 
 # --------------------------------------------------------------------------- #
@@ -58,14 +111,15 @@ def test_a_symbol_with_a_live_signal_is_not_analysed_again() -> None:
     cost ~$0.32 to produce a plan the gate rejects anyway."""
     allowed, skipped = selected("SOLUSDT", "ETHUSDT", open_symbols={"SOLUSDT"})
     assert allowed == {"ETHUSDT"}
-    assert "already open" in skipped["SOLUSDT"]
+    assert skipped["SOLUSDT"].reason is SkipReason.OPEN_SIGNAL
+    assert "already open" in skipped["SOLUSDT"].detail
 
 
 def test_the_reason_is_recorded_and_not_only_the_exclusion() -> None:
     """A cycle that analysed nothing must be explicable from its own row. "Zero
     candidates" and "three candidates, all on cooldown" are very different days."""
     _, skipped = selected("SOLUSDT", open_symbols={"SOLUSDT"})
-    assert skipped["SOLUSDT"], "a dropped symbol must say why"
+    assert skipped["SOLUSDT"].detail, "a dropped symbol must say why"
 
 
 # --------------------------------------------------------------------------- #
@@ -76,7 +130,8 @@ def test_the_reason_is_recorded_and_not_only_the_exclusion() -> None:
 def test_a_symbol_on_cooldown_is_held_back() -> None:
     allowed, skipped = selected("SOLUSDT", cooldowns={"SOLUSDT": NOW + timedelta(hours=2)})
     assert allowed == set()
-    assert "on cooldown until" in skipped["SOLUSDT"]
+    assert skipped["SOLUSDT"].reason is SkipReason.COOLDOWN
+    assert "on cooldown until" in skipped["SOLUSDT"].detail
 
 
 def test_an_expired_cooldown_lets_the_symbol_through() -> None:
@@ -98,13 +153,14 @@ def test_the_daily_cap_counts_what_this_cycle_would_add() -> None:
     allowed, skipped = selected("SOLUSDT", "ETHUSDT", "BTCUSDT", published_today=4, max_per_day=5)
     assert len(allowed) == 1
     assert len(skipped) == 2
-    assert all("daily signal cap" in reason for reason in skipped.values())
+    assert all(skip.reason is SkipReason.DAILY_CAP for skip in skipped.values())
 
 
 def test_a_full_day_analyses_nothing() -> None:
     allowed, skipped = selected("SOLUSDT", published_today=5, max_per_day=5)
     assert allowed == set()
-    assert "daily signal cap reached (5)" in skipped["SOLUSDT"]
+    assert skipped["SOLUSDT"].reason is SkipReason.DAILY_CAP
+    assert "daily signal cap reached (5)" in skipped["SOLUSDT"].detail
 
 
 def test_a_quiet_day_lets_everything_through() -> None:
@@ -122,7 +178,8 @@ def test_the_most_specific_reason_wins() -> None:
     """A symbol that is both open and capped reads better as "already open" — the
     cap is a property of the day, the open signal is a property of the symbol."""
     _, skipped = selected("SOLUSDT", open_symbols={"SOLUSDT"}, published_today=9, max_per_day=5)
-    assert "already open" in skipped["SOLUSDT"]
+    assert skipped["SOLUSDT"].reason is SkipReason.OPEN_SIGNAL
+    assert "already open" in skipped["SOLUSDT"].detail
 
 
 def test_selection_is_deterministic_when_the_cap_bites() -> None:

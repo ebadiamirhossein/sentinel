@@ -122,6 +122,34 @@ neither `/stats` contains the other's decision.
 >   and nothing else.** No amount, no P&L, no decisions. Operating a system for
 >   friends does not require watching them trade.
 
+## M8.2 — Spend control, and the dead admin surface (1 day)
+Added 2026-08-19 after the first live day measured $0.76/cycle against M7's ~$2.2/**day**
+estimate — 2.63 analyst calls per cycle where ~24/day was budgeted.
+
+* **The bug found on deploy:** every owner command (`/status /settings /watchlist /pause
+  /resume /users /approve /reject /suspend`) and both admin buttons were silent, because
+  `AuthMiddleware` was an *inner* middleware while `OwnerOnly` is a *root filter* —
+  aiogram resolves root filters first, so `actor` was never injected. Silence is what
+  `OwnerOnly` produces for a non-owner, so a dead router looked exactly like working
+  access control. Fixed with `outer_middleware`; `tests/bot/test_dispatcher_wiring.py`
+  drives a real `Dispatcher` and asserts **positive reachability** for every owner
+  command, with a meta-test against `menu.OWNER_COMMANDS`.
+* `scan_interval_minutes` 15 → **60** (the setup timeframe is 1h);
+  `stale_cycle_multiplier` 2 → 1 so detection stays near an hour.
+* `SkipReason.RECENTLY_ANALYSED` — a symbol whose last verdict was `WATCHLIST`/`NO_SETUP`
+  is not re-analysed for one setup-timeframe candle. Shared, not per user.
+* `cycles.skipped` JSONB (migration `0008`) with a closed `SkipReason` vocabulary, so M9
+  can answer "what is the system declining to analyse, and why" in SQL rather than from
+  logs that rotate.
+* `screener_v2.md`, selected by `llm.screener_prompt_version`; `screener_v1.md` kept.
+* Over-long `thesis`/`counter_thesis` are **truncated and logged**, not discarded — one
+  live call was rejected at one character over, at ~$0.27.
+* `margin_budget_pct` is a **hard** limit (`MARGIN_BUDGET_EXCEEDED`). Reduces signal
+  frequency wherever `stop_fraction < risk_per_trade_pct`.
+* `analyst_reports.llm_call_id` is finally populated.
+
+Deferred to after re-measurement: prompt caching, and `analyst_effort`.
+
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.

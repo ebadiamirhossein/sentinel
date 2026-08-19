@@ -59,6 +59,10 @@ SIZING_REJECTIONS = {
     RejectionReason.MIN_NOTIONAL,
     RejectionReason.INSUFFICIENT_MARGIN,
     RejectionReason.LIQ_BUFFER,
+    # M8.2: §4's margin budget is now a hard rail, and the generator produces
+    # stops tighter than `risk_per_trade_pct` — which is precisely when notional
+    # exceeds capital and the budget bites. Expected, and its own file's subject.
+    RejectionReason.MARGIN_BUDGET_EXCEEDED,
     # §4.2: targets are generated at 3-4x the risk distance, so gross RR is never
     # the problem — but a tight stop buys enough notional that fees alone can drag
     # a 3R setup under 1.5R net. That is the finding, not a generator defect.

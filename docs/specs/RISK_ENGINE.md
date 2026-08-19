@@ -107,6 +107,34 @@ leverage        = clamp(ceil_to_step(leverage_raw, 1), 1, max_leverage)
 margin_eur_final= notional_eur / leverage           # recomputed after clamping
 ```
 
+> **Correction (2026-08-19, from M8.2) — `margin_budget_pct` is a HARD limit, not a target.**
+> As written above the budget only *derives* a starting leverage, and `clamp(..., max_leverage)`
+> then discards it: `margin_eur_final` is recomputed from the clamped leverage and can land
+> anywhere. §1's table calls it a *"Target margin per trade as share of capital"*, which is what
+> the arithmetic delivered — a suggestion.
+>
+> The first live day put two of seven candidate plans at **105% and 114% of total capital** in
+> notional, needing €21.00 and €22.76 of margin against a €20.00 budget, and approved both.
+> Owner ruling: *"A '10% margin budget' that permits that means nothing."* The engine now
+> rejects with **`MARGIN_BUDGET_EXCEEDED`** when `margin_eur_final > capital_eur ×
+> margin_budget_pct`. A budget of `0` means "not configured" and does not gate, matching
+> `solve_leverage`'s own convention for the same value.
+>
+> Two ordering facts, both load-bearing and both tested:
+> * The check runs **after** the liquidation-buffer reduction, because that reduction lowers
+>   leverage and therefore *raises* margin.
+> * `INSUFFICIENT_MARGIN` (`margin > capital`) is still evaluated **first**. It is the more
+>   serious finding, and it is strictly stronger than exceeding a budget that is a share of the
+>   same capital — checking the budget first would make it unreachable, i.e. a dead branch under
+>   this module's 100%-branch-coverage requirement.
+>
+> **This is capital-independent and reduces signal frequency wherever stops are tight.**
+> `margin / capital = risk_pct / (stop_fraction × leverage)`, so €200 and €10,000 behave
+> identically; with `max_leverage: 10` and a 10% budget the rail fires exactly when
+> `stop_fraction < risk_per_trade_pct`. It is tight stops that trigger it, not small accounts.
+> Two of M4's own §8 goldens are this shape and no longer ship at the default config — see
+> journal/M8_2_REPORT.md §5.
+
 > **Correction (2026-08-18, from M4) — EUR→USDT multiplies, it does not divide.** The line
 > `notional_usdt = notional_eur / eurusd_rate` above is wrong for the rate we actually store. M1
 > fetches Frankfurter with `base=EUR&symbols=USD`, so `FxRate.rate` is **USD per EUR** (1.1593), and

@@ -25,7 +25,7 @@ from sentinel.risk.models import (
     RejectionReason,
 )
 
-from .conftest import account, market, portfolio, report
+from .conftest import account, margin_budget, market, portfolio, report
 
 # A deliberately narrow zone: width 0.20 < 0.5 x ATR(0.90), so the ladder is a
 # single entry at the midpoint 82.10 and every distance below is exact by hand.
@@ -272,7 +272,10 @@ def test_rule5_at_the_gross_minimum_is_now_rejected_on_net(
     keeps rather than what the chart promises.
     """
     at_gross_min = report(zone=NARROW, stop="81.56", targets=("82.91", "84.00"))
-    decision = decide(config, clock, rep=at_gross_min)
+    # Net RR is evaluated last, after the margin checks, and this shape is also the
+    # one M8.2's hard margin budget stops earlier — so the budget is widened to keep
+    # §4.2 the rail under test here (tests/risk/test_margin_budget.py owns the other).
+    decision = decide(margin_budget(config, "12"), clock, rep=at_gross_min)
     assert decision.status is GateStatus.REJECTED
     assert decision.reason is RejectionReason.NET_RR_TOO_LOW
     assert "1.50R gross" in decision.message

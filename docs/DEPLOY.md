@@ -225,7 +225,7 @@ curl -fsS localhost:18080/health
 `"database":"error"` means Postgres is not up yet — wait for its healthcheck.
 
 `last_cycle_age_seconds` is `null` on a brand-new database: no cycle has completed
-yet. The first scan runs one scan interval (15 min) after boot.
+yet. The first scan runs one scan interval (60 min) after boot.
 
 ### 8.2 Logs
 
@@ -261,7 +261,7 @@ rejected with `NO_CAPITAL`:
 
 ### 8.4 The first cycle
 
-Wait for the scan (≤15 min) or force one:
+Wait for the scan (≤60 min) or force one:
 
 ```bash
 docker compose run --rm --no-deps app python -m sentinel.tools.cycle --once
@@ -429,7 +429,7 @@ a schedule.
 3. The app runs `alembic upgrade head` — a no-op when the schema is current — then
    starts the API, the scheduler and the Telegram bot.
 4. **The tracker's first tick runs ~60 seconds after boot. The first scan runs one
-   scan interval — 15 minutes — after boot**, because the schedule is an interval
+   scan interval — 60 minutes — after boot**, because the schedule is an interval
    trigger and fires one interval in, not immediately.
 5. `/health` is honest immediately: `last_cycle_age_seconds` is read from the
    `cycles` table at boot, so a fresh process does not claim that nothing ever ran.

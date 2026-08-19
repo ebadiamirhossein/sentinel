@@ -30,7 +30,12 @@ from sentinel.bot.models import SignalRecord, UserStatus
 from sentinel.core import orchestrator as orchestrator_module
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Settings
-from sentinel.core.orchestrator import CycleOrchestrator, CycleRepositories, CycleResult
+from sentinel.core.orchestrator import (
+    CycleOrchestrator,
+    CycleRepositories,
+    CycleResult,
+    SkipReason,
+)
 from sentinel.ingestion.models import FxRate, MarketSnapshot
 from sentinel.risk.models import MarketContext, PauseReason, PauseState, RejectionReason
 from tests.bot_double import member_account, owner_account
@@ -297,7 +302,7 @@ async def test_a_symbol_nobody_can_receive_is_dropped_before_the_analyst(
     )
 
     assert allowed == set()
-    assert "already open" in result.skipped[SYMBOL]
+    assert result.skipped[SYMBOL].reason is SkipReason.OPEN_SIGNAL
 
 
 async def test_nobody_funded_means_nothing_is_analysed(
@@ -311,7 +316,8 @@ async def test_nobody_funded_means_nothing_is_analysed(
     )
 
     assert allowed == set()
-    assert result.skipped[SYMBOL] == "no user is set up to receive a signal"
+    assert result.skipped[SYMBOL].reason is SkipReason.NO_FUNDED_USER
+    assert result.skipped[SYMBOL].detail == "no user is set up to receive a signal"
 
 
 # --------------------------------------------------------------------------- #

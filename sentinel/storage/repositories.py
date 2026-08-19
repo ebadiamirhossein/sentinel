@@ -513,6 +513,38 @@ class AnalystReportRepository:
         await self._session.flush()
         return row.id
 
+    async def latest_non_candidates(self, *, since: datetime) -> dict[str, datetime]:
+        """Newest non-candidate verdict per symbol inside the window (M8.2).
+
+        Feeds the re-analysis cooldown, which is why it asks for the **newest** row
+        per symbol rather than any row: a symbol analysed twice in the window is
+        quiet from the later one, and a symbol that has since produced a CANDIDATE
+        must not be suppressed by an older WATCHLIST.
+
+        ``role='primary'`` keeps M10's second ensemble provider from counting as a
+        separate look at the same symbol.
+        """
+        newest = (
+            select(
+                AnalystReportRow.symbol,
+                func.max(AnalystReportRow.created_at).label("created_at"),
+            )
+            .where(AnalystReportRow.created_at >= since, AnalystReportRow.role == "primary")
+            .group_by(AnalystReportRow.symbol)
+            .subquery()
+        )
+        statement = (
+            select(AnalystReportRow.symbol, newest.c.created_at)
+            .join(
+                newest,
+                (AnalystReportRow.symbol == newest.c.symbol)
+                & (AnalystReportRow.created_at == newest.c.created_at),
+            )
+            .where(AnalystReportRow.candidate_status.in_(("WATCHLIST", "NO_SETUP")))
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {row.symbol: row.created_at for row in rows}
+
     async def recent_for_symbol(
         self, symbol: str, limit: int = 3, *, owner_id: int, role: str = "primary"
     ) -> list[PastVerdict]:

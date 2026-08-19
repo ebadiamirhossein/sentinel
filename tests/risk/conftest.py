@@ -196,3 +196,30 @@ def portfolio(
 @pytest.fixture
 def empty_portfolio() -> PortfolioState:
     return portfolio()
+
+
+def margin_budget(config: AppConfig, pct: str) -> AppConfig:
+    """The same config with a different ``margin_budget_pct``.
+
+    M8.2 made §4's margin budget a **hard** rail (owner ruling 2026-08-19), and it
+    bites whenever ``stop_fraction < risk_per_trade_pct`` — i.e. on exactly the
+    tight-stop shapes several §8 goldens were built from. Those goldens exist to
+    check *arithmetic*: qty, notional, leverage, fees, net RR. Re-tuning their prices
+    to dodge a new rail would silently invalidate hand-calculations that have been
+    correct since M4 and would make the numbers in their docstrings lies.
+
+    So the goldens keep their prices and widen the budget instead — but only just
+    enough, which is the whole reason this takes a percentage rather than switching
+    the rail off. The budget also *derives* leverage (``ceil(notional / budget)``),
+    so a budget of 100% would drop the single-entry goldens from 10x to 2x and
+    change every figure below them. **12% is the band** that leaves both single-entry
+    goldens clamped at 10x with their M4 margins intact: 11.5% is too tight for the
+    short (€1,168.03 of margin), and 13% drops both to 9x.
+
+    ``tests/risk/test_margin_budget.py`` is where the rail itself is asserted, and
+    each golden that opts out carries its own assertion that the default config now
+    rejects it.
+    """
+    return config.model_copy(
+        update={"risk": config.risk.model_copy(update={"margin_budget_pct": Decimal(pct)})}
+    )

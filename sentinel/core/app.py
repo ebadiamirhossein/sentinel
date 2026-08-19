@@ -2,7 +2,7 @@
 
 ARCHITECTURE.md §2: "plain async app + APScheduler for cycles; FastAPI only for
 /health". M0 started the scheduler with a heartbeat and nothing else; M7 adds the
-two jobs the system actually exists to run — the 15-minute scan and the 60-second
+two jobs the system actually exists to run — the scan cycle and the 60-second
 tracker tick.
 
 Both are registered with ``max_instances=1`` and ``coalesce=True``. A scan that

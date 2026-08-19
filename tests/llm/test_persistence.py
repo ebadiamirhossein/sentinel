@@ -197,3 +197,58 @@ async def test_shadow_reports_do_not_pollute_primary_history(session: AsyncSessi
         select(func.count()).select_from(AnalystReportRow).where(AnalystReportRow.symbol == symbol)
     )
     assert total.scalar_one() == 2
+
+
+@requires_db
+@pytest.mark.allow_socket
+@pytest.mark.asyncio
+async def test_latest_non_candidates_takes_the_newest_verdict_per_symbol(
+    session: AsyncSession,
+) -> None:
+    """The M8.2 re-analysis cooldown's query, against real SQL.
+
+    The join is the whole subtlety and no fake exercises it: a symbol analysed twice
+    in the window must be judged on the **later** verdict, so a WATCHLIST followed by
+    a CANDIDATE is *not* suppressed. Getting that backwards would silently mute a
+    symbol at the exact moment it became interesting — the most expensive possible
+    failure for a rail whose entire purpose is saving money.
+    """
+    repo = AnalystReportRepository(session)
+    stale = f"TEST{uuid4().hex[:6].upper()}"
+    turned = f"TEST{uuid4().hex[:6].upper()}"
+    never = f"TEST{uuid4().hex[:6].upper()}"
+
+    base = a_report()
+    # Still quiet: two WATCHLIST looks, the later one at :30.
+    for minute in (10, 30):
+        await repo.save(
+            base.model_copy(
+                update={"symbol": stale, "candidate_status": CandidateStatus.WATCHLIST}
+            ),
+            created_at=NOW.replace(minute=minute),
+            provider="fable5",
+        )
+    # Turned interesting: WATCHLIST at :10, CANDIDATE at :30 — must NOT be suppressed.
+    await repo.save(
+        base.model_copy(update={"symbol": turned, "candidate_status": CandidateStatus.WATCHLIST}),
+        created_at=NOW.replace(minute=10),
+        provider="fable5",
+    )
+    await repo.save(
+        base.model_copy(update={"symbol": turned, "candidate_status": CandidateStatus.CANDIDATE}),
+        created_at=NOW.replace(minute=30),
+        provider="fable5",
+    )
+    # Outside the window entirely.
+    await repo.save(
+        base.model_copy(update={"symbol": never, "candidate_status": CandidateStatus.WATCHLIST}),
+        created_at=NOW.replace(hour=NOW.hour - 5, minute=0),
+        provider="fable5",
+    )
+    await session.flush()
+
+    quiet = await repo.latest_non_candidates(since=NOW.replace(minute=0))
+
+    assert quiet.get(stale) == NOW.replace(minute=30), "the newer of two verdicts wins"
+    assert turned not in quiet, "a symbol whose latest verdict is CANDIDATE is not suppressed"
+    assert never not in quiet, "outside the window"

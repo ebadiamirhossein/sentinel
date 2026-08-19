@@ -38,7 +38,7 @@ from sentinel.core.config import AppConfig
 from sentinel.risk.engine import RiskEngine
 from sentinel.risk.models import GateStatus, RejectionReason, TradePlan
 
-from .conftest import account, market, portfolio, report
+from .conftest import account, margin_budget, market, portfolio, report
 
 
 def plan_for(config: AppConfig, clock: FrozenClock, rep: AnalystReport) -> TradePlan:
@@ -141,11 +141,19 @@ def test_long_single_entry(config: AppConfig, clock: FrozenClock) -> None:
     of the budget against 4.2% on the wide-stop case above. The old TP1 (82.91,
     1.50 gross) lands at **1.26 net** — see the rejection goldens below.
     """
-    plan = plan_for(
-        config,
-        clock,
-        report(zone=("82.00", "82.20"), stop="81.56", targets=("83.20", "83.50", "84.00")),
+    rep = report(zone=("82.00", "82.20"), stop="81.56", targets=("83.20", "83.50", "84.00"))
+
+    # M8.2: this golden IS the shape the hard margin budget now refuses — a 0.66%
+    # stop against 0.75% of risk buys 114% of capital in notional, and the numbers
+    # below say so themselves (€11,402.50 notional, €1,140.25 margin, €1,000 budget).
+    # The arithmetic is kept exactly as M4 hand-calculated it by opting out of the
+    # budget; that the default config rejects it is asserted rather than lost.
+    refused = RiskEngine(config, clock=clock).evaluate(
+        report=rep, market=market(), account=account(), portfolio=portfolio()
     )
+    assert refused.reason is RejectionReason.MARGIN_BUDGET_EXCEEDED
+
+    plan = plan_for(margin_budget(config, "12"), clock, rep)
 
     assert len(plan.entries) == 1
     assert plan.entries[0].price == Decimal("82.10")
@@ -240,16 +248,21 @@ def test_short_single_entry(config: AppConfig, clock: FrozenClock) -> None:
     RR net     TP1 (2.04x75.00 - 2.34 - 5.76)/(75.00 + 2.34 + 5.88)
                = 144.90/83.22 = 1.74 · TP2 2.57
     """
-    plan = plan_for(
-        config,
-        clock,
-        report(
-            direction=Direction.SHORT,
-            zone=("84.00", "84.20"),
-            stop="84.64",
-            targets=("83.00", "82.50"),
-        ),
+    rep = report(
+        direction=Direction.SHORT,
+        zone=("84.00", "84.20"),
+        stop="84.64",
+        targets=("83.00", "82.50"),
     )
+
+    # M8.2, mirroring the long case: a 0.64% stop against 0.75% of risk buys 117%
+    # of capital, so the default config now refuses this shape. See `margin_budget`.
+    refused = RiskEngine(config, clock=clock).evaluate(
+        report=rep, market=market(), account=account(), portfolio=portfolio()
+    )
+    assert refused.reason is RejectionReason.MARGIN_BUDGET_EXCEEDED
+
+    plan = plan_for(margin_budget(config, "12"), clock, rep)
 
     assert len(plan.entries) == 1
     assert plan.entries[0].qty == Decimal("161.01")
@@ -327,7 +340,11 @@ def test_the_m4_goldens_are_now_rejected_on_net_rr(
     rejected. The loss is largest where the stop is tightest: the single-entry
     cases give up 0.24-0.25R to costs, the wide-stop short only 0.07R.
     """
-    decision = RiskEngine(config, clock=clock).evaluate(
+    # The subject here is §4.2's *net* RR, which the engine evaluates last — after
+    # the margin checks. The two single-entry shapes are also the ones M8.2's hard
+    # margin budget now stops earlier, so the budget is widened to let the net-RR
+    # rail be the one under test. `test_margin_budget.py` asserts the other order.
+    decision = RiskEngine(margin_budget(config, "12"), clock=clock).evaluate(
         report=rep, market=market(), account=account(), portfolio=portfolio()
     )
 

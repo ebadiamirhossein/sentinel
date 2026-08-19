@@ -90,12 +90,14 @@ class Screener:
         client: AnthropicClient,
         config: AppConfig,
         *,
-        prompt_version: str = PROMPT_VERSION,
+        prompt_version: str | None = None,
         cycle_id: UUID | None = None,
     ) -> None:
         self._client = client
         self._config = config
-        self.prompt_version = prompt_version
+        # Config wins; PROMPT_VERSION is the floor for a config that predates the
+        # setting, and the explicit argument is for tests that pin a version.
+        self.prompt_version = prompt_version or config.llm.screener_prompt_version
         self._cycle_id = cycle_id
 
     async def screen(

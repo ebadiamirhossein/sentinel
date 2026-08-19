@@ -8,7 +8,7 @@
 ## 1. High-level flow
 
 ```
-                    ┌──────────────── every 15 min (APScheduler) ────────────────┐
+                    ┌──────────────── every 60 min (APScheduler) ────────────────┐
                     ▼                                                             │
 ┌──────────┐   ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────┴─────┐
 │ Ingestion│──▶│ Feature │──▶│ Screener │──▶│  Deep    │──▶│  Risk    │──▶│  Telegram  │
@@ -113,7 +113,7 @@ sentinel/
 
 > **Ruling (2026-08-18, from M7) — cooldown scope, and the flip exception deferred.**
 > The cooldown also arms after a **stop-out**: re-entering the same failing idea on
-> the next 15-minute cycle is exactly what the rail is for. "Unless direction flips
+> the next cycle is exactly what the rail is for. "Unless direction flips
 > with strong evidence" is **not implemented** — the spec never defines strong
 > evidence, and an undefined threshold in a rail that governs money is a guess, not
 > a feature. Deferred until the owner sets a number, ideally from M9's data.

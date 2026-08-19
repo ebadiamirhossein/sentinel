@@ -94,7 +94,7 @@ def cooldown_until(
 
     ARCHITECTURE §3 step 6 arms this after a rejected or expired signal; M7's
     owner ruling adds a stop-out, because re-entering the same failing idea on the
-    next 15-minute cycle is exactly what the rail is for.
+    next cycle is exactly what the rail is for.
 
     The **latest** resolution per symbol wins, and the caller is not required to
     sort: two stop-outs in an afternoon must not let the older one shorten the

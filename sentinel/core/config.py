@@ -124,7 +124,11 @@ class Secrets(BaseSettings):
 
 
 class ScheduleConfig(_Strict):
-    scan_interval_minutes: int = 15
+    scan_interval_minutes: int = 60
+    #: M8.2 — how long a symbol stays quiet after a deep analysis that was not a
+    #: candidate. One setup-timeframe candle: the analyst reads a 1h chart, so
+    #: re-asking sooner buys the same verdict about the same unclosed bar. 0 disables.
+    reanalysis_cooldown_minutes: int = Field(default=60, ge=0)
     tracker_interval_seconds: int = 60
     heartbeat_interval_seconds: int = 60
     symbol_timeout_seconds: int = 20
@@ -362,6 +366,11 @@ class LLMConfig(_Strict):
     """
 
     screener_model: str = "claude-sonnet-4-6"
+    #: Which prompt file the screener loads (M8.2). A config value rather than a
+    #: module constant so v1 and v2 can be compared without a deploy, and so a
+    #: regression is a one-line rollback. Every `llm_calls` row already stores the
+    #: version it used, so /stats can compare them retroactively.
+    screener_prompt_version: str = "screener_v2"
     analyst_model: str = "claude-fable-5"
     analyst_effort: Literal["low", "medium", "high"] = "high"
     max_json_retries: int = 1
@@ -383,7 +392,7 @@ class LLMConfig(_Strict):
     history_verdicts: int = 3
 
     #: Spend guard (M7, pulled forward from M8's "spend guard" item). Once the
-    #: scheduler runs unattended every 15 minutes, a bug or a market event that
+    #: scheduler runs unattended around the clock, a bug or a market event that
     #: makes many symbols look interesting can spend real money while nobody is
     #: watching. Reaching the daily limit suspends **new deep analysis only** —
     #: the screener keeps triaging and the tracker keeps managing open positions,
@@ -424,7 +433,7 @@ class AlertsConfig(_Strict):
     """
 
     consecutive_cycle_failures: int = Field(default=3, ge=1)
-    stale_cycle_multiplier: int = Field(default=2, ge=1)
+    stale_cycle_multiplier: int = Field(default=1, ge=1)
 
 
 class TelegramConfig(_Strict):

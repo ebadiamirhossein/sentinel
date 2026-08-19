@@ -57,16 +57,44 @@ def test_stripped_keywords_are_really_absent() -> None:
         assert f'"{keyword}"' not in body
 
 
-def test_bounds_are_still_enforced_client_side() -> None:
-    """Stripping them from the wire must not loosen them here."""
+def test_numeric_bounds_are_still_enforced_client_side() -> None:
+    """Stripping them from the wire must not loosen them here.
+
+    ``confidence`` still *rejects*: it is a number the gate compares against
+    ``min_confidence``, so a value outside 0-100 is a broken answer, not a long one.
+    """
     from pydantic import ValidationError
 
     from tests.market_double import valid_report_json
 
     with pytest.raises(ValidationError):
-        AnalystReportPayload.model_validate_json(valid_report_json(thesis="x" * 601))
-    with pytest.raises(ValidationError):
         AnalystReportPayload.model_validate_json(valid_report_json(confidence=101))
+
+
+@pytest.mark.parametrize(("field", "limit"), [("thesis", 600), ("counter_thesis", 300)])
+def test_over_long_prose_is_truncated_rather_than_rejected(field: str, limit: int) -> None:
+    """M8.2, owner ruling 2026-08-19 — the change, stated as a test.
+
+    Three of 21 live calls on 2026-08-19 were discarded for length, one of them by a
+    single character, at ~$0.27 each. These fields are prose for a card; nothing
+    computes on them. So an overrun costs a truncation and a log line, not the
+    analysis. ``confidence`` above is the contrast: numbers still reject.
+    """
+    from tests.market_double import valid_report_json
+
+    payload = AnalystReportPayload.model_validate_json(
+        valid_report_json(**{field: "x" * (limit + 1)})
+    )
+    assert len(getattr(payload, field)) == limit
+
+
+def test_truncation_keeps_the_beginning_not_the_end() -> None:
+    """A thesis leads with its conclusion, so the tail is the part to lose."""
+    from tests.market_double import valid_report_json
+
+    text = "LEAD. " + ("filler " * 200)
+    payload = AnalystReportPayload.model_validate_json(valid_report_json(thesis=text))
+    assert payload.thesis.startswith("LEAD.")
 
 
 def test_every_field_is_required() -> None:

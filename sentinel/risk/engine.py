@@ -94,6 +94,7 @@ MESSAGES: dict[RejectionReason, str] = {
     RejectionReason.MIN_NOTIONAL: "account too small: no rung clears the exchange minimum",
     RejectionReason.LIQ_BUFFER: "liquidation buffer unreachable above 1x leverage",
     RejectionReason.INSUFFICIENT_MARGIN: "required margin exceeds capital",
+    RejectionReason.MARGIN_BUDGET_EXCEEDED: "required margin exceeds the margin budget",
 }
 
 
@@ -221,9 +222,35 @@ class RiskEngine:
             return self._decide(report, now, GateStatus.REJECTED, RejectionReason.LIQ_BUFFER)
 
         margin_eur = money(sized.notional_eur / leverage)
+        margin_budget_eur = money(checked.capital_eur * risk.margin_budget_pct / HUNDRED)
+        # Order is load-bearing, and both branches must stay reachable.
+        #
+        # "Cannot fund it at all" is the more serious finding and is reported first.
+        # It is also strictly stronger than exceeding a budget that is a *share* of
+        # the same capital, so checking the budget first would make
+        # INSUFFICIENT_MARGIN unreachable — a dead branch in the one module required
+        # to hold 100% branch coverage, and a worse message for the owner.
         if margin_eur > checked.capital_eur:
             return self._decide(
                 report, now, GateStatus.REJECTED, RejectionReason.INSUFFICIENT_MARGIN
+            )
+        # §4's budget as a HARD limit (owner ruling 2026-08-19; §4 called it a
+        # "target" and recomputed margin after clamping to max_leverage, which
+        # discarded it). This runs after solve_leverage rather than inside it
+        # because the liquidation buffer *reduces* leverage and therefore *raises*
+        # margin: a budget checked before the buffer would pass plans the buffer
+        # then pushes over. A budget of zero means "not configured", matching
+        # solve_leverage's own convention for the same value.
+        if margin_budget_eur > 0 and margin_eur > margin_budget_eur:
+            return self._decide(
+                report,
+                now,
+                GateStatus.REJECTED,
+                RejectionReason.MARGIN_BUDGET_EXCEEDED,
+                detail=(
+                    f"needs €{margin_eur} of margin at {leverage}x against a "
+                    f"€{margin_budget_eur} budget ({risk.margin_budget_pct}% of capital)"
+                ),
             )
 
         # §4.2 — cost the round trip, then re-run rule 5 on what the owner keeps.

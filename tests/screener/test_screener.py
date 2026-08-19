@@ -93,7 +93,9 @@ async def test_screener_call_is_recorded_without_a_symbol(
 
     assert result.calls[0].symbol is None
     assert result.calls[0].kind is LLMCallKind.SCREENER
-    assert result.calls[0].prompt_version == "screener_v1"
+    # Whatever config selects — asserting the *stored* version tracks the config
+    # rather than a constant, which is what /stats groups by (M8.2).
+    assert result.calls[0].prompt_version == app_config.llm.screener_prompt_version
 
 
 async def test_symbols_without_features_are_skipped(

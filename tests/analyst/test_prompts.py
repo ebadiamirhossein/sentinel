@@ -16,16 +16,24 @@ PROMPT_DIR = Path(__file__).resolve().parents[2] / "sentinel" / "analyst" / "pro
 
 
 def test_expected_versions_exist() -> None:
-    assert available() == ["fable_v1", "screener_v1"]
+    assert available() == ["fable_v1", "screener_v1", "screener_v2"]
 
 
-@pytest.mark.parametrize("version", ["fable_v1", "screener_v1"])
+def test_the_configured_screener_prompt_exists() -> None:
+    """A typo in `llm.screener_prompt_version` would be a KeyError at the first
+    cycle of a deploy — i.e. found in production, on the one path that costs money."""
+    from sentinel.core.config import load_config
+
+    assert load_config().llm.screener_prompt_version in available()
+
+
+@pytest.mark.parametrize("version", ["fable_v1", "screener_v1", "screener_v2"])
 def test_prompt_is_the_file_below_the_marker(version: str) -> None:
     raw = (PROMPT_DIR / f"{version}.md").read_text(encoding="utf-8")
     assert load_prompt(version) == raw.split(MARKER, 1)[1].strip()
 
 
-@pytest.mark.parametrize("version", ["fable_v1", "screener_v1"])
+@pytest.mark.parametrize("version", ["fable_v1", "screener_v1", "screener_v2"])
 def test_bookkeeping_header_is_not_sent(version: str) -> None:
     """Provenance comments cost tokens and could read as instructions."""
     text = load_prompt(version)
@@ -74,7 +82,7 @@ def test_screener_prompt_keeps_spec_text(phrase: str) -> None:
 # ── the untrusted-content boundary (owner requirement, 2026-08-18) ──────────
 
 
-@pytest.mark.parametrize("version", ["fable_v1", "screener_v1"])
+@pytest.mark.parametrize("version", ["fable_v1", "screener_v1", "screener_v2"])
 def test_both_prompts_carry_the_untrusted_data_rule(version: str) -> None:
     text = load_prompt(version)
     assert "<untrusted_news_data>" in text

@@ -11,11 +11,16 @@ analyst never sizes, never sets leverage, never sees EUR.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema
+
+from sentinel.core.logging import get_logger
+
+log = get_logger(__name__)
 
 
 class Frozen(BaseModel):
@@ -141,6 +146,48 @@ class EntryZonePayload(Frozen):
         return EntryZone(low=self.low, high=self.high)
 
 
+def _capped(limit: int) -> Callable[[Any], Any]:
+    """Truncate an over-long prose field instead of discarding the whole answer.
+
+    **Why truncate rather than reject (M8.2, owner ruling 2026-08-19).** These caps
+    exist so a card renders; the fields carry no arithmetic and nothing downstream
+    computes on them. Rejecting meant a schema-invalid response, one retry at full
+    price, and — if the retry also overran — a discarded analysis.
+
+    The measured behaviour that settled it: across 21 live analyst calls on
+    2026-08-19, three were discarded for length, at 603/600 and 307/300 and
+    **301/300 characters**. The 18 that parsed sat at 476-598 and 210-285. That is a
+    model aiming at a stated cap and landing inside +/-1%, not a model ignoring an
+    instruction — so a sterner prompt would only move where the misses cluster.
+    Throwing away $0.28 of analysis over one character of prose is the wrong trade.
+
+    The overrun is logged rather than swallowed, so ``analyst.field_truncated`` is
+    countable: if the median overrun starts drifting, the cap is wrong and the prompt
+    should say a different number.
+    """
+
+    def truncate(value: Any) -> Any:
+        if isinstance(value, str) and len(value) > limit:
+            log.info(
+                "analyst.field_truncated",
+                limit=limit,
+                length=len(value),
+                overrun=len(value) - limit,
+            )
+            return value[:limit]
+        return value
+
+    return truncate
+
+
+#: Prose fields, capped by truncation. ``max_length`` stays declared on the Field so
+#: `tests/analyst/test_wire_schema.py` can keep description and bound in sync — the
+#: description is the only channel that reaches the model, since structured outputs
+#: strips ``maxLength`` from the wire schema.
+Capped600 = Annotated[str, BeforeValidator(_capped(600))]
+Capped300 = Annotated[str, BeforeValidator(_capped(300))]
+
+
 class AnalystReportPayload(Frozen):
     """Exactly the JSON schema in specs/PROMPTS.md §2 — no more, no less.
 
@@ -170,17 +217,17 @@ class AnalystReportPayload(Frozen):
     # is the only channel that survives to the model; the `max_length` is what
     # actually enforces it here. `test_schema_states_every_length_limit` fails if
     # the two ever drift apart.
-    thesis: str = Field(
+    thesis: Capped600 = Field(
         max_length=600,
         description=(
             "Your reasoning, at most 600 characters. Be dense: this is a hard "
-            "limit and an over-long thesis is rejected outright."
+            "limit and an over-long thesis is truncated."
         ),
     )
     evidence: tuple[Evidence, ...] = Field(
         description="One entry per claim in the thesis, each citing the input field it rests on."
     )
-    counter_thesis: str = Field(
+    counter_thesis: Capped300 = Field(
         max_length=300,
         description="The strongest argument against the trade, at most 300 characters.",
     )

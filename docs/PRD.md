@@ -57,7 +57,7 @@ Single persona: the **owner-trader** (executes manually on their exchange, EUR-d
 
 | ID | Requirement | Acceptance criteria (summary) |
 |----|-------------|-------------------------------|
-| F1 | Scheduled scan cycle (default every 15 min; deep analysis primarily on 1h/4h structure with 15m timing) | Cycle completes < 5 min for 12 symbols; skipped/failed symbols logged, never block others |
+| F1 | Scheduled scan cycle (default every 60 min — corrected 2026-08-19 (M8.2), was 15; deep analysis primarily on 1h/4h structure with 15m timing) | Cycle completes < 5 min for 12 symbols; skipped/failed symbols logged, never block others |
 | F2 | Data ingestion: OHLCV (15m/1h/4h/1D), volume, order book depth snapshot, funding rate, open interest, long/short ratio, Fear & Greed index, BTC dominance, news headlines | Every record has `timestamp` + `source`; stale data (> 2× its refresh interval) flags the snapshot as degraded |
 | F3 | Deterministic feature engine: EMA(20/50/200), RSI(14), ATR(14), relative volume, higher-timeframe trend regime, support/resistance levels, volatility regime | Pure functions, unit-tested against known fixtures; no LLM involvement |
 | F4 | Chart renderer: candlestick PNGs (15m, 1h, 4h) with EMAs, volume, and marked S/R levels, fed to the analyst as vision input | Charts reproducible from stored OHLCV; image + params stored per signal |

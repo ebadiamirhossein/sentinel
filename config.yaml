@@ -27,7 +27,17 @@ watchlist:
 
 # PRD.md F1 (15 min cycle), ARCHITECTURE.md §3 (tracker every 60s).
 schedule:
-  scan_interval_minutes: 15
+  # 60, not 15 (M8.2, owner ruling 2026-08-19). The setup timeframe is 1h, so a
+  # 15-minute scan asked the analyst about the same unclosed candle four times and
+  # paid ~$0.76 each time. The M8.2 diagnostic measured 2.63 analyst calls per cycle
+  # — 252/day against M7's ~24/day budget — and the two most-flagged symbols were
+  # re-analysed every cycle on a standing condition. This alone is a 4x reduction.
+  scan_interval_minutes: 60
+  # M8.2 — a symbol whose last deep analysis returned WATCHLIST or NO_SETUP stays
+  # quiet for one setup-timeframe candle. On 2026-08-19 LINKUSDT was escalated in
+  # 8 of 8 cycles and SOLUSDT in 6 of 8, on standing conditions, and 61% of all
+  # escalations came back WATCHLIST. 0 disables the rail.
+  reanalysis_cooldown_minutes: 60
   tracker_interval_seconds: 60
   heartbeat_interval_seconds: 60
   symbol_timeout_seconds: 20      # per-symbol snapshot timeout (ARCHITECTURE.md §3)
@@ -207,6 +217,9 @@ management:
 # sentinel/analyst/prompts/vN.md files (CLAUDE.md).
 llm:
   screener_model: claude-sonnet-4-6
+  # M8.2 — screener_v2 is stricter about standing conditions. screener_v1.md is kept
+  # and this is the one-line rollback if v2 turns out to under-escalate.
+  screener_prompt_version: screener_v2
   analyst_model: claude-fable-5
   analyst_effort: high            # output_config.effort; thinking is always on for fable-5
   max_json_retries: 1             # schema-invalid CONTENT: retry once, then discard + log
@@ -266,7 +279,11 @@ llm:
 # the most serious kind, and nothing else would ever notice it.
 alerts:
   consecutive_cycle_failures: 3
-  stale_cycle_multiplier: 2
+  # 1, not 2 (M8.2). This is measured in scan intervals, so widening the scan to 60
+  # minutes silently moved "the process died" detection from 30 minutes to two hours.
+  # One interval holds it near an hour; ops/healthcheck.sh covers process death from
+  # the host every 15 minutes and alerts after ~45, independently of this.
+  stale_cycle_multiplier: 1
 
 # specs/TELEGRAM_UX.md — rendering/display only. Allowlist lives in .env.
 telegram:

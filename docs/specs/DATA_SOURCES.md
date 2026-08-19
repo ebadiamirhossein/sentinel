@@ -39,7 +39,7 @@
 - **Order book:** top-50 depth snapshot → computed bid/ask imbalance ratio (deterministic feature; raw book NOT sent to LLM).
 - **Funding rate:** current + next; **Open interest:** current + 24h series; **Long/short account ratio:** top-trader ratio.
 - **Exchange info:** tick size, qty step, min notional per symbol (cached 24h) — consumed by risk engine.
-- Rate limits: comfortably within free public limits at 12 symbols / 15 min; use ccxt built-in throttling.
+- Rate limits: comfortably within free public limits at 12 symbols / 60 min (15 min through M8.1); use ccxt built-in throttling.
 
 ### 2.2 News — CryptoPanic (+ RSS fallback)
 - Filter: currencies matching watchlist + "important" flag; fields kept: title, source domain, published_at, currencies, votes. **Body text not fetched in v1** — the analyst judges relevance from headline + source + freshness (age_minutes).

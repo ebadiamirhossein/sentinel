@@ -1,6 +1,6 @@
 """ORM models — the first real schema (M1).
 
-Shape chosen with the owner: candles are normalized and upserted so a 15-minute
+Shape chosen with the owner: candles are normalized and upserted so a repeated
 cycle does not rewrite 700 rows per symbol, while the per-cycle context that is
 genuinely snapshot-shaped (funding, book, news, sentiment, FX, degradation) is
 stored as JSONB on the snapshot row. A signal stays fully reconstructable from
@@ -559,7 +559,7 @@ class UserRow(Base):
 
 
 class CycleRow(Base):
-    """One run of the 15-minute scan (ARCHITECTURE.md §3's cycle orchestrator).
+    """One run of the scan cycle (ARCHITECTURE.md §3's cycle orchestrator).
 
     Two jobs. It makes ``/health``'s ``last_cycle_age_seconds`` survive a restart —
     an in-memory timestamp reports "never ran" after every deploy, which is the
@@ -587,6 +587,13 @@ class CycleRow(Base):
     #: Ingestion failures plus the dedup/cooldown/cap skips, so a quiet cycle is
     #: explicable from the row rather than only from the logs.
     symbols_skipped: Mapped[int] = mapped_column(nullable=False, default=0)
+    #: ``{symbol: {"reason": SkipReason, "detail": str}}`` — M8.2. The count above
+    #: says a cycle was quiet; this says what it declined and why, in a fixed
+    #: vocabulary M9 can GROUP BY. It is a column and not a log line because logs
+    #: rotate and this is the record of what the system chose not to spend money on.
+    skipped: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     candidates: Mapped[int] = mapped_column(nullable=False, default=0)
     analyzed: Mapped[int] = mapped_column(nullable=False, default=0)
     approved: Mapped[int] = mapped_column(nullable=False, default=0)

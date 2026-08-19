@@ -30,6 +30,24 @@ Rules:
 
 **Output schema:** `[{symbol, interesting: bool, direction_hint: "long"|"short"|"unclear", reason: string(≤200)}]`
 
+> **Correction (2026-08-19, from M8.2) — "0-3 per batch" was not a tight enough band, and
+> `screener_v2` supersedes `screener_v1`.** Eight live cycles measured 18 interesting marks in
+> 80 symbol-verdicts (22.5%, 2.25 per batch), **zero batches returning zero**, LINKUSDT escalated
+> in 8 of 8 cycles and SOLUSDT in 6 of 8 — on standing conditions, on a 1h setup timeframe, at
+> ~$0.28 a look. 61% of what it escalated came back `WATCHLIST` at an average confidence of 53.7,
+> below the gate's own `min_confidence` of 60.
+>
+> 2.25 is *inside* "0-3", which is why the band alone was not enough: it has no floor, and nothing
+> in v1 distinguished a **state** ("in an uptrend", "approaching resistance") from a **change**.
+> `screener_v2` narrows calibration to 0-2, names zero as normal and frequent, states the measured
+> downstream rejection rate in the prompt, and adds the one-hour test — *could I have written this
+> same reason an hour ago?* `llm.screener_prompt_version` selects between the two and
+> `screener_v1.md` is kept, so `/stats` can compare them. See journal/PROMPT_LOG.md.
+>
+> The complementary change is not a prompt at all: `SkipReason.RECENTLY_ANALYSED` (M8.2) stops a
+> symbol being re-analysed within one setup-timeframe candle of a `WATCHLIST`/`NO_SETUP` verdict,
+> which is the structural half of the same problem — the screener had no memory to be stricter with.
+
 ## 2. Deep Analyst (top tier — `claude-fable-5`, high effort, vision)
 
 **Job:** full evidence synthesis for ONE symbol → falsifiable trade idea or NO_SETUP.
