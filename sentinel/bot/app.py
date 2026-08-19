@@ -72,9 +72,26 @@ def build_dispatcher(ctx: BotContext) -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher["ctx"] = ctx
 
+    # **Outer**, not inner, and this is load-bearing rather than stylistic.
+    #
+    # aiogram resolves a sub-router's *root* filters inside `Router._propagate_event`,
+    # before that router's handlers — and therefore before any inner middleware, which
+    # only wraps a handler once one has matched. `admin_router` carries `OwnerOnly()`
+    # as a root filter, and `OwnerOnly` takes `actor` — which this gate is what injects.
+    # Registered as inner, the filter was evaluated with `actor` absent and aiogram
+    # raised `TypeError: OwnerOnly.__call__() missing 1 required positional argument`,
+    # which the dispatcher's error middleware swallows into "update is not handled".
+    # Every owner command answered with silence, and silence is what OwnerOnly is
+    # *supposed* to produce for a non-owner — so a dead admin surface was
+    # indistinguishable from working access control (journal/M8_2_REPORT.md §1).
+    #
+    # Outer middleware runs in `Router.propagate_event` before propagation descends,
+    # so `actor` is in `data` by the time any sub-router's root filters are checked.
+    # It also matches what `auth.classify` already documents: the gate runs *before*
+    # routing, so an unauthorized update never reaches a router at all.
     gate = AuthMiddleware(ctx)
-    dispatcher.message.middleware(gate)
-    dispatcher.callback_query.middleware(gate)
+    dispatcher.message.outer_middleware(gate)
+    dispatcher.callback_query.outer_middleware(gate)
 
     dispatcher.include_router(membership_router)
     dispatcher.include_router(commands_router)
