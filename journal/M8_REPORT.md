@@ -290,6 +290,52 @@ send real messages to your phone; the copy pointed at the same running stack.
 And `--send` was **not** run: it is a live Telegram message, it is `docs/DEPLOY.md`
 §8.6's step, and it is yours to fire.
 
+## 9a. The deployment, and the two things it found (2026-08-19)
+
+The runbook was then run against the real box, `root@78.46.240.136` — a Hetzner
+CPX32 named `fonderis-worker`. It found two things worth recording, both of which
+are now fixed in the runbook rather than only in a session transcript.
+
+**§2's premise was wrong: there was no Docker.** The neighbour is not
+containerised at all — `fonderis-worker.service` and `english-bot.service` are
+systemd units, alongside Caddy, Redis and a **native PostgreSQL 16.14 on
+`127.0.0.1:5432`**. So the "5432 is taken" constraint held even more firmly than
+designed for: the port belongs to a host process, and no container of ours can
+collide with it, race it, or be reached by it. `docker.io 29.1.3` +
+`docker-compose-v2` were installed from the Ubuntu archive (owner's choice: no new
+apt source on a box running someone else's production app). External exposure was
+scanned from the laptop before and after: identical, 22/80/443 only, with the
+neighbour's port 3011 still filtered by ufw. All five neighbour services stayed
+`active` throughout.
+
+**A Telegram bot token allows exactly one long-polling client.** The server's bot
+could not start — `TelegramConflictError: terminated by other getUpdates request` —
+because the *development* stack on the laptop was still polling the same token.
+Stopping the local `app` container fixed it, and aiogram's own backoff recovered
+without a restart (`Connection established (tryings = 8)`). This is a trap for
+anyone deploying from the machine they have been developing on, so it is now
+`docs/DEPLOY.md` §8.3 as a warning and §14 as a full entry.
+
+Everything else in the runbook ran as written, and faster: the image build took
+**67 seconds**, not the 3–5 minutes estimated. All six migrations applied to the
+fresh database, `/health` returned `status: ok · environment: prod` with
+`last_cycle_age_seconds: null` exactly as §8.1 says it should on a new database,
+and the compose project came up as `sentinel-app-1` / `sentinel-postgres-1` /
+`sentinel_pgdata` with the database publishing **no host port**.
+
+The parts that only a server can prove:
+
+| Check | Result |
+|---|---|
+| `ops/backup.sh` | 41K dump, readback passed |
+| `ops/verify-backup.sh` — **the restore drill** | `RESTORE OK — migration 0006_tracker_and_stats`, scratch database dropped |
+| Both, again under `env -i` with cron's minimal PATH | identical results — the 03:10 and Sunday jobs will not fail on a missing `docker` |
+| `ops/healthcheck.sh` under the same stripped environment | ok, state file 0 |
+| Log caps on the running containers | `json-file map[max-file:5 max-size:10m]` on both |
+| Restart policy on the running containers | `unless-stopped` on both |
+| `systemctl is-enabled docker` | **enabled** — the precondition for §11 |
+| Disk | 5.6G of 150G used after deployment |
+
 ## 10. What is left for you
 
 1. **Run the runbook on the CPX32.** That is M8's demo and the only thing that can

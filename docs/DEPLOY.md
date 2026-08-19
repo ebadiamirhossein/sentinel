@@ -225,6 +225,11 @@ Expect `app.started`, `scheduler.pipeline_scheduled` (with `dry_run=true`) and
 
 ### 8.3 The bot
 
+> **Stop any other copy of Sentinel first.** A Telegram bot token allows exactly
+> one long-polling client. If the same token is still running on your laptop — or
+> in an old container on this box — the two fight over `getUpdates` and the logs
+> fill with `TelegramConflictError`. See §14.
+
 Message your bot `/status` from the allowlisted account. You should get the status
 card — pause state, sizing, data sources, signals, cycle and LLM spend. If nothing
 comes back, the id in `TELEGRAM_ALLOWED_USER_IDS` is not yours; the allowlist
@@ -502,6 +507,23 @@ that is deliberate, so the probe can tell you *which* part is broken.
 `docker compose logs app | grep -E "bot\.|telegram"`. `bot.disabled` = no token.
 Silence with no error = your user id is not in `TELEGRAM_ALLOWED_USER_IDS`.
 Remember that `dry_run: true` is *supposed* to produce a silent phone.
+
+**`TelegramConflictError: terminated by other getUpdates request`**
+Two processes are polling the same bot token. Telegram allows one. Almost always
+the development stack on your own machine, left running — the deploy does not stop
+it for you, and it will keep stealing updates until it does.
+
+```bash
+# on the OTHER machine, not the server:
+docker compose stop app
+```
+
+The server's bot recovers on its own within a minute or so; aiogram retries with
+backoff and logs `Connection established` when it wins. Nothing is lost — updates
+that arrived during the fight were destined for whichever poller won, and the bot
+drops queued updates at startup by design anyway. If it persists after stopping
+every copy you know about, `curl -s "https://api.telegram.org/bot<token>/getWebhookInfo"`
+will show a webhook still registered against the token.
 
 **"🚨 Sentinel — N cycles failed in a row"**
 The scan cycle failed N times consecutively. The tracker is unaffected and open
