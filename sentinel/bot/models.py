@@ -50,6 +50,33 @@ class UserStatus(StrEnum):
     LEFT = "LEFT"
 
 
+class WatchlistRequestStatus(StrEnum):
+    """Where a member's ``/request`` stands (M8.3).
+
+    ``PENDING`` is the only state the database enforces uniqueness on, and it is
+    deliberately also the state a request *stays* in when the owner tries to approve
+    it but the watchlist has since filled up. That case is not a rejection — nobody
+    decided against the symbol — so turning it into one would make the member ask
+    again for something the owner already wanted.
+    """
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class WatchlistRequest(Frozen):
+    """One row of ``watchlist_requests``."""
+
+    id: int
+    symbol: str
+    requested_by_user_id: int
+    requested_at: datetime
+    status: WatchlistRequestStatus = WatchlistRequestStatus.PENDING
+    decided_at: datetime | None = None
+    decided_by_user_id: int | None = None
+
+
 class UserRole(StrEnum):
     """OWNER may approve, suspend and operate; MEMBER receives and decides.
 

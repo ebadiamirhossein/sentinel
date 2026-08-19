@@ -10,9 +10,18 @@
 # with dry_run=true, and the tracker resolves it silently. /stats reports dry-run
 # outcomes as their own population, never merged into real or hypothetical.
 # Run 24h with this true before letting the system post for real.
-dry_run: true
+#
+# Turned OFF 2026-08-19 (owner instruction), after the M8.2 shakedown: the pipeline
+# ran end to end all day, the spend rails were verified live ($0.24/cycle against
+# $0.75 before), and the owner wants real cards. Signals now reach Telegram.
+dry_run: false
 
 # PRD.md §7 — default watchlist (configurable at runtime via /watchlist).
+#
+# M8.3: `watchlist_max_symbols` caps the total. Every symbol here is screened
+# every cycle and can buy a ~$0.28 analyst call, so this is the single biggest
+# lever on the bill. It binds /watchlist add and members' /request equally.
+watchlist_max_symbols: 15
 watchlist:
   - BTCUSDT
   - ETHUSDT

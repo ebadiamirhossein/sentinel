@@ -150,6 +150,23 @@ estimate — 2.63 analyst calls per cycle where ~24/day was budgeted.
 
 Deferred to after re-measurement: prompt caching, and `analyst_effort`.
 
+## M8.3 — Member watchlist requests (0.5 day)
+Added 2026-08-19. Members can ask for a symbol without being able to spend on one.
+
+* `/request SOLUSDT` for members, validated against the exchange at the door; the
+  owner gets an approve/decline card naming who asked and where the watchlist stands.
+* **One pending request per symbol**, enforced by a partial unique index
+  (`uq_watchlist_requests_one_pending`), so a duplicate is a no-op that reaches nobody.
+  Decided rows are kept, and a declined symbol may be asked for again — markets change.
+* `watchlist_max_symbols` (config, default 15) **binds the owner's `/watchlist add`
+  too**, and is re-checked at approval time. A request that cannot be granted because
+  the list filled up stays PENDING and both people are told, rather than being declined.
+* Migration `0009_watchlist_requests`.
+* `/request` on the member menu; absent from the owner's, like `/leave`.
+* The dispatcher-wiring meta-test now covers `MEMBER_COMMANDS` as well as
+  `OWNER_COMMANDS`, discharging the member half of journal/M8_2_REPORT.md §1a's audit
+  item 2 as a side effect of building on that surface.
+
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.

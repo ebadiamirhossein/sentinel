@@ -15,9 +15,14 @@ instead of ambiguous.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel
+
+from sentinel.core.logging import get_logger
+
+log = get_logger(__name__)
 
 #: Keys the structured-outputs schema compiler rejects. Enforced by Pydantic on
 #: the way back in, so dropping them here costs nothing.
@@ -78,3 +83,41 @@ def _clean(node: Any) -> Any:
         out["required"] = list(out["properties"])
 
     return out
+
+
+def capped(limit: int, *, field: str = "") -> Callable[[Any], Any]:
+    """Truncate an over-long prose field instead of discarding the whole answer.
+
+    **Why truncate rather than reject (M8.2 #4, owner ruling 2026-08-19).** These caps
+    exist so a card renders; the fields carry no arithmetic and nothing downstream
+    computes on them. Rejecting means a schema-invalid response, a retry at full
+    price, and — if the retry also overruns — a discarded call.
+
+    The measurement that settled it: of 21 live analyst calls, three were discarded
+    for length at 603/600, 307/300 and **301/300** characters, while the 18 that
+    parsed sat at 476-598 and 210-285. A model aiming at a stated cap lands inside
+    ±1%; a sterner instruction only moves where the misses cluster.
+
+    It lives here, in ``llm/``, rather than in either caller: both the analyst and the
+    screener need it, and ``screener -> analyst`` would be a sideways import between
+    pipeline stages (CLAUDE.md). It also belongs next to the reason it is necessary —
+    this module is what strips ``maxLength`` from the wire schema, so the model is
+    never told the limit by the schema and can only be told by a description.
+
+    The overrun is logged, so ``llm.field_truncated`` is countable: a drifting median
+    means the cap is wrong and the prompt should state a different number.
+    """
+
+    def truncate(value: Any) -> Any:
+        if isinstance(value, str) and len(value) > limit:
+            log.info(
+                "llm.field_truncated",
+                field=field,
+                limit=limit,
+                length=len(value),
+                overrun=len(value) - limit,
+            )
+            return value[:limit]
+        return value
+
+    return truncate

@@ -34,6 +34,7 @@ from sentinel.storage.repositories import (
     SnapshotRepository,
     TelegramMessageRepository,
     UserRepository,
+    WatchlistRequestRepository,
 )
 
 
@@ -50,6 +51,7 @@ class Repositories:
     risk_state: type[RiskStateRepository] = RiskStateRepository
     snapshots: type[SnapshotRepository] = SnapshotRepository
     instruments: type[InstrumentMetaRepository] = InstrumentMetaRepository
+    watchlist_requests: type[WatchlistRequestRepository] = WatchlistRequestRepository
     # M7: the tracker's tables, read by /positions and by the notifier.
     fills: type[SignalFillRepository] = SignalFillRepository
     exits: type[SignalExitRepository] = SignalExitRepository

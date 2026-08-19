@@ -219,6 +219,52 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 > the limit suspends **new deep analysis only**: the screener keeps triaging and the
 > tracker keeps managing open positions, which it can do without an LLM at all.
 
+## 3a. `/request` — a member asking for a symbol (added 2026-08-19, M8.3)
+
+**In no earlier version of this spec; recorded as an addition, not a deviation.**
+
+`/watchlist add|remove` is owner-only because the watchlist is what the shared deep
+analyst is pointed at: every symbol on it is screened every cycle and each one can
+buy a ~$0.28 analyst call on the owner's key. A member editing it would be spending
+somebody else's budget. But "not yours to edit" is not the same as "not yours to
+suggest", so members get a door:
+
+```
+/request SOLUSDT
+```
+
+1. The symbol is validated **at the door** — the same `parse_symbol` → cached
+   `instrument_meta` → keyless exchange call path `/watchlist add` uses. A typo is
+   answered in a second by the person who made it, rather than arriving as a card the
+   owner cannot evaluate.
+2. The owner gets a card naming **who asked, what for, when, and where the watchlist
+   stands against its cap**, with `[✅ Add to watchlist] [❌ Decline]`.
+3. On approve the symbol joins the watchlist through the *same* write `/watchlist
+   add` makes, so the `config_changes` audit row is identical either way, and the
+   requester is told. On decline the requester is told, and **no reason is required**.
+
+**One pending request per symbol**, guaranteed by a partial unique index over
+`symbol WHERE status = 'PENDING'` rather than by a check — two members asking within
+a second of each other produce one row and one card. A duplicate is a no-op, and the
+second asker is told the symbol is spoken for **without being told by whom**: who else
+uses this bot is not a member's business (§7's boundary).
+
+**`watchlist_max_symbols` (default 15) binds everybody, the owner included.** It is a
+spend control, and a cap that applied only to other people would not be a cap. It is
+checked when a request is made *and again at the moment of approval*, because several
+requests can be pending against fewer free slots and only the approval knows what the
+list actually holds.
+
+**A request the owner tries to approve into a full watchlist stays `PENDING`.** It is
+not a rejection — nobody decided against the symbol, the list simply ran out of room
+while it waited — so both people are told exactly that, and the owner can make space
+and approve the same card instead of the member having to ask again.
+
+`/request` is on the member menu and **not** on the owner's, for the same reason
+`/leave` is not: the owner has `/watchlist add`, which does the thing directly, and a
+request path would have them approving their own card. Both handlers still answer if
+typed.
+
 ## 4. Tracker notifications (replies to the original card)
 
 - `📥 Entry 1 filled @ 83.10 (40%)` … `📥 Ladder complete, avg 82.68`

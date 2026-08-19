@@ -16,7 +16,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sentinel.bot.models import (
@@ -26,6 +26,7 @@ from sentinel.bot.models import (
     SignalRecord,
     UserRole,
     UserStatus,
+    WatchlistRequestStatus,
 )
 from sentinel.risk.models import TradePlan
 from sentinel.storage.models import (
@@ -34,12 +35,14 @@ from sentinel.storage.models import (
     SignalRow,
     TelegramMessageRow,
     UserRow,
+    WatchlistRequestRow,
 )
 from sentinel.storage.repositories import (
     RuntimeSettingsRepository,
     SignalRepository,
     TelegramMessageRepository,
     UserRepository,
+    WatchlistRequestRepository,
 )
 from tests.bot_double import OWNER_ID
 from tests.db_guard import TEST_DB_URL, requires_db
@@ -49,7 +52,14 @@ from tests.risk_double import PLAN_NOW, approved_plan
 async def _clean(session: AsyncSession) -> None:
     """Before *and* after: M5.1 §5 — these tests assert counts, and a dirty
     database is exactly what a developer running them is most likely to have."""
-    for table in (TelegramMessageRow, SignalRow, ConfigChangeRow, RuntimeSettingRow, UserRow):
+    for table in (
+        TelegramMessageRow,
+        SignalRow,
+        ConfigChangeRow,
+        RuntimeSettingRow,
+        UserRow,
+        WatchlistRequestRow,
+    ):
         await session.execute(delete(table))
     await session.commit()
 
@@ -65,6 +75,10 @@ async def session() -> AsyncIterator[AsyncSession]:
         await session.rollback()
         await _clean(session)
     await engine.dispose()
+
+
+#: A fixed instant for the M8.3 request tests — nothing here reads a clock.
+NOW = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -393,3 +407,56 @@ async def test_two_users_signals_never_appear_in_each_others_books(
     assert [row.id for row in await repo.recent(user_id=222)] == [theirs.signal_id]
     assert await repo.undecided_count(user_id=111) == 1
     assert await repo.open_symbols(user_id=111) == {plan.symbol}
+
+
+@requires_db
+async def test_only_one_request_per_symbol_can_be_pending(session: AsyncSession) -> None:
+    """``uq_watchlist_requests_one_pending`` — the M8.3 guarantee, in Postgres (M8.3).
+
+    ``tests/bot_double.py`` models this with a dict keyed by symbol, which is a
+    *description* of the constraint rather than the constraint. If the partial index
+    were missing from the migration, every hermetic test would still pass and two
+    members asking for the same symbol in the same second would produce two rows and
+    two cards. Only a real database can say the index is there.
+    """
+    repo = WatchlistRequestRepository(session)
+    symbol = f"TEST{uuid4().hex[:6].upper()}"
+
+    first = await repo.request(symbol, user_id=OWNER_ID, at=NOW)
+    second = await repo.request(symbol, user_id=OWNER_ID + 1, at=NOW)
+
+    assert first is not None
+    assert second is None, "the second insert must be refused by the index, not by a check"
+    pending = await repo.pending_for(symbol)
+    assert pending is not None
+    assert pending.requested_by_user_id == OWNER_ID
+
+
+@requires_db
+async def test_the_index_is_partial_so_a_decided_symbol_can_be_asked_for_again(
+    session: AsyncSession,
+) -> None:
+    """The index covers PENDING rows only, which is what lets history be kept.
+
+    A full unique index on ``symbol`` would forbid a second request for ever, and
+    deleting decided rows to work around it would throw away the answer to "has
+    anyone asked for this before".
+    """
+    repo = WatchlistRequestRepository(session)
+    symbol = f"TEST{uuid4().hex[:6].upper()}"
+
+    await repo.request(symbol, user_id=OWNER_ID, at=NOW)
+    await repo.decide(symbol, WatchlistRequestStatus.REJECTED, by=OWNER_ID, at=NOW)
+    again = await repo.request(symbol, user_id=OWNER_ID, at=NOW)
+
+    assert again is not None, "a decided symbol must be requestable again"
+    rows = (
+        (
+            await session.execute(
+                select(WatchlistRequestRow).where(WatchlistRequestRow.symbol == symbol)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 2, "the rejected row is kept, not overwritten"

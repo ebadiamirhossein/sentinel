@@ -8,6 +8,8 @@ from decimal import Decimal
 
 from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import DerivContext, MarketSnapshot, OpenInterestPoint
+from sentinel.llm.schema import json_schema_for
+from sentinel.screener.models import DirectionHint, ScreenerBatch, ScreenerVerdict
 from sentinel.screener.payload import screener_block
 from tests.market_double import with_news
 
@@ -144,3 +146,73 @@ def test_stale_headlines_are_outside_the_freshness_window(
         }
     )
     assert screener_block(aged, features)["news_flag"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# The 200-char reason cap — M8.3
+# --------------------------------------------------------------------------- #
+
+
+def test_an_over_long_reason_is_truncated_rather_than_failing_the_batch() -> None:
+    """M8.3, found in production: the analyst's M8.2 #4 lesson, missed here.
+
+    A screener batch is one call covering the whole watchlist, so a single over-long
+    ``reason`` used to discard the triage of **every** symbol beside it and buy a
+    retry. It happened in 3 of 8 live batches on 2026-08-19 — and ``screener_v2`` made
+    it *more* likely by asking the reason to name what changed.
+    """
+    verdict = ScreenerVerdict(
+        symbol="SOLUSDT",
+        interesting=True,
+        direction_hint=DirectionHint.LONG,
+        reason="x" * 260,
+    )
+    assert len(verdict.reason) == 200
+
+
+def test_a_batch_survives_one_verbose_verdict() -> None:
+    """The property that actually costs money: nine good verdicts are not thrown away."""
+    batch = ScreenerBatch.model_validate(
+        {
+            "verdicts": [
+                {
+                    "symbol": "AAAUSDT",
+                    "interesting": False,
+                    "direction_hint": "unclear",
+                    "reason": "short",
+                },
+                {
+                    "symbol": "BBBUSDT",
+                    "interesting": True,
+                    "direction_hint": "long",
+                    "reason": "y" * 240,
+                },
+            ]
+        }
+    )
+    assert [v.symbol for v in batch.verdicts] == ["AAAUSDT", "BBBUSDT"]
+    assert len(batch.verdicts[1].reason) == 200
+
+
+def test_the_reason_cap_is_stated_in_the_description() -> None:
+    """``llm.schema`` strips ``maxLength``, so the description is the only channel.
+
+    The same assertion ``tests/analyst/test_wire_schema.py`` makes for the analyst.
+    A bare ``max_length`` is a limit the model is never told about.
+    """
+    schema = json_schema_for(ScreenerBatch)
+    reason = schema["$defs"]["ScreenerVerdict"]["properties"]["reason"]
+    assert "200" in reason.get("description", "")
+
+
+def test_the_wire_schema_carries_no_implementation_notes() -> None:
+    """A model docstring is emitted as the schema ``description`` and sent every call.
+
+    M8.3 briefly shipped the rationale for the cap as a class docstring, which put ~900
+    bytes of commentary about retries and dated incidents in front of the model on every
+    screening call — tokens paid for, and text that reads like instructions. The
+    rationale belongs in a ``#`` comment, which is never emitted.
+    """
+    body = json.dumps(json_schema_for(ScreenerBatch))
+    for leak in ("M8.", "2026-", "retry", "llm.schema"):
+        assert leak not in body, f"{leak!r} leaked into the wire schema"

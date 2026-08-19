@@ -51,8 +51,8 @@ from aiogram.types import User as TgUser
 from sentinel.bot.app import build_dispatcher
 from sentinel.bot.auth import AuthMiddleware
 from sentinel.bot.context import BotContext
-from sentinel.bot.keyboards import AdminCallback
-from sentinel.bot.menu import OWNER_COMMANDS
+from sentinel.bot.keyboards import AdminAction, AdminCallback, WatchlistCallback
+from sentinel.bot.menu import MEMBER_COMMANDS, OWNER_COMMANDS
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
 from tests.bot_double import (
@@ -80,6 +80,19 @@ OWNER_COMMAND_ARGS: dict[str, str] = {
     "approve": f" {MEMBER}",
     "reject": f" {MEMBER}",
     "suspend": f" {MEMBER}",
+}
+
+
+#: The member half. ``/leave`` opens a confirmation rather than acting, which is
+#: still a handler running — reachability is the question here, not effect.
+MEMBER_COMMAND_ARGS: dict[str, str] = {
+    "help": "",
+    "capital": " 5000",
+    "risk": " 0.75",
+    "positions": "",
+    "stats": "",
+    "request": " SOLUSDT",
+    "leave": "",
 }
 
 
@@ -304,3 +317,88 @@ async def test_member_commands_still_work_for_both(dispatcher: Dispatcher, user_
     """
     response = await feed(dispatcher, message_update("/help", user_id=user_id))
     assert reached_a_handler(response)
+
+
+# --------------------------------------------------------------------------- #
+# The member half — audit item 2 (journal/M8_2_REPORT.md §1a)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("command", sorted(MEMBER_COMMAND_ARGS))
+async def test_every_member_command_is_reachable_by_a_member(
+    dispatcher: Dispatcher, command: str
+) -> None:
+    """The other half of the surface, covered because M8.3 landed on it.
+
+    §1a's audit listed the member commands as having no positive test against real
+    machinery — the same hole that hid the dead admin router, one router over. They
+    do not sit behind a root filter today, so nothing is known to be broken; that is
+    exactly the state the admin router was believed to be in.
+    """
+    text = f"/{command}{MEMBER_COMMAND_ARGS[command]}"
+    response = await feed(dispatcher, message_update(text, user_id=MEMBER))
+    assert reached_a_handler(response), f"/{command} from a member reached no handler"
+
+
+def test_the_reachability_list_covers_every_advertised_member_command() -> None:
+    """The meta-test, now over both halves of the menu.
+
+    ``MEMBER_COMMANDS`` is what ``setMyCommands`` publishes into an approved
+    member's ``/`` menu. Pairing it with the owner meta-test means no command can be
+    advertised to anybody without something proving it reaches a handler.
+    """
+    assert set(MEMBER_COMMAND_ARGS) == {command.command for command in MEMBER_COMMANDS}
+
+
+async def test_request_is_reachable_and_the_owner_button_answers_it(
+    dispatcher: Dispatcher, store: FakeStore
+) -> None:
+    """M8.3 end to end through the real dispatcher: member asks, owner approves.
+
+    The owner half sits behind the same ``OwnerOnly`` root filter that silently
+    dropped every admin update on 2026-08-19, so it gets the same treatment as the
+    commands: a positive test, against the real machinery.
+    """
+    asked = await feed(dispatcher, message_update("/request ATOMUSDT", user_id=MEMBER))
+    assert reached_a_handler(asked)
+    assert "ATOMUSDT" in store.watchlist_requests, "the request was not stored"
+
+    update = Update(
+        update_id=3,
+        callback_query={  # type: ignore[arg-type]
+            "id": "cb-wl",
+            "from": {"id": OWNER, "is_bot": False, "first_name": "Some"},
+            "chat_instance": "ci-1",
+            "data": WatchlistCallback(symbol="ATOMUSDT", action=AdminAction.APPROVE).pack(),
+            "message": {
+                "message_id": 3,
+                "date": int(datetime.now(UTC).timestamp()),
+                "chat": {"id": OWNER, "type": "private"},
+                "text": "request",
+            },
+        },
+    )
+    answered = await feed(dispatcher, update)
+    assert reached_a_handler(answered), "the watchlist Approve button reached no handler"
+    assert "ATOMUSDT" not in store.watchlist_requests, "the request is still pending"
+    assert "ATOMUSDT" in store.settings["watchlist"]
+
+
+async def test_the_watchlist_button_is_silent_for_a_member(dispatcher: Dispatcher) -> None:
+    """It decides what the owner pays for, so it is owner-only like every admin button."""
+    update = Update(
+        update_id=4,
+        callback_query={  # type: ignore[arg-type]
+            "id": "cb-wl2",
+            "from": {"id": MEMBER, "is_bot": False, "first_name": "Some"},
+            "chat_instance": "ci-2",
+            "data": WatchlistCallback(symbol="ATOMUSDT", action=AdminAction.APPROVE).pack(),
+            "message": {
+                "message_id": 4,
+                "date": int(datetime.now(UTC).timestamp()),
+                "chat": {"id": MEMBER, "type": "private"},
+                "text": "request",
+            },
+        },
+    )
+    assert not reached_a_handler(await feed(dispatcher, update))

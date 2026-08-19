@@ -164,6 +164,51 @@ class RiskStateRow(Base):
     )
 
 
+class WatchlistRequestRow(Base):
+    """A member asking for a symbol to join the shared watchlist (M8.3).
+
+    The watchlist decides what the deep analyst is pointed at, and an analyst call
+    is ~$0.28 on the owner's key. So a member cannot edit it: they ask, and the
+    owner approves. This table is the asking.
+
+    **One PENDING request per symbol is a database guarantee**, not a check in a
+    handler — ``uq_watchlist_requests_one_pending`` is a partial unique index over
+    ``symbol WHERE status = 'PENDING'``, so a duplicate is an ``ON CONFLICT DO
+    NOTHING`` that creates nothing and notifies nobody. Same reasoning as
+    ``uq_users_single_owner`` (M8.1): two people asking for LINKUSDT within a second
+    of each other must not produce two cards, and a counter or a pre-check would be
+    a race.
+
+    Decided rows are **kept**, and the index is partial precisely so they can be:
+    a rejected symbol may be asked for again later, because the reason to hold a
+    symbol is a fact about the market and markets change. Deleting the history
+    instead would make "has anyone asked for this before" unanswerable.
+
+    No foreign keys, matching every other table here.
+    """
+
+    __tablename__ = "watchlist_requests"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: PENDING | APPROVED | REJECTED
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_watchlist_requests_one_pending",
+            "symbol",
+            unique=True,
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+        Index("ix_watchlist_requests_status", "status"),
+    )
+
+
 class IngestionFailureRow(Base):
     """Why a symbol was skipped or a source degraded — auditability (PRD G5)."""
 

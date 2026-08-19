@@ -44,6 +44,7 @@ MEMBER_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand(command="risk", description="Set your risk per trade % — /risk 0.75"),
     BotCommand(command="positions", description="Your open signals, marked to market"),
     BotCommand(command="stats", description="Your win rate, avg R, profit factor"),
+    BotCommand(command="request", description="Ask for a symbol — /request SOLUSDT"),
     BotCommand(command="leave", description="Stop receiving signals and remove yourself"),
 )
 
@@ -87,13 +88,17 @@ class SupportsCommands(Protocol):
 def commands_for(*, owner: bool) -> tuple[BotCommand, ...]:
     """One caller's menu.
 
-    ``/leave`` is dropped for the owner: the handler refuses it — an owner who left
-    would leave the system with users and nobody able to operate it — and offering a
-    command that always says no is worse than not offering it.
+    Two are dropped for the owner, for the same reason. ``/leave``: the handler
+    refuses it — an owner who left would leave the system with users and nobody able
+    to operate it. ``/request`` (M8.3): the owner has ``/watchlist add``, which does
+    the thing directly, and a request path would have them approving their own card.
+    Both handlers still answer if typed; offering a command that always redirects is
+    worse than not offering it.
     """
     if not owner:
         return MEMBER_COMMANDS
-    keeps = tuple(command for command in MEMBER_COMMANDS if command.command != "leave")
+    dropped = {"leave", "request"}
+    keeps = tuple(command for command in MEMBER_COMMANDS if command.command not in dropped)
     return (*keeps, *OWNER_COMMANDS)
 
 

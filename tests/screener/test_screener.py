@@ -238,15 +238,23 @@ async def test_screener_never_raises(
     assert isinstance(result.verdicts, tuple)
 
 
-async def test_over_long_reason_is_a_schema_failure(
+async def test_an_over_long_reason_is_truncated_not_a_schema_failure(
     client_factory: ClientFactory,
     app_config: AppConfig,
     snapshot: MarketSnapshot,
     features: SymbolFeatures,
 ) -> None:
-    """specs/PROMPTS.md §1 caps the reason at 200 chars; that bound is ours to hold."""
+    """§1 caps the reason at 200 chars; M8.3 changed *how* the bound is held.
+
+    It used to reject, which discarded the triage of every symbol in the batch and
+    bought a retry — 3 of 8 live batches on 2026-08-19, and made more likely by
+    ``screener_v2`` asking the reason to say what changed. It now truncates, and the
+    call succeeds. Same ruling as the analyst's prose fields (M8.2 #4): a cap that
+    exists for rendering must not be able to throw away an answer.
+    """
     client = client_factory([message_payload(batch(verdict_json("BTCUSDT", reason="x" * 500)))])
     result = await Screener(client, app_config).screen([snapshot], {"BTCUSDT": features})
 
-    assert result.degraded is True
-    assert "schema error" in (result.calls[0].error or "")
+    assert result.degraded is False
+    assert result.calls[0].error is None
+    assert len(result.verdicts[0].reason) == 200

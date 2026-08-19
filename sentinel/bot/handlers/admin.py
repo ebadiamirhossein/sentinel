@@ -36,6 +36,8 @@ from sentinel.bot.cards import (
     status_card,
     users_card,
     watchlist_card,
+    watchlist_full_card,
+    watchlist_request_decided_card,
     welcome_card,
 )
 from sentinel.bot.context import BotContext
@@ -43,11 +45,18 @@ from sentinel.bot.formatting import escape
 from sentinel.bot.keyboards import (
     AdminAction,
     AdminCallback,
+    WatchlistCallback,
     acknowledge_keyboard,
     resume_keyboard,
 )
 from sentinel.bot.menu import clear_for, publish_for
-from sentinel.bot.models import SignalDecision, UserAccount, UserStatus
+from sentinel.bot.models import (
+    SignalDecision,
+    UserAccount,
+    UserStatus,
+    WatchlistRequest,
+    WatchlistRequestStatus,
+)
 from sentinel.bot.outbound import SupportsBot
 from sentinel.bot.readmodels import spend_view, user_view
 from sentinel.bot.runtime import (
@@ -471,6 +480,17 @@ async def watchlist(
             if parsed in current:
                 await message.answer(f"{escape(parsed)} is already on the watchlist.")
                 return
+            # M8.3: the cap binds the owner too (owner ruling 2026-08-19). It is a
+            # spend control — every symbol is screened every cycle and may buy a
+            # ~$0.28 analyst call — and a cap that applied only to members would not
+            # be a cap. It is the owner's own config value to raise.
+            if len(current) >= config.watchlist_max_symbols:
+                await message.answer(
+                    f"❌ The watchlist is full ({len(current)} of "
+                    f"{config.watchlist_max_symbols}). Remove a symbol first, or raise "
+                    "<code>watchlist_max_symbols</code> in config.yaml."
+                )
+                return
             known = await ctx.repositories.instruments(session).get(parsed)
             unknown = await verify_symbol(parsed, known, ctx.symbol_checker)
             if isinstance(unknown, Invalid):
@@ -578,3 +598,122 @@ async def settings(message: Message, ctx: BotContext, actor: Actor) -> None:
 
 
 __all__ = ["USAGE", "admin_router"]
+
+
+@admin_router.callback_query(WatchlistCallback.filter())
+async def watchlist_request_button(
+    query: CallbackQuery,
+    callback_data: WatchlistCallback,
+    ctx: BotContext,
+    actor: Actor,
+    bot: SupportsBot,
+) -> None:
+    """Approve/Decline on a member's ``/request`` (M8.3).
+
+    Behind ``OwnerOnly`` on this router, like every other admin button: the payload
+    is client-supplied and a forwarded card carries its buttons with it.
+
+    **The cap is re-checked here, not only at request time**, and that is the point
+    of doing the work twice. Three requests can be pending against two free slots,
+    and each was legal when it was made. Only the moment of approval knows what the
+    watchlist actually holds.
+
+    A refusal here leaves the request **PENDING** rather than rejecting it (owner
+    ruling 2026-08-19). Nobody decided against the symbol — the list ran out of room
+    while it waited — so the owner can make space and approve the same card, instead
+    of the member having to ask again for something they were about to be given.
+    Both people are told which of the two happened.
+    """
+    symbol = callback_data.symbol
+    approved = callback_data.action is AdminAction.APPROVE
+    now = ctx.clock.now()
+
+    async with ctx.database.session() as session:
+        requests = ctx.repositories.watchlist_requests(session)
+        pending = await requests.pending_for(symbol)
+        if pending is None:
+            await query.answer("That request has already been answered.", show_alert=True)
+            return
+
+        settings_repo = ctx.repositories.settings(session)
+        stored = await settings_repo.all()
+        config = effective_config(ctx.settings, stored)
+        current: tuple[str, ...] = tuple(config.watchlist)
+        cap = config.watchlist_max_symbols
+
+        if approved and symbol not in current and len(current) >= cap:
+            await _watchlist_full(bot, ctx, pending, cap=cap)
+            await query.answer(f"Watchlist is full ({cap}). Still pending.", show_alert=True)
+            return
+
+        decided = await requests.decide(
+            symbol,
+            WatchlistRequestStatus.APPROVED if approved else WatchlistRequestStatus.REJECTED,
+            by=actor.user_id,
+            at=now,
+        )
+        if approved and symbol not in current:
+            # The same write ``/watchlist add`` makes, so the ``config_changes`` row
+            # is identical whether a symbol arrived by hand or by button.
+            await settings_repo.set(WATCHLIST, [*current, symbol], at=now, user_id=actor.user_id)
+        await session.commit()
+
+    if decided is None:  # pragma: no cover — it was pending a moment ago
+        return
+
+    log.info(
+        "bot.watchlist_request_decided",
+        symbol=symbol,
+        approved=approved,
+        by_user_id=actor.user_id,
+        requested_by=decided.requested_by_user_id,
+    )
+    await _tell_requester(
+        bot,
+        ctx,
+        decided.requested_by_user_id,
+        watchlist_request_decided_card(symbol, approved=approved),
+    )
+    await query.answer("Added." if approved else "Declined.")
+    if query.message is None:  # pragma: no cover — a card too old to still be there
+        return
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+    except Exception:  # pragma: no cover — an un-editable card is not an error
+        log.info("bot.card_not_edited", symbol=symbol)
+
+
+async def _watchlist_full(
+    bot: SupportsBot, ctx: BotContext, request: WatchlistRequest, *, cap: int
+) -> None:
+    """Tell both sides the list filled up, and that the request survives."""
+    await _tell_requester(
+        bot,
+        ctx,
+        request.requested_by_user_id,
+        watchlist_full_card(request.symbol, cap=cap, requester=True),
+    )
+    owner_id = ctx.settings.secrets.owner_user_id
+    async with ctx.database.session() as session:
+        owner = await ctx.repositories.users(session).owner()
+    if owner is not None:
+        owner_id = owner.telegram_user_id
+    if owner_id is None:  # pragma: no cover — an owner pressed the button to get here
+        return
+    await _tell_requester(
+        bot, ctx, owner_id, watchlist_full_card(request.symbol, cap=cap, requester=False)
+    )
+
+
+async def _tell_requester(bot: SupportsBot, ctx: BotContext, user_id: int, text: str) -> None:
+    """Deliver one notice, and never let a blocked chat fail the owner's button."""
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=text,
+            parse_mode=ctx.settings.config.telegram.parse_mode,
+            reply_markup=None,  # type: ignore[arg-type]
+            reply_to_message_id=None,
+        )
+    except Exception:
+        log.warning("bot.notice_undeliverable", user_id=user_id, exc_info=True)

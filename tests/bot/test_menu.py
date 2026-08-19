@@ -41,16 +41,28 @@ def test_the_member_menu_carries_no_owner_command() -> None:
 
 def test_the_member_menu_is_exactly_what_a_member_may_run() -> None:
     """The owner ruling on scope, restated as the thing a person actually sees."""
-    assert names(MEMBER_COMMANDS) == {"help", "capital", "risk", "positions", "stats", "leave"}
+    assert names(MEMBER_COMMANDS) == {
+        "help",
+        "capital",
+        "risk",
+        "positions",
+        "stats",
+        "request",
+        "leave",
+    }
 
 
-def test_the_owner_gets_both_halves_except_leave() -> None:
+def test_the_owner_gets_both_halves_except_leave_and_request() -> None:
     owner = names(commands_for(owner=True))
     assert names(OWNER_COMMANDS) <= owner
-    assert names(MEMBER_COMMANDS) - {"leave"} <= owner
+    assert names(MEMBER_COMMANDS) - {"leave", "request"} <= owner
     assert "leave" not in owner, (
         "the handler refuses an owner who tries to leave, and a command that always "
         "says no should not be offered"
+    )
+    assert "request" not in owner, (
+        "the owner has /watchlist add; a request path would have them approving "
+        "their own card (M8.3)"
     )
 
 

@@ -23,16 +23,26 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from sentinel.bot.auth import Actor
-from sentinel.bot.cards import positions_card, stats_card
+from sentinel.bot.cards import (
+    positions_card,
+    stats_card,
+    watchlist_request_ack_card,
+    watchlist_request_card,
+)
 from sentinel.bot.context import BotContext
 from sentinel.bot.formatting import escape
+from sentinel.bot.keyboards import watchlist_request_keyboard
 from sentinel.bot.models import SignalDecision
+from sentinel.bot.outbound import SupportsBot
 from sentinel.bot.readmodels import position_view, stats_view
 from sentinel.bot.runtime import (
     Invalid,
+    effective_config,
     parse_capital,
     parse_risk_pct,
+    parse_symbol,
     risk_pct_of,
+    verify_symbol,
 )
 from sentinel.core.logging import get_logger
 from sentinel.risk.models import TradePlan
@@ -167,3 +177,100 @@ async def stats(message: Message, command: CommandObject, ctx: BotContext, actor
 
 
 __all__ = ["commands_router"]
+
+
+@commands_router.message(Command("request"))
+async def request(
+    message: Message,
+    command: CommandObject,
+    ctx: BotContext,
+    actor: Actor,
+    bot: SupportsBot,
+) -> None:
+    """§3 ``/request SOLUSDT`` — ask the owner to watch a symbol (M8.3).
+
+    **Members ask; they do not add.** The watchlist decides what the shared deep
+    analyst is pointed at, every symbol on it is screened every cycle, and each one
+    can buy a ~$0.28 analyst call on the owner's key. A member editing it directly
+    would be spending somebody else's budget, so ``/watchlist add|remove`` stays
+    owner-only and this is the door.
+
+    Validation is the *same* path ``/watchlist add`` uses — ``parse_symbol``, then
+    the cached ``instrument_meta`` row, then one keyless public call for a symbol
+    nobody has ingested yet. Checking here rather than at approval time means a typo
+    is answered in a second by the person who made it, instead of arriving as a card
+    the owner cannot evaluate.
+
+    The refusals are four distinct messages on purpose. "Not a symbol", "already
+    watched", "already asked for" and "the list is full" are four different things to
+    do next, and a member should never have to guess which one happened.
+    """
+    if actor.account is not None and actor.account.is_owner:
+        # The owner has /watchlist add. Offering both would be two ways to do one
+        # thing, and the request path would make them approve their own card.
+        await message.answer(
+            "You own the watchlist — use <code>/watchlist add SOLUSDT</code> directly."
+        )
+        return
+
+    if not command.args:
+        await message.answer("❌ Usage: <code>/request SOLUSDT</code>")
+        return
+
+    parsed = parse_symbol(command.args.strip().split()[0])
+    if isinstance(parsed, Invalid):
+        await message.answer(f"❌ {escape(parsed.message)}")
+        return
+
+    now = ctx.clock.now()
+    async with ctx.database.session() as session:
+        stored = await ctx.repositories.settings(session).all()
+        config = effective_config(ctx.settings, stored)
+        current: tuple[str, ...] = tuple(config.watchlist)
+
+        if parsed in current:
+            await message.answer(f"{escape(parsed)} is already on the watchlist.")
+            return
+        if len(current) >= config.watchlist_max_symbols:
+            await message.answer(
+                f"❌ The watchlist is full ({len(current)} of "
+                f"{config.watchlist_max_symbols}). Ask the owner to make room first."
+            )
+            return
+
+        known = await ctx.repositories.instruments(session).get(parsed)
+        unknown = await verify_symbol(parsed, known, ctx.symbol_checker)
+        if isinstance(unknown, Invalid):
+            await message.answer(f"❌ {escape(unknown.message)}")
+            return
+
+        requests = ctx.repositories.watchlist_requests(session)
+        created = await requests.request(parsed, user_id=actor.user_id, at=now)
+        owner = await ctx.repositories.users(session).owner()
+        await session.commit()
+
+    if created is None:
+        # Somebody already asked. Deliberately the same wording whoever they were:
+        # who else uses this bot is not a member's business (M8.1 §6's boundary).
+        await message.answer(f"{escape(parsed)} has already been requested and is waiting.")
+        return
+
+    log.info("bot.watchlist_requested", symbol=parsed, user_id=actor.user_id)
+    await message.answer(watchlist_request_ack_card(parsed))
+
+    if owner is None:  # pragma: no cover — a database with users always has an owner
+        log.warning("bot.no_owner", symbol=parsed, detail="watchlist request stored, nobody to ask")
+        return
+    await bot.send_message(
+        chat_id=owner.telegram_user_id,
+        text=watchlist_request_card(
+            created,
+            actor.account,
+            ctx.tz,
+            size=len(current),
+            cap=config.watchlist_max_symbols,
+        ),
+        parse_mode=ctx.settings.config.telegram.parse_mode,
+        reply_markup=watchlist_request_keyboard(parsed),
+        reply_to_message_id=None,
+    )

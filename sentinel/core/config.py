@@ -478,6 +478,12 @@ class AppConfig(_Strict):
         "LTCUSDT",
         "ADAUSDT",
     )
+    #: M8.3 — the hard ceiling on watchlist size, binding on ``/watchlist add`` and
+    #: on approving a member's ``/request`` alike. It is a spend control: every
+    #: symbol is screened every cycle and may buy a ~$0.28 analyst call, so the
+    #: watchlist is the single biggest lever on the bill. A cap that applied only to
+    #: other people would not be a cap.
+    watchlist_max_symbols: int = Field(default=15, ge=1)
     schedule: ScheduleConfig = ScheduleConfig()
     market_data: MarketDataConfig = MarketDataConfig()
     ingestion: IngestionConfig = IngestionConfig()

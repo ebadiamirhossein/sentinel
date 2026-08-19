@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from itertools import count
 from typing import Any
 from uuid import UUID
 
@@ -37,6 +38,7 @@ from sentinel.bot.models import (
     UserAccount,
     UserRole,
     UserStatus,
+    WatchlistRequest,
 )
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.llm.spend import SpendTotals
@@ -54,6 +56,7 @@ from sentinel.storage.repositories import (
     SnapshotRepository,
     TelegramMessageRepository,
     UserRepository,
+    WatchlistRequestRepository,
 )
 
 #: Every fake account's ``requested_at``/``decided_at``. Frozen, like the clock.
@@ -252,6 +255,11 @@ class FakeStore:
     users: dict[int, UserAccount] = field(default_factory=dict)
     messages: dict[tuple[UUID, str, int, str], _MessageRow] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
+    #: M8.3 — ``watchlist_requests``, keyed by symbol for the rows that are
+    #: PENDING, exactly as the partial unique index constrains them. Decided
+    #: rows move to ``watchlist_history`` so a symbol can be asked for again.
+    watchlist_requests: dict[str, Any] = field(default_factory=dict)
+    watchlist_history: list[Any] = field(default_factory=list)
     changes: list[tuple[str, Any, Any, int | None]] = field(default_factory=list)
     snapshots: list[_SnapshotRow] = field(default_factory=list)
     instruments: dict[str, InstrumentMeta] = field(default_factory=dict)
@@ -273,11 +281,43 @@ class FakeStore:
         return next((row for row in self.signals.values() if row.plan_id == plan_id), None)
 
 
+class _EmptyRows:
+    """What a SELECT returns from this fake: no rows.
+
+    Most repositories here are replaced by fakes, but a few real ones — the stats
+    queries behind ``/stats``, for instance — are used unmocked by the dispatcher
+    wiring tests, which care about *routing* rather than about results. Answering
+    reads honestly ("this database is empty") lets those run without every test
+    having to wire a double it does not care about.
+    """
+
+    def __iter__(self) -> Any:
+        return iter(())
+
+    def all(self) -> list[Any]:
+        return []
+
+    def scalars(self) -> _EmptyRows:
+        return self
+
+    def first(self) -> None:
+        return None
+
+    def one_or_none(self) -> None:
+        return None
+
+    def scalar_one_or_none(self) -> None:
+        return None
+
+
 class FakeSession:
-    """Only the two calls the publisher makes on a session."""
+    """Only the calls the publisher and the read models make on a session."""
 
     def __init__(self, store: FakeStore) -> None:
         self.store = store
+
+    async def execute(self, *args: Any, **kwargs: Any) -> _EmptyRows:
+        return _EmptyRows()
 
     async def commit(self) -> None:
         self.store.committed += 1
@@ -883,6 +923,49 @@ def session_of(store: FakeStore) -> FakeSession:
     return FakeSession(store)
 
 
+class FakeWatchlistRequestRepository(WatchlistRequestRepository):
+    """M8.3's requests in memory, with the partial unique index modelled.
+
+    ``request`` returns ``None`` when a PENDING row already exists for the symbol —
+    which is the whole contract, and is enforced in Postgres by
+    ``uq_watchlist_requests_one_pending`` rather than by this dict. The real index is
+    asserted against a real database in ``tests/llm/test_persistence.py``.
+    """
+
+    _next_id = count(9000)
+
+    def __init__(self, session: Any) -> None:
+        self._store: FakeStore = session.store
+
+    async def request(self, symbol: str, *, user_id: int, at: datetime) -> Any:
+        if symbol in self._store.watchlist_requests:
+            return None
+        row = WatchlistRequest(
+            id=next(FakeWatchlistRequestRepository._next_id),
+            symbol=symbol,
+            requested_by_user_id=user_id,
+            requested_at=at,
+        )
+        self._store.watchlist_requests[symbol] = row
+        return row
+
+    async def pending_for(self, symbol: str) -> Any:
+        return self._store.watchlist_requests.get(symbol)
+
+    async def pending(self) -> list[Any]:
+        return sorted(self._store.watchlist_requests.values(), key=lambda r: r.requested_at)
+
+    async def decide(self, symbol: str, status: Any, *, by: int, at: datetime) -> Any:
+        row = self._store.watchlist_requests.pop(symbol, None)
+        if row is None:
+            return None
+        decided = row.model_copy(
+            update={"status": status, "decided_at": at, "decided_by_user_id": by}
+        )
+        self._store.watchlist_history.append(decided)
+        return decided
+
+
 def fake_repositories() -> Repositories:
     return Repositories(
         signals=FakeSignalRepository,
@@ -897,6 +980,7 @@ def fake_repositories() -> Repositories:
         events=FakeEventRepository,
         cycles=FakeCycleRepository,
         llm_calls=FakeLLMCallRepository,
+        watchlist_requests=FakeWatchlistRequestRepository,
     )
 
 

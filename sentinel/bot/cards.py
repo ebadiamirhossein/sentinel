@@ -27,7 +27,13 @@ from zoneinfo import ZoneInfo
 
 from sentinel.analyst.models import Direction
 from sentinel.bot.formatting import DISCLAIMER, escape, local_and_utc, local_date_time
-from sentinel.bot.models import SignalDecision, SignalRecord, UserAccount, UserStatus
+from sentinel.bot.models import (
+    SignalDecision,
+    SignalRecord,
+    UserAccount,
+    UserStatus,
+    WatchlistRequest,
+)
 from sentinel.bot.views import (
     AlertView,
     PositionView,
@@ -735,6 +741,70 @@ def registration_request_card(account: UserAccount, tz: ZoneInfo) -> str:
     )
 
 
+def watchlist_request_card(
+    request: WatchlistRequest, account: UserAccount | None, tz: ZoneInfo, *, size: int, cap: int
+) -> str:
+    """The request that reaches the owner, with Approve/Decline below it (M8.3).
+
+    Carries who asked and what for, and — because approving costs money every cycle
+    from now on rather than once — where the watchlist stands against its cap.
+    """
+    who = "a member" if account is None else _who(account)
+    return (
+        "👁️ <b>Watchlist request</b>\n"
+        f"symbol: <code>{escape(request.symbol)}</code>\n"
+        f"asked by: {who}\n"
+        f"asked: {local_and_utc(request.requested_at, tz)}\n"
+        f"watchlist: {size} of {cap}\n\n"
+        "Approving adds it to the shared watchlist, so it is screened every cycle "
+        "and may buy a deep analysis. Declining tells them, and needs no reason."
+    )
+
+
+def watchlist_request_ack_card(symbol: str) -> str:
+    """What the requester sees when their ask is stored."""
+    return (
+        f"👁️ Asked for <code>{escape(symbol)}</code>.\n\n"
+        "The owner decides what the watchlist covers, since the analysis is shared "
+        "and runs on their budget. You will hear either way."
+    )
+
+
+def watchlist_request_decided_card(symbol: str, *, approved: bool) -> str:
+    """What the requester sees once the owner has answered."""
+    if approved:
+        return (
+            f"✅ <code>{escape(symbol)}</code> was added to the watchlist.\n\n"
+            "It is screened from the next cycle. A signal only follows if the "
+            "analysis and the risk gate both agree — being watched is not a setup."
+        )
+    return f"❌ <code>{escape(symbol)}</code> was not added to the watchlist."
+
+
+def watchlist_full_card(symbol: str, *, cap: int, requester: bool) -> str:
+    """The watchlist filled up between the request and the approval (M8.3).
+
+    Deliberately **not** a rejection, and both people are told so. Nobody decided
+    against this symbol — the list simply ran out of room while the request was
+    waiting — so the row stays PENDING and the owner can approve it after removing
+    something. Turning it into a rejection would make the member ask again for a
+    thing the owner had just tried to give them.
+    """
+    if requester:
+        return (
+            f"⏳ <code>{escape(symbol)}</code> is still waiting.\n\n"
+            f"The watchlist filled up ({cap} of {cap}) before it could be added. "
+            "Your request has not been declined — it stays in the queue."
+        )
+    return (
+        f"⏳ <code>{escape(symbol)}</code> was <b>not</b> added: the watchlist is "
+        f"full ({cap} of {cap}).\n\n"
+        "The request is still <b>pending</b>, not declined. Remove a symbol with "
+        f"/watchlist remove, or raise <code>watchlist_max_symbols</code>, then "
+        "approve it again."
+    )
+
+
 def users_card(views: Sequence[UserView], tz: ZoneInfo) -> str:
     """§7 ``/users`` — enough to operate the system, and nothing more.
 
@@ -790,5 +860,9 @@ __all__ = [
     "tracker_update_card",
     "users_card",
     "watchlist_card",
+    "watchlist_full_card",
+    "watchlist_request_ack_card",
+    "watchlist_request_card",
+    "watchlist_request_decided_card",
     "welcome_card",
 ]

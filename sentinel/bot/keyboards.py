@@ -118,6 +118,7 @@ def manage_row(signal_id: UUID) -> list[InlineKeyboardButton]:
 ACK_PREFIX = "ack"
 ADMIN_PREFIX = "adm"
 LEAVE_PREFIX = "leave"
+WATCHLIST_PREFIX = "wl"
 
 
 class AckCallback(CallbackData, prefix=ACK_PREFIX):
@@ -146,6 +147,25 @@ class AdminCallback(CallbackData, prefix=ADMIN_PREFIX):
     """
 
     user_id: int
+    action: AdminAction
+
+
+class WatchlistCallback(CallbackData, prefix=WATCHLIST_PREFIX):
+    """The owner's Approve/Reject buttons on a member's ``/request`` (M8.3).
+
+    Carries the **symbol**, not a request id: the handler resolves the row by
+    ``(symbol, PENDING)``, so a second tap on an already-answered card finds nothing
+    and changes nothing, exactly as :class:`AdminCallback` does for a standing.
+
+    Telegram caps ``callback_data`` at 64 bytes. The prefix is two characters and
+    ``parse_symbol`` bounds a symbol at 20, so the packed payload cannot approach it.
+
+    Like every other callback here, the payload is client-supplied and proves
+    nothing: the buttons live on ``admin_router``, behind ``OwnerOnly``, because a
+    request card forwarded to somebody else carries its buttons along with it.
+    """
+
+    symbol: str
     action: AdminAction
 
 
@@ -181,6 +201,28 @@ def approval_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="❌ Reject",
                     callback_data=AdminCallback(user_id=user_id, action=AdminAction.REJECT).pack(),
+                ),
+            ]
+        ]
+    )
+
+
+def watchlist_request_keyboard(symbol: str) -> InlineKeyboardMarkup:
+    """Approve/Reject under a member's watchlist request (M8.3)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Add to watchlist",
+                    callback_data=WatchlistCallback(
+                        symbol=symbol, action=AdminAction.APPROVE
+                    ).pack(),
+                ),
+                InlineKeyboardButton(
+                    text="❌ Decline",
+                    callback_data=WatchlistCallback(
+                        symbol=symbol, action=AdminAction.REJECT
+                    ).pack(),
                 ),
             ]
         ]
@@ -233,6 +275,7 @@ __all__ = [
     "ManageAction",
     "ManageCallback",
     "ResumeCallback",
+    "WatchlistCallback",
     "acknowledge_keyboard",
     "approval_keyboard",
     "decision_keyboard",
@@ -240,4 +283,5 @@ __all__ = [
     "leave_keyboard",
     "manage_row",
     "resume_keyboard",
+    "watchlist_request_keyboard",
 ]

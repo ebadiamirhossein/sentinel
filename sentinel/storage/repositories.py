@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,8 @@ from sentinel.bot.models import (
     UserAccount,
     UserRole,
     UserStatus,
+    WatchlistRequest,
+    WatchlistRequestStatus,
 )
 from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
 from sentinel.llm.models import LLMCall
@@ -53,6 +55,7 @@ from sentinel.storage.models import (
     SignalRow,
     TelegramMessageRow,
     UserRow,
+    WatchlistRequestRow,
 )
 
 #: Snapshot parts stored as JSONB on the snapshot row.
@@ -344,6 +347,88 @@ class RiskStateRepository:
                 },
             )
         )
+
+
+class WatchlistRequestRepository:
+    """Member requests for the shared watchlist (M8.3)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def request(self, symbol: str, *, user_id: int, at: datetime) -> WatchlistRequest | None:
+        """Create a PENDING row. ``None`` means one is already pending for this symbol.
+
+        The no-op is the **database's** decision, not a pre-check: the partial unique
+        index over ``symbol WHERE status = 'PENDING'`` turns a duplicate into an
+        ``ON CONFLICT DO NOTHING`` that creates nothing and returns nothing. Two
+        members asking for LINKUSDT in the same second therefore produce one row and
+        one card, with no counter to lose in a restart and no window to race in.
+
+        ``index_elements`` alone cannot name a *partial* index, so the predicate is
+        repeated in ``index_where`` — Postgres matches the conflict target against
+        the index definition, and omitting it would raise "no unique or exclusion
+        constraint matching the ON CONFLICT specification" at runtime rather than here.
+        """
+        statement = (
+            insert(WatchlistRequestRow)
+            .values(
+                symbol=symbol,
+                requested_by_user_id=user_id,
+                requested_at=at,
+                status=WatchlistRequestStatus.PENDING.value,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["symbol"],
+                index_where=text("status = 'PENDING'"),
+            )
+            .returning(WatchlistRequestRow)
+        )
+        row = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if row is None else watchlist_request(row)
+
+    async def pending_for(self, symbol: str) -> WatchlistRequest | None:
+        statement = select(WatchlistRequestRow).where(
+            WatchlistRequestRow.symbol == symbol,
+            WatchlistRequestRow.status == WatchlistRequestStatus.PENDING.value,
+        )
+        row = (await self._session.execute(statement)).scalars().first()
+        return None if row is None else watchlist_request(row)
+
+    async def pending(self) -> list[WatchlistRequest]:
+        statement = (
+            select(WatchlistRequestRow)
+            .where(WatchlistRequestRow.status == WatchlistRequestStatus.PENDING.value)
+            .order_by(WatchlistRequestRow.requested_at)
+        )
+        rows = (await self._session.execute(statement)).scalars().all()
+        return [watchlist_request(row) for row in rows]
+
+    async def decide(
+        self,
+        symbol: str,
+        status: WatchlistRequestStatus,
+        *,
+        by: int,
+        at: datetime,
+    ) -> WatchlistRequest | None:
+        """Resolve the pending request for ``symbol``. ``None`` if there is none.
+
+        Scoped to the PENDING row rather than to an id, so a second tap on a card
+        that was already answered finds nothing and changes nothing — the same
+        posture as the registration buttons.
+        """
+        statement = select(WatchlistRequestRow).where(
+            WatchlistRequestRow.symbol == symbol,
+            WatchlistRequestRow.status == WatchlistRequestStatus.PENDING.value,
+        )
+        row = (await self._session.execute(statement)).scalars().first()
+        if row is None:
+            return None
+        row.status = status.value
+        row.decided_at = at
+        row.decided_by_user_id = by
+        await self._session.flush()
+        return watchlist_request(row)
 
 
 class IngestionFailureRepository:
@@ -1160,6 +1245,19 @@ def user_account(row: UserRow) -> UserAccount:
             until=row.paused_until,
         ),
         notice_at=row.notice_at,
+    )
+
+
+def watchlist_request(row: WatchlistRequestRow) -> WatchlistRequest:
+    """``watchlist_requests`` row → contract. Pure, like ``user_account``."""
+    return WatchlistRequest(
+        id=row.id,
+        symbol=row.symbol,
+        requested_by_user_id=row.requested_by_user_id,
+        requested_at=row.requested_at,
+        status=WatchlistRequestStatus(row.status),
+        decided_at=row.decided_at,
+        decided_by_user_id=row.decided_by_user_id,
     )
 
 
