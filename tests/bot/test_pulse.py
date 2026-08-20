@@ -104,7 +104,13 @@ def verdict(symbol: str, *, interesting: bool = True, reason: str = "a reason") 
     )
 
 
-def report_row(symbol: str, *, status: str = "CANDIDATE", thesis: str = "a thesis") -> Any:
+def report_row(
+    symbol: str,
+    *,
+    status: str = "CANDIDATE",
+    thesis: str = "a thesis",
+    setup_type: str = "trend_pullback",
+) -> Any:
     return AnalystReportRow(
         id=uuid4(),
         cycle_id=CYCLE,
@@ -115,7 +121,7 @@ def report_row(symbol: str, *, status: str = "CANDIDATE", thesis: str = "a thesi
         model="claude-fable-5",
         prompt_version="fable_v1",
         candidate_status=status,
-        setup_type="trend_pullback",
+        setup_type=setup_type,
         direction="long",
         confidence=78,
         thesis=thesis,
@@ -468,6 +474,24 @@ def test_a_dry_run_cycle_is_flagged(tz: ZoneInfo) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def test_the_dropped_count_is_shown_inside_the_section_it_belongs_to(tz: ZoneInfo) -> None:
+    """The note has to sit under the rows it is about.
+
+    Collected at the foot of the card it would be a footnote about a list the reader
+    has already scrolled past — and with four sections, a reader would have to work
+    out which one it referred to.
+    """
+    card = view(
+        tz,
+        screener=[verdict(f"SYM{index}USDT") for index in range(MAX_ROWS + 2)],
+        reports=[report_row("SOLUSDT")],
+    )
+    body = card.splitlines()
+    note = next(index for index, line in enumerate(body) if "more, not shown" in line)
+    analyst = next(index for index, line in enumerate(body) if "🧠" in line)
+    assert note < analyst, "the escalated section's note landed under a later section"
+
+
 def test_a_long_list_is_capped_and_says_how_much_it_dropped(tz: ZoneInfo) -> None:
     """journal/M8_2_REPORT.md's rule. A bounded view that does not say it is bounded
     reads as "that was everything", which on this card is the one lie it must not
@@ -601,6 +625,43 @@ def test_the_day_counts_verdicts_and_skips_by_kind(tz: ZoneInfo) -> None:
     )
     assert "RECENTLY_ANALYSED x2" in card
     assert "CANDIDATE x1" in card and "WATCHLIST x1" in card
+
+
+def test_a_verdict_with_no_setup_does_not_print_the_word_none(tz: ZoneInfo) -> None:
+    """``none`` is a real ``SetupType`` and is what a WATCHLIST verdict carries.
+
+    Found on live data: "WATCHLIST · conf 56 · none long" reads as a missing value
+    rather than as the correct statement that there is no setup — which is already
+    what WATCHLIST says.
+    """
+    card = view(tz, reports=[report_row("BTCUSDT", status="WATCHLIST", setup_type="none")])
+    assert "conf 78 long" in card
+    assert "none" not in card
+
+
+def test_a_window_that_straddles_a_go_live_says_how_many_were_rehearsals(
+    tz: ZoneInfo,
+) -> None:
+    """Found on live data on the day this shipped: the window held both.
+
+    ``any()`` would have claimed nothing in it was published, which was false; no
+    banner at all would have hidden that part of the counts came from cycles that
+    were never going to reach anybody.
+    """
+    card = pulse_day_card(
+        day_view(cycles=[cycle_row(dry_run=True), cycle_row(), cycle_row()], started=3), tz
+    )
+    assert "1 of these were rehearsals" in card
+    assert "nothing in this window was published" not in card
+
+
+def test_a_window_that_was_all_rehearsal_says_nothing_was_published(tz: ZoneInfo) -> None:
+    card = pulse_day_card(day_view(cycles=[cycle_row(dry_run=True)] * 3, started=3), tz)
+    assert "nothing in this window was published" in card
+
+
+def test_a_live_window_carries_no_rehearsal_banner_at_all(tz: ZoneInfo) -> None:
+    assert "rehearsal" not in pulse_day_card(day_view(cycles=[cycle_row()], started=1), tz)
 
 
 def test_an_empty_day_says_so_rather_than_printing_four_empty_sections(tz: ZoneInfo) -> None:

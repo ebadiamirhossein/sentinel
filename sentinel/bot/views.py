@@ -320,7 +320,10 @@ class PulseDayView:
     since: datetime
     cycles_completed: int
     cycles_started: int
-    dry_run: bool
+    #: How many of the completed cycles were rehearsals. A **count**, not a flag: a
+    #: window can straddle a go-live, and "some of this published and some did not"
+    #: is a different sentence from either "all" or "none".
+    dry_run_cycles: int
     escalations: tuple[tuple[str, int], ...] = ()
     verdicts: tuple[tuple[str, int], ...] = ()
     skips: tuple[tuple[str, int], ...] = ()

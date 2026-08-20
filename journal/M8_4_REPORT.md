@@ -1,8 +1,8 @@
 # M8.4 — `/pulse`, the pipeline transparency command
 
 **Date:** 2026-08-20
-**Status:** DONE — `make check` green (**1260** hermetic tests, **1306** with the
-Postgres suite), `mypy --strict` clean over 216 files, 100% branch coverage on
+**Status:** DONE and **deployed** (`f767b3f`, then `POLISH` — §9a) — `make check`
+green (**1265** hermetic tests, **1311** with the Postgres suite), `mypy --strict` clean over 216 files, 100% branch coverage on
 `sentinel/risk/` **without touching a line of it**, and **no migration**: this
 milestone adds no table, no column and no write of any kind.
 
@@ -21,7 +21,7 @@ Everybody can now see what the pipeline did. Nobody can see anybody else's book.
 | `sentinel/bot/menu.py` | `/pulse` in `MEMBER_COMMANDS`; the owner inherits it through `commands_for` |
 | `sentinel/bot/context.py` | `Repositories` gains `reports` and `gate_decisions` |
 | `sentinel/storage/repositories.py` | Five read-only queries + the pure `screener_verdicts_of` |
-| Tests | `tests/bot/test_pulse.py` (62), 7 in `test_dispatcher_wiring.py`, 8 Postgres round-trips, 1 in `test_menu.py`, doubles in `bot_double.py` |
+| Tests | `tests/bot/test_pulse.py` (67), 7 in `test_dispatcher_wiring.py`, 8 Postgres round-trips, 1 in `test_menu.py`, doubles in `bot_double.py` |
 | Docs | `TELEGRAM_UX.md` §3's `/pulse` row superseded + a new §3b; `MILESTONES.md` M8.4 |
 
 ## 2. Why this command exists, and why it is not `/status` for members
@@ -231,11 +231,66 @@ filters had never run in the hermetic suite. A typo in any of them is a
 is invited to take on the day it ships. Eight tests, including the empty-id-list guard
 each query carries.
 
+**Deployed and verified from the box**: commit `f767b3f`, both containers healthy,
+`/health` ok, schema still `0009` (no migration), no error or traceback in the logs
+beyond the `uvicorn.error` logger's own name, and `getMyCommands` returning `/pulse`
+on the owner's menu with the stranger's menu unchanged at `start` + `help`.
+
 **One bug the tests caught before a human could.** The first draft capped each section at
 10 rows with a 150-character thesis, and a full card came out at **5821 characters** —
 over Telegram's limit, which means not delivered at all. Caps are now 8 rows, 110
 characters of thesis and 90 of screener reason, and the test that found it is written to
 fail again if any of the three is raised.
+
+## 9a. What the live database found that no fixture could
+
+Deployed at 09:56 UTC, healthy in 10s, `/health` clean, `bot.polling_started`, and
+`getMyCommands` confirming `/pulse` on the owner's menu and the stranger's menu still
+`start` + `help`. The `/` menu could be verified from here for once, because it is a
+read: journal/M8_2_REPORT.md §1a audit item 4 has listed `publish_menu` as
+"verified live once by hand; nothing automates it".
+
+Then both cards were rendered **against the production database** inside the app
+container — a read-only run of the same view builders the handler calls. Three things
+came back wrong that the fixtures had no way to produce, and all three are now fixed
+with a test each.
+
+**1. `setup_type` is `none` on a WATCHLIST verdict, and it printed.**
+
+```
+BTCUSDT — WATCHLIST · conf 56 · none long
+```
+
+`SetupType.NONE` is a real member and it is the correct value for a verdict that
+found no setup — which is already what `WATCHLIST` says. Printed, it reads as a
+missing field. The setup type is now omitted when it is `none`. Every fixture in the
+suite used a real setup type, because every fixture was built from a `CANDIDATE`.
+
+**2. The 24h window straddled the go-live, and the banner lied.**
+
+The window held both dry-run cycles and live ones — M8.3 went live inside it — and
+`dry_run=any(...)` rendered *"nothing in this window was published"*, which was false.
+`all(...)` would have been the opposite lie: no banner, and no hint that part of the
+counts came from rehearsals that were never going to reach anybody. It is a **count**
+now, not a flag, with three sentences: all rehearsal, none, and *"1 of these were
+rehearsals and published nothing"*. Only a window spanning a go-live shows the third,
+which is why nothing predicted it.
+
+**3. The truncation note landed after the money line.**
+
+```
+💵 Spend — $1.82 today of $10
++1 more under "escalated", not shown.
+```
+
+Collected at the foot of the card, the note is a footnote about a list the reader
+scrolled past two sections ago — and with four sections it does not say enough about
+*which*. It is rendered inside its own section now, directly under the rows it is
+about, and the test asserts the position rather than only the presence.
+
+None of the three is a correctness bug, and that is the point worth carrying: they are
+all *legibility* bugs, and legibility is the entire product of this command. A fixture
+can prove a card contains the right facts; only real data shows how it reads.
 
 ## 9. Where this lands relative to the §1a audit
 
@@ -277,7 +332,9 @@ roles, against real machinery.
 The live Telegram round trip, which cannot be verified from here — one bot token, one
 long-polling client, and the server holds it (journal/M8_REPORT.md §9a):
 
-1. `/pulse` and `/pulse 24h` from your own chat.
+1. `/pulse` and `/pulse 24h` from your own chat. Both were rendered against the
+   production database from inside the container (§9a), so the queries and the data
+   are known good — what is unverified is only the Telegram round trip itself.
 2. Type `/` and confirm `/pulse` is in the menu (it is republished at every start).
 3. If you still have a member account to hand, the same two commands from theirs — the
    card should be identical apart from the missing `💵` line.

@@ -285,11 +285,16 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
     return "\n".join(lines)
 
 
-def _pulse_truncation(view: PulseView | PulseDayView) -> list[str]:
-    """What each section had to leave out. Never a silent cut."""
+def _dropped(view: PulseView | PulseDayView, section: str) -> list[str]:
+    """What one section had to leave out, said **inside that section**.
+
+    Never a silent cut (journal/M8_2_REPORT.md): a bounded list that does not say it
+    is bounded reads as "that was everything", which on a transparency command is the
+    one lie it exists not to tell. Rendered per section rather than collected at the
+    foot of the card, so the note sits under the rows it is actually about.
+    """
     return [
-        f"<i>+{dropped} more under “{section}”, not shown.</i>"
-        for section, dropped in view.truncated
+        f"  <i>+{count} more, not shown.</i>" for name, count in view.truncated if name == section
     ]
 
 
@@ -330,6 +335,7 @@ def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
         lines.append(f"🔎 <b>Screener</b> — {len(view.escalated)} of {view.screened} escalated")
         for row in view.escalated:
             lines.append(f"  {escape(row.symbol)} ({row.direction_hint}) — {escape(row.reason)}")
+        lines.extend(_dropped(view, "escalated"))
         if not view.escalated:
             lines.append("  Nothing looked worth paying to analyse. This is the normal answer.")
 
@@ -338,17 +344,19 @@ def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
         lines.append("⏭️ <b>Not analysed</b>")
         for skip in view.skipped:
             lines.append(f"  {escape(skip.symbol)} — {escape(skip.wording)}")
+        lines.extend(_dropped(view, "not analysed"))
 
     if view.verdicts:
         lines.append("")
         lines.append("🧠 <b>Analyst</b>")
         for verdict in view.verdicts:
+            setup = f" · {escape(verdict.setup_type)}" if verdict.setup_type else ""
             lines.append(
                 f"  {escape(verdict.symbol)} — <b>{verdict.status}</b> · "
-                f"conf {verdict.confidence} · {escape(verdict.setup_type)} "
-                f"{verdict.direction}"
+                f"conf {verdict.confidence}{setup} {verdict.direction}"
             )
             lines.append(f"    <i>{escape(verdict.thesis)}</i>")
+        lines.extend(_dropped(view, "analyst"))
 
     if view.gate:
         lines.append("")
@@ -357,6 +365,7 @@ def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
             mark = "✅ " if decision.approved else ""
             code = "" if decision.approved or not decision.code else f"<b>{decision.code}</b> — "
             lines.append(f"  {escape(decision.symbol)} — {mark}{code}{escape(decision.wording)}")
+        lines.extend(_dropped(view, "gate"))
 
     if view.spend is not None and view.spend_usd is not None:
         at_least = "at least " if view.spend.is_floor else ""
@@ -366,7 +375,6 @@ def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
             f"today of ${view.spend.limit_usd} <i>(estimate, not a bill)</i>"
         )
 
-    lines.extend(_pulse_truncation(view))
     lines.append("")
     lines.append("<i>The pipeline's reasoning, the same for everyone. /pulse 24h for the day.</i>")
     return "\n".join(lines)
@@ -379,8 +387,13 @@ def pulse_day_card(view: PulseDayView, tz: ZoneInfo) -> str:
         f"since {local_and_utc(view.since, tz)}",
         f"{view.cycles_completed} of {view.cycles_started} cycles completed",
     ]
-    if view.dry_run:
+    if view.dry_run_cycles and view.dry_run_cycles == view.cycles_completed:
         lines.append("⚠️ <b>DRY RUN</b> — nothing in this window was published.")
+    elif view.dry_run_cycles:
+        # A window can straddle a go-live. "Nothing was published" would then be
+        # false, and no banner at all would hide that part of these counts came from
+        # rehearsals that were never going to reach anybody.
+        lines.append(f"⚠️ {view.dry_run_cycles} of these were rehearsals and published nothing.")
 
     if not view.cycles_completed:
         lines.append("")
@@ -390,15 +403,19 @@ def pulse_day_card(view: PulseDayView, tz: ZoneInfo) -> str:
     lines.append("")
     lines.append("🔎 <b>Escalated</b>")
     lines.append(_counted(view.escalations, "  nothing was escalated"))
+    lines.extend(_dropped(view, "escalated"))
     lines.append("")
     lines.append("🧠 <b>Analyst verdicts</b>")
     lines.append(_counted(view.verdicts, "  nothing reached the analyst"))
+    lines.extend(_dropped(view, "verdicts"))
     lines.append("")
     lines.append("⏭️ <b>Not analysed</b>")
     lines.append(_counted(view.skips, "  nothing was held back"))
+    lines.extend(_dropped(view, "not analysed"))
     lines.append("")
     lines.append("🚦 <b>Gate</b>")
     lines.append(_counted(view.gate, "  nothing reached the gate"))
+    lines.extend(_dropped(view, "gate"))
 
     if view.spend is not None:
         at_least = "at least " if view.spend.is_floor else ""
@@ -408,7 +425,6 @@ def pulse_day_card(view: PulseDayView, tz: ZoneInfo) -> str:
             f"${view.spend.limit_usd} <i>(estimate, not a bill)</i>"
         )
 
-    lines.extend(_pulse_truncation(view))
     lines.append("")
     lines.append(
         "<i>The pipeline's reasoning, the same for everyone. /pulse for the last cycle.</i>"

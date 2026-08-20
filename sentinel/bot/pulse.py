@@ -41,6 +41,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from sentinel.analyst.models import SetupType
 from sentinel.bot.views import (
     PulseDayView,
     PulseGateView,
@@ -330,7 +331,10 @@ def pulse_view(
         PulseVerdictView(
             symbol=report.symbol,
             status=report.candidate_status,
-            setup_type=report.setup_type,
+            # ``none`` is a real ``SetupType`` and means there is no setup — which is
+            # exactly what a WATCHLIST or NO_SETUP verdict is. Printing it gives
+            # "WATCHLIST · conf 56 · none long"; dropping it gives a shorter true line.
+            setup_type="" if report.setup_type == SetupType.NONE.value else report.setup_type,
             direction=report.direction,
             confidence=report.confidence,
             thesis=one_line(report.thesis),
@@ -437,7 +441,7 @@ def pulse_day_view(
         since=since,
         cycles_completed=len(cycles),
         cycles_started=started,
-        dry_run=any(cycle.dry_run for cycle in cycles),
+        dry_run_cycles=len([cycle for cycle in cycles if cycle.dry_run]),
         escalations=escalation_rows,
         verdicts=verdict_rows,
         skips=skip_rows,
