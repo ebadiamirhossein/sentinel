@@ -122,7 +122,7 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 | `/status` | Pipeline health: last cycle time, data sources OK/degraded, active signals, open risk used, paused? (see the M6 note below) |
 | `/positions` | All ACTIVE signals with live uPnL in R and EUR |
 | `/stats [30d|90d|all]` | Real stats (taken): count, win rate, avg R, profit factor, max DD; then hypothetical (watched/skipped); breakdown by setup_type and prompt version |
-| `/pulse` | On-demand market regime summary (P1) |
+| `/pulse` | **Superseded 2026-08-20 (M8.4) — see §3b.** Was: on-demand market regime summary (P1) |
 | `/analyze SOLUSDT` | Force deep analysis of one symbol now (P1) |
 | `/watchlist [add|remove SYMBOL]` | View/edit watchlist |
 | `/pause` / `/resume` | Manual pause; resume from loss-limit pause requires confirming button "Yes, resume" |
@@ -264,6 +264,100 @@ and approve the same card instead of the member having to ask again.
 `/leave` is not: the owner has `/watchlist add`, which does the thing directly, and a
 request path would have them approving their own card. Both handlers still answer if
 typed.
+
+## 3b. `/pulse` — the pipeline's own story (added 2026-08-20, M8.4)
+
+**This replaces §3's `/pulse` row, which read "on-demand market regime summary (P1)".**
+That command was never built and never registered. The name is reused rather than
+kept free because it is the right name for this and there is no stored value, no
+menu entry and no user habit to break — nothing existed under it. A market-regime
+summary is still wanted and is still P1; it will arrive as part of §5's digest,
+where a regime line is already listed.
+
+`/pulse` is **available to every approved user, member and owner alike** — the only
+command in the system that is. Everything else here is either scoped to the caller
+(`/positions`, `/stats`, `/capital`, `/risk`) or owner-only (`/status`,
+`/settings`). This one is neither, and the asymmetry it removes is the point:
+
+> One analysis per cycle, shared (§7). The *reasoning* behind it is therefore the
+> one thing in this system that genuinely is identical for everybody, so it is
+> shown identically to everybody.
+
+It answers the gap journal/M8_1_REPORT.md §13 left open — a member "cannot tell
+'quiet market' from 'system down'" — which M8.2's spend controls widened by making
+quiet the expected state.
+
+**`/pulse`** renders the **last completed cycle** (not the one currently running:
+a cycle still in its screener has escalated nothing yet, and would read exactly like
+a broken one). Four sections:
+
+1. **Screener** — which symbols were escalated, with the one-line reason each was
+   given, and how many were scanned.
+2. **Not analysed** — every `cycles.skipped` entry with its `SkipReason` in words.
+3. **Analyst** — each verdict: status, confidence, setup type, and a one-line thesis.
+4. **Gate** — approved, or the rejection reason code.
+
+**`/pulse 24h`** is the same four sections counted rather than listed, over
+completed cycles in the last day, with the completion ratio in the header.
+
+It is **read-only**: no new table, no new column, no write of any kind. The screener's
+verdicts come out of the `llm_calls` audit row (they have never had a table of their
+own), the skips out of M8.2's `cycles.skipped`, the verdicts out of `analyst_reports`,
+the outcomes out of `gate_decisions`, and the per-cycle cost off the `cycles` row.
+
+### What it must never show, and how that is guaranteed
+
+**No per-user information of any kind** — no capital, no sizing, no decision, no
+statistic, no user id, no count of users. Two of its four sources contain rows
+derived from somebody's account, so the boundary is two **closed classifications**
+with meta-tests, in the manner of §7's `UserView` and `bot/auth.TABLE`:
+
+**1. `RejectionReason` splits into shared and personal.** `gate_decisions` holds one
+row per (cycle, symbol, **user**). The line falls exactly where `RiskEngine.evaluate`
+stops reading `(report, market, config)` and starts reading `AccountState` and
+`PortfolioState`: everything above it is provably identical for every user and is
+**named**; everything below it is arithmetic on somebody's money and is folded into
+*"cleared the shared checks — the rest is per-account"*. Two entries that look shared
+and are not:
+
+* **`PAUSED`** is personal here. The operator's system-wide `/pause` never reaches
+  the gate — the orchestrator stops earlier, at `SkipReason.PAUSED` — so a `PAUSED`
+  row in `gate_decisions` can only be a user's own daily-loss pause (§7), which says
+  they lost money today.
+* **`NET_RR_TOO_LOW`** is personal. Cost-as-a-share-of-risk is scale-invariant, so it
+  is *nearly* shared, but it is measured after ladder sizing and rung collapse, which
+  depend on capital. The boundary has to be provable rather than nearly true.
+
+**An approval is shown** — `✅ approved` — because it names no user and carries no
+size: it says a plan cleared every rail somebody had, which is a fact about the
+pipeline. Where one user was approved and another rejected on a personal rail, the
+approval is what is reported; reporting the rejection would be reporting an empty
+`/capital`.
+
+**2. `SkipReason` is rendered through wording that names nobody.** All seven appear.
+`cycles.skipped` is already union-level — a symbol lands there only when *no* eligible
+user could have received it — and the three book-derived reasons are phrased about the
+symbol rather than about whoever holds it (`OPEN_SIGNAL` → "an open signal is already
+running on it"). The stored `detail` is **never rendered**: every one of the seven
+either restates its own key or appends a raw timestamp, and two of those timestamps
+are clock readings off somebody's last trade. It stays in the column for M9.
+
+### The one thing the owner sees and a member does not
+
+**LLM spend** — the cycle's own estimated cost and the day's total against the limit.
+§7's owner-only channels: it is the owner's bill, and a member has no lever to pull in
+response to it. It is carried as `PulseView.spend is None` for a member rather than as
+a role check in the renderer, so the member's view object holds no figure to leak —
+the same mechanism §7's `UserView` uses for capital.
+
+### Registered on both menus
+
+`/pulse` is on `MEMBER_COMMANDS` and reaches the owner's menu through the same
+`commands_for` that already gives them the rest of the member set. It is deliberately
+**not** on `OWNER_COMMANDS`: that half is the operator's, and putting it there would
+take it off every member's menu. `tests/bot/test_dispatcher_wiring.py` proves it
+reaches a handler **for both roles** against a real `Dispatcher`, and that a caller
+with no standing still gets silence.
 
 ## 4. Tracker notifications (replies to the original card)
 

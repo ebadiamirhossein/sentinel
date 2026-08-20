@@ -7,9 +7,16 @@ required ``user_id``.
 
 ``/start /help /leave`` live in ``membership.py`` (they must work before full
 standing does), and ``/status /settings /watchlist /pause /resume /users /approve
-/reject /suspend`` live in ``admin.py`` behind the owner filter. ``/pulse`` and
-``/analyze`` are P1 and stay unregistered, because an unregistered command is silent
-rather than answered with a promise.
+/reject /suspend`` live in ``admin.py`` behind the owner filter. ``/analyze`` is P1
+and stays unregistered, because an unregistered command is silent rather than
+answered with a promise.
+
+``/pulse`` (M8.4) is the one command here that is **not** scoped to the caller, and
+deliberately so: it reports the pipeline's own reasoning, which is bought once and
+shared, so it is identical for every approved user. It reads no book and prints no
+capital, sizing, decision or statistic — the only thing that varies is the spend
+line, which the owner sees and a member does not, and that variation is carried by
+the view object rather than by a check in the renderer.
 
 Every handler writes through a repository and commits its own unit of work, then
 confirms back in words — §3 requires ``/capital`` and ``/risk`` to "confirm", and a
@@ -18,6 +25,8 @@ setting that changes sizing should never change quietly.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
@@ -25,6 +34,8 @@ from aiogram.types import Message
 from sentinel.bot.auth import Actor
 from sentinel.bot.cards import (
     positions_card,
+    pulse_card,
+    pulse_day_card,
     stats_card,
     watchlist_request_ack_card,
     watchlist_request_card,
@@ -34,7 +45,8 @@ from sentinel.bot.formatting import escape
 from sentinel.bot.keyboards import watchlist_request_keyboard
 from sentinel.bot.models import SignalDecision
 from sentinel.bot.outbound import SupportsBot
-from sentinel.bot.readmodels import position_view, stats_view
+from sentinel.bot.pulse import pulse_day_view, pulse_view
+from sentinel.bot.readmodels import position_view, spend_view, stats_view
 from sentinel.bot.runtime import (
     Invalid,
     effective_config,
@@ -44,6 +56,7 @@ from sentinel.bot.runtime import (
     risk_pct_of,
     verify_symbol,
 )
+from sentinel.bot.views import SpendView
 from sentinel.core.logging import get_logger
 from sentinel.risk.models import TradePlan
 from sentinel.stats.queries import build_report, parse_window
@@ -174,6 +187,111 @@ async def stats(message: Message, command: CommandObject, ctx: BotContext, actor
             session, window=window, now=ctx.clock.now(), user_id=actor.user_id
         )
     await message.answer(stats_card(stats_view(report), ctx.tz))
+
+
+#: What ``/pulse`` accepts after the command. Anything else is answered with usage
+#: rather than silently treated as the default: a member typing ``/pulse 7d`` and
+#: getting the last cycle would read it as a day's worth of nothing.
+PULSE_DAY_ARGS = frozenset({"24h", "day", "1d", "today"})
+
+PULSE_USAGE = (
+    "❌ Usage: <code>/pulse</code> for the last cycle, or <code>/pulse 24h</code> for the day."
+)
+
+
+@commands_router.message(Command("pulse"))
+async def pulse(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
+    """§3b ``/pulse [24h]`` — what the pipeline did, for everybody (M8.4).
+
+    Read-only, and every table it touches is one the orchestrator writes: the
+    screener's verdicts out of the ``llm_calls`` audit row, the skips out of
+    ``cycles.skipped``, the verdicts out of ``analyst_reports``, the outcomes out of
+    ``gate_decisions``. Nothing here writes and nothing here computes — ``bot/pulse``
+    folds the rows, this handler fetches them, ``cards`` renders them.
+
+    **The owner-only half is one argument, not a branch.** ``spend`` is passed as
+    ``None`` for a member, so the view has no figure to print. A role check inside
+    the renderer would be a boundary that survives only as long as everybody
+    remembers it is there (M8.1 §6).
+    """
+    raw = (command.args or "").strip().lower()
+    if raw and raw not in PULSE_DAY_ARGS:
+        await message.answer(PULSE_USAGE)
+        return
+
+    now = ctx.clock.now()
+    spend = await _pulse_spend(ctx, now=now, owner=actor.is_owner)
+    if raw:
+        await message.answer(await _pulse_day(ctx, now=now, spend=spend))
+        return
+    await message.answer(await _pulse_cycle(ctx, spend=spend))
+
+
+async def _pulse_spend(ctx: BotContext, *, now: datetime, owner: bool) -> SpendView | None:
+    """Today's LLM spend — **the owner's, and nobody else's to see**.
+
+    specs/TELEGRAM_UX.md §7: the spend guard is an owner-only channel because a
+    member has no lever to pull in response to it. It is also simply the owner's
+    bill. Returning ``None`` rather than filtering later means the figure is never
+    fetched for a member at all.
+    """
+    if not owner:
+        return None
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    async with ctx.database.session() as session:
+        totals = await ctx.repositories.llm_calls(session).spend_totals(
+            day_start=day_start,
+            month_start=day_start.replace(day=1),
+            priced_models=tuple(ctx.settings.config.llm.pricing),
+        )
+    return spend_view(totals, ctx.settings.config.llm)
+
+
+async def _pulse_cycle(ctx: BotContext, *, spend: SpendView | None) -> str:
+    """The last cycle that actually finished — not the one currently running."""
+    async with ctx.database.session() as session:
+        cycle = await ctx.repositories.cycles(session).latest_completed()
+        if cycle is None:
+            return pulse_card(
+                pulse_view(None, screener=(), reports=(), decisions=(), spend=spend), ctx.tz
+            )
+        cycle_ids = [cycle.cycle_id]
+        screener = await ctx.repositories.llm_calls(session).screener_verdicts(cycle_ids)
+        reports = await ctx.repositories.reports(session).for_cycles(cycle_ids)
+        decisions = await ctx.repositories.gate_decisions(session).for_cycles(cycle_ids)
+
+    view = pulse_view(
+        cycle,
+        screener=screener.get(cycle.cycle_id, ()),
+        reports=reports,
+        decisions=decisions,
+        spend=spend,
+    )
+    return pulse_card(view, ctx.tz)
+
+
+async def _pulse_day(ctx: BotContext, *, now: datetime, spend: SpendView | None) -> str:
+    """The same four sections over a day, counted rather than listed."""
+    since = now - timedelta(hours=24)
+    async with ctx.database.session() as session:
+        cycles_repo = ctx.repositories.cycles(session)
+        cycles = await cycles_repo.completed_since(since)
+        _, started = await cycles_repo.completion_since(since)
+        cycle_ids = [cycle.cycle_id for cycle in cycles]
+        screener = await ctx.repositories.llm_calls(session).screener_verdicts(cycle_ids)
+        reports = await ctx.repositories.reports(session).for_cycles(cycle_ids)
+        decisions = await ctx.repositories.gate_decisions(session).for_cycles(cycle_ids)
+
+    view = pulse_day_view(
+        cycles,
+        since=since,
+        started=started,
+        screener=screener,
+        reports=reports,
+        decisions=decisions,
+        spend=spend,
+    )
+    return pulse_day_card(view, ctx.tz)
 
 
 __all__ = ["commands_router"]

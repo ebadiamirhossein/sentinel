@@ -219,10 +219,126 @@ class SettingsView:
     groups: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = field(default=())
 
 
+# --------------------------------------------------------------------------- #
+# /pulse (M8.4) — the pipeline's own story, identical for every approved user
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class PulseSymbolView:
+    """One symbol the screener escalated, with the reason it gave."""
+
+    symbol: str
+    direction_hint: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class PulseSkipView:
+    """One symbol that never reached the deep analyst.
+
+    ``reason`` is the countable ``SkipReason`` key and ``wording`` is the sentence
+    shown. They are separate fields because three of the seven reasons are derived
+    from somebody's book, and those get neutral wording with the stored free-text
+    detail dropped — see ``bot/pulse.SKIP_WORDING``.
+    """
+
+    symbol: str
+    reason: str
+    wording: str
+
+
+@dataclass(frozen=True)
+class PulseVerdictView:
+    """One deep-analysis verdict. Shared output, so every field here is public."""
+
+    symbol: str
+    status: str
+    setup_type: str
+    direction: str
+    confidence: int
+    thesis: str
+
+
+@dataclass(frozen=True)
+class PulseGateView:
+    """What the gate did with one symbol — and the privacy boundary, as a type.
+
+    There is one ``gate_decisions`` row per (cycle, symbol, **user**), and some
+    rejection codes are facts about an account rather than about the analysis. This
+    view carries a single folded outcome per symbol and **no user id, no capital, no
+    sizing and no per-account reason code**: ``bot/pulse.gate_outcome`` drops those
+    on the way in, so a future card cannot print one without a field being added
+    here first. Same mechanism as :class:`UserView` (M8.1 §6).
+
+    ``code`` is a shared ``RejectionReason`` name, ``"APPROVED"``, or ``""`` when the
+    symbol cleared the shared checks and everything past them was per-account.
+    ``approved`` is carried as its own flag so ``cards.py`` never has to compare
+    against a string literal to decide whether to draw the tick.
+    """
+
+    symbol: str
+    code: str
+    wording: str
+    approved: bool = False
+
+
+@dataclass(frozen=True)
+class PulseView:
+    """``/pulse`` — the last completed cycle.
+
+    ``spend_usd`` and ``spend`` are ``None`` for a member, and that is the boundary
+    rather than a rule the renderer remembers: the LLM bill is the owner's, a member
+    has no lever to pull in response to it (specs/TELEGRAM_UX.md §7), and a view
+    object holding no figure cannot leak one.
+    """
+
+    at: datetime | None
+    status: str
+    dry_run: bool
+    #: Symbols that survived ingestion this cycle — the pool the screener triaged.
+    screened: int
+    escalated: tuple[PulseSymbolView, ...] = ()
+    skipped: tuple[PulseSkipView, ...] = ()
+    verdicts: tuple[PulseVerdictView, ...] = ()
+    gate: tuple[PulseGateView, ...] = ()
+    #: True when no usable screener output was recorded for the cycle.
+    screener_silent: bool = False
+    suspended_reason: str | None = None
+    error: str | None = None
+    #: Owner only. ``spend`` is the same ``SpendView`` ``/status`` renders.
+    spend_usd: Decimal | None = None
+    spend: SpendView | None = None
+    #: ``(section, dropped)`` for every list the card had to cut for the screen.
+    truncated: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class PulseDayView:
+    """``/pulse 24h`` — the same story aggregated, one line per section."""
+
+    since: datetime
+    cycles_completed: int
+    cycles_started: int
+    dry_run: bool
+    escalations: tuple[tuple[str, int], ...] = ()
+    verdicts: tuple[tuple[str, int], ...] = ()
+    skips: tuple[tuple[str, int], ...] = ()
+    gate: tuple[tuple[str, int], ...] = ()
+    spend: SpendView | None = None
+    truncated: tuple[tuple[str, int], ...] = ()
+
+
 __all__ = [
     "AlertView",
     "DataSourceView",
     "PositionView",
+    "PulseDayView",
+    "PulseGateView",
+    "PulseSkipView",
+    "PulseSymbolView",
+    "PulseVerdictView",
+    "PulseView",
     "SettingsView",
     "SpendView",
     "StatsBreakdownView",

@@ -47,6 +47,7 @@ def test_the_member_menu_is_exactly_what_a_member_may_run() -> None:
         "risk",
         "positions",
         "stats",
+        "pulse",
         "request",
         "leave",
     }
@@ -113,3 +114,18 @@ async def test_a_failed_menu_never_reaches_the_caller() -> None:
 def test_help_is_always_in_the_menu(owner: bool) -> None:
     """It is the one command that explains every number on a card."""
     assert "help" in names(commands_for(owner=owner))
+
+
+def test_pulse_is_on_both_menus() -> None:
+    """The one command in the system both roles run (M8.4).
+
+    It rides onto the owner's menu through ``commands_for``, which drops only
+    ``/leave`` and ``/request`` — so this asserts the *absence* of a third exception
+    as much as it asserts the presence of the command.
+    """
+    assert "pulse" in names(MEMBER_COMMANDS)
+    assert "pulse" in names(commands_for(owner=True))
+    assert "pulse" not in names(OWNER_COMMANDS), (
+        "/pulse is a member command the owner also gets, not an operator command — "
+        "putting it in OWNER_COMMANDS would take it off every member's menu"
+    )

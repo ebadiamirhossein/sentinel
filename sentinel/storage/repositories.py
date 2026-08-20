@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,10 +33,12 @@ from sentinel.bot.models import (
     WatchlistRequest,
     WatchlistRequestStatus,
 )
+from sentinel.core.logging import get_logger
 from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
-from sentinel.llm.models import LLMCall
+from sentinel.llm.models import LLMCall, LLMCallKind, LLMCallStatus
 from sentinel.llm.spend import SpendTotals
 from sentinel.risk.models import GateDecision, GateStatus, PauseReason, PauseState, TradePlan
+from sentinel.screener.models import ScreenerVerdict
 from sentinel.storage.models import (
     AnalystReportRow,
     ConfigChangeRow,
@@ -57,6 +60,8 @@ from sentinel.storage.models import (
     UserRow,
     WatchlistRequestRow,
 )
+
+log = get_logger(__name__)
 
 #: Snapshot parts stored as JSONB on the snapshot row.
 CONTEXT_FIELDS = (
@@ -311,6 +316,25 @@ class GateDecisionRepository:
         )
         return list(result.scalars().all())
 
+    async def for_cycles(self, cycle_ids: Sequence[UUID]) -> list[GateDecisionRow]:
+        """Every verdict recorded by these cycles — ``/pulse`` (M8.4).
+
+        Deliberately **not** filtered by user, and that is the one thing to know
+        before reading a caller. There is one row per (cycle, symbol, user), so this
+        returns several rows for the same symbol; ``bot/pulse.py`` folds them into a
+        single per-symbol outcome and drops every reason that is a fact about an
+        account rather than about the analysis. Filtering here instead would give a
+        card that differs per reader, which is the opposite of what ``/pulse`` is.
+        """
+        if not cycle_ids:
+            return []
+        statement = (
+            select(GateDecisionRow)
+            .where(GateDecisionRow.cycle_id.in_(list(cycle_ids)))
+            .order_by(GateDecisionRow.evaluated_at)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
 
 class RiskStateRepository:
     """§7 — pause state that survives a restart. One row, id=1."""
@@ -514,6 +538,40 @@ def analyst_report_row(
     }
 
 
+def screener_verdicts_of(response: dict[str, Any]) -> list[ScreenerVerdict]:
+    """One stored screener response as verdicts. Pure, so it is tested without a database.
+
+    The shape is ``{"parsed": {"verdicts": [...]}}`` — see
+    ``llm.client._response_audit``, which parses the model's JSON once at record
+    time so a reader does not have to re-parse it in SQL.
+
+    Anything that does not fit is **dropped, not guessed**: a response with no
+    ``parsed`` key (the model returned prose), a ``verdicts`` value that is not a
+    list, or an entry that fails validation because a later prompt version widened
+    the model. Each is logged. This runs on a read path for a transparency command,
+    and a transparency command that fabricates is worse than one that reports less.
+    """
+    parsed = response.get("parsed")
+    if not isinstance(parsed, dict):
+        return []
+    entries = parsed.get("verdicts")
+    if not isinstance(entries, list):
+        log.warning("storage.screener_response_unreadable", detail="no verdicts list")
+        return []
+
+    verdicts: list[ScreenerVerdict] = []
+    for entry in entries:
+        try:
+            verdicts.append(ScreenerVerdict.model_validate(entry))
+        except ValidationError as exc:
+            log.warning(
+                "storage.screener_verdict_unreadable",
+                errors=exc.error_count(),
+                detail="stored verdict does not match the current model",
+            )
+    return verdicts
+
+
 class LLMCallRepository:
     """Audit trail for every LLM call — successes, refusals and failures alike."""
 
@@ -564,6 +622,55 @@ class LLMCallRepository:
             select(LLMCallRow).order_by(LLMCallRow.started_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
+
+    async def screener_verdicts(
+        self, cycle_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[ScreenerVerdict, ...]]:
+        """What the screener said, per cycle — ``/pulse`` (M8.4).
+
+        The screener has no table of its own: its verdicts exist only inside the
+        audit row that recorded the call, under ``response -> parsed -> verdicts``
+        (``llm/client._response_audit`` stores the parsed form beside the raw blocks
+        for exactly this kind of read). ``/pulse`` reads them rather than adding a
+        table, because a new table would change what the pipeline *writes* and this
+        milestone is read-only.
+
+        Two consequences worth knowing at the call site:
+
+        * ``status='OK'`` only. A discarded batch was retried or defaulted to
+          not-interesting by ``screener.reconcile``, and its rejected text is not a
+          verdict about anything.
+        * These are the model's answers **before** reconciliation, which is the only
+          form that was stored. A hallucinated symbol therefore survives to here, and
+          a symbol the model omitted is absent rather than present-and-false. The
+          renderer degrades in words where the two disagree; it never invents the
+          reconciled verdict, because that would be a second implementation of
+          ``reconcile`` running against different inputs.
+
+        A row whose payload does not validate is skipped with a log line. A later
+        prompt version could widen ``ScreenerVerdict``, and ``extra="forbid"`` would
+        reject the older rows — a pulse that says it has no verdicts is honest, and
+        one that guesses at their shape is not.
+        """
+        if not cycle_ids:
+            return {}
+        statement = (
+            select(LLMCallRow.cycle_id, LLMCallRow.response)
+            .where(
+                LLMCallRow.cycle_id.in_(list(cycle_ids)),
+                LLMCallRow.kind == LLMCallKind.SCREENER.value,
+                LLMCallRow.status == LLMCallStatus.OK.value,
+            )
+            .order_by(LLMCallRow.started_at)
+        )
+        found: dict[UUID, list[ScreenerVerdict]] = {}
+        for cycle_id, response in (await self._session.execute(statement)).all():
+            if cycle_id is None:  # pragma: no cover — the orchestrator always sets it
+                continue
+            # One cycle can hold several OK calls: `screener_batch_size` chunks the
+            # watchlist, and each chunk is its own call over its own symbols.
+            found.setdefault(cycle_id, []).extend(screener_verdicts_of(response))
+        return {cycle_id: tuple(verdicts) for cycle_id, verdicts in found.items()}
 
 
 class AnalystReportRepository:
@@ -629,6 +736,25 @@ class AnalystReportRepository:
         )
         rows = (await self._session.execute(statement)).all()
         return {row.symbol: row.created_at for row in rows}
+
+    async def for_cycles(
+        self, cycle_ids: Sequence[UUID], *, role: str = "primary"
+    ) -> list[AnalystReportRow]:
+        """Every deep-analysis verdict these cycles produced — ``/pulse`` (M8.4).
+
+        ``role='primary'`` for the same reason ``latest_non_candidates`` filters on
+        it: specs/ENSEMBLE.md §3 stores M10's second opinion in this table, and a
+        shadow verdict is not a second look at the symbol — showing both would read
+        as the pipeline having analysed everything twice.
+        """
+        if not cycle_ids:
+            return []
+        statement = (
+            select(AnalystReportRow)
+            .where(AnalystReportRow.cycle_id.in_(list(cycle_ids)), AnalystReportRow.role == role)
+            .order_by(AnalystReportRow.created_at)
+        )
+        return list((await self._session.execute(statement)).scalars())
 
     async def recent_for_symbol(
         self, symbol: str, limit: int = 3, *, owner_id: int, role: str = "primary"
@@ -1517,6 +1643,42 @@ class CycleRepository:
         the alert exists to notice.
         """
         statement = select(CycleRow).order_by(CycleRow.started_at.desc()).limit(limit)
+        return list((await self._session.execute(statement)).scalars())
+
+    async def latest_completed(self) -> CycleRow | None:
+        """The newest cycle that actually finished — ``/pulse`` (M8.4).
+
+        Deliberately not :meth:`latest`, which answers "is the pipeline alive" and
+        will happily return a ``RUNNING`` row mid-flight. ``/pulse`` tells the story
+        of a cycle, and a cycle still in its screener has no story yet — it would
+        render as a run that escalated nothing and analysed nothing, which is what a
+        broken pipeline also looks like.
+
+        A ``FAILED`` cycle **is** returned: it finished, it has a partial story, and
+        hiding it would leave the newest thing anybody could see silently stale.
+        """
+        statement = (
+            select(CycleRow)
+            .where(CycleRow.finished_at.is_not(None))
+            .order_by(CycleRow.finished_at.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(statement)).scalars().first()
+
+    async def completed_since(self, since: datetime, limit: int = 200) -> list[CycleRow]:
+        """Finished cycles in a window, oldest first — ``/pulse 24h`` (M8.4).
+
+        ``limit`` is a backstop, not a window: at a 60-minute scan interval a day is
+        24 rows, and 200 covers a day even at M8.2's old 15-minute cadence with room
+        to spare. The caller reports how many cycles it summarised, so a truncated
+        window would be visible rather than silent.
+        """
+        statement = (
+            select(CycleRow)
+            .where(CycleRow.finished_at.is_not(None), CycleRow.started_at >= since)
+            .order_by(CycleRow.started_at)
+            .limit(limit)
+        )
         return list((await self._session.execute(statement)).scalars())
 
     async def latest_completed_at(self) -> datetime | None:

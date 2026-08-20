@@ -167,6 +167,30 @@ Added 2026-08-19. Members can ask for a symbol without being able to spend on on
   `OWNER_COMMANDS`, discharging the member half of journal/M8_2_REPORT.md §1a's audit
   item 2 as a side effect of building on that surface.
 
+## M8.4 — `/pulse`, the pipeline transparency command (0.5 day)
+Added 2026-08-20. Closes journal/M8_1_REPORT.md §13 item 4: nobody but the owner could
+see what the pipeline was doing, and M8.2's spend controls made quiet the expected state.
+
+* `/pulse` — the last **completed** cycle's story: what the screener escalated with its
+  reason, what was never analysed and why (`SkipReason`), each analyst verdict, and the
+  gate's outcome. `/pulse 24h` is the same four sections counted over the day.
+* **Available to every approved user** — the only such command. The analysis is bought
+  once and shared, so its reasoning is identical for everybody and is shown that way.
+* **Read-only. No migration, no new table, no write.** Screener verdicts come out of the
+  `llm_calls` audit row (they have never had a table), skips out of M8.2's
+  `cycles.skipped`, verdicts out of `analyst_reports`, outcomes out of `gate_decisions`.
+* Two closed classifications carry the privacy boundary, each with a meta-test:
+  `RejectionReason` splits shared/personal exactly where the gate starts reading an
+  account (`PAUSED` and `NET_RR_TOO_LOW` are personal, and both look shared), and every
+  `SkipReason` is rendered in words that name nobody, with the stored `detail` dropped.
+* The spend line is the owner's alone, carried as `PulseView.spend is None` for a member
+  rather than as a role check in the renderer — M8.1 §6's mechanism, one surface over.
+* `/pulse` on both menus; `tests/bot/test_dispatcher_wiring.py` proves reachability
+  **for both roles** through a real `Dispatcher`, and silence for a caller with no
+  standing. Postgres round-trips for all three new reads, per M8.3 §4.
+* New spec section `TELEGRAM_UX.md` §3b, superseding §3's unbuilt "market regime
+  summary (P1)" row under the same name.
+
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.

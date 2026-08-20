@@ -22,7 +22,9 @@ from sentinel.core.clock import Clock
 from sentinel.core.config import Settings
 from sentinel.storage.db import Database
 from sentinel.storage.repositories import (
+    AnalystReportRepository,
     CycleRepository,
+    GateDecisionRepository,
     InstrumentMetaRepository,
     LLMCallRepository,
     RiskStateRepository,
@@ -58,6 +60,10 @@ class Repositories:
     events: type[SignalEventRepository] = SignalEventRepository
     cycles: type[CycleRepository] = CycleRepository
     llm_calls: type[LLMCallRepository] = LLMCallRepository
+    # M8.4: /pulse reads the pipeline's own record. Read-only — these two are
+    # written by the orchestrator and never by a handler.
+    reports: type[AnalystReportRepository] = AnalystReportRepository
+    gate_decisions: type[GateDecisionRepository] = GateDecisionRepository
 
 
 @dataclass(frozen=True)

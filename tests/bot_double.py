@@ -43,8 +43,11 @@ from sentinel.bot.models import (
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.llm.spend import SpendTotals
 from sentinel.risk.models import PauseState
+from sentinel.screener.models import ScreenerVerdict
 from sentinel.storage.repositories import (
+    AnalystReportRepository,
     CycleRepository,
+    GateDecisionRepository,
     InstrumentMetaRepository,
     LLMCallRepository,
     RiskStateRepository,
@@ -271,6 +274,13 @@ class FakeStore:
     last_cycle: Any = None
     #: Newest first, as ``CycleRepository.recent`` returns them (M8's alerts).
     cycles: list[Any] = field(default_factory=list)
+    # M8.4: what /pulse reads. These are the pipeline's own record, written only by
+    # the orchestrator — no handler in the bot writes any of them, which is why the
+    # fakes below expose reads and nothing else.
+    completed_cycles: list[Any] = field(default_factory=list)
+    screener: dict[Any, tuple[ScreenerVerdict, ...]] = field(default_factory=dict)
+    reports: list[Any] = field(default_factory=list)
+    gate_decisions: list[Any] = field(default_factory=list)
     cycles_completed: int = 0
     cycles_started: int = 0
     spend: SpendTotals = field(default_factory=SpendTotals)
@@ -812,6 +822,21 @@ class FakeCycleRepository(CycleRepository):
     async def completion_since(self, since: datetime) -> tuple[int, int]:
         return self._store.cycles_completed, self._store.cycles_started
 
+    async def latest_completed(self) -> Any:
+        """Newest finished cycle. A separate list from ``cycles``, on purpose.
+
+        The real query filters on ``finished_at IS NOT NULL`` and orders by it, so a
+        fake that returned ``last_cycle`` would let a test pass while ``/pulse``
+        narrated a cycle still in its screener — the exact case
+        :meth:`CycleRepository.latest_completed` exists to exclude.
+        """
+        return self._store.completed_cycles[-1] if self._store.completed_cycles else None
+
+    async def completed_since(self, since: datetime, limit: int = 200) -> list[Any]:
+        return [cycle for cycle in self._store.completed_cycles if cycle.started_at >= since][
+            :limit
+        ]
+
 
 class FakeLLMCallRepository(LLMCallRepository):
     def __init__(self, session: Any) -> None:
@@ -821,6 +846,40 @@ class FakeLLMCallRepository(LLMCallRepository):
         self, *, day_start: datetime, month_start: datetime, priced_models: Any
     ) -> SpendTotals:
         return self._store.spend
+
+    async def screener_verdicts(self, cycle_ids: Any) -> dict[Any, tuple[ScreenerVerdict, ...]]:
+        """Verdicts by cycle.
+
+        The real one digs them out of ``llm_calls.response -> parsed -> verdicts``
+        and validates each entry; this returns them already made. The JSONB read
+        itself is covered where only a real database can cover it —
+        ``tests/bot/test_persistence.py`` — and the pure parser in
+        ``storage.screener_verdicts_of`` is tested directly.
+        """
+        wanted = set(cycle_ids)
+        return {
+            cycle_id: verdicts
+            for cycle_id, verdicts in self._store.screener.items()
+            if cycle_id in wanted
+        }
+
+
+class FakeAnalystReportRepository(AnalystReportRepository):
+    def __init__(self, session: Any) -> None:
+        self._store: FakeStore = session.store
+
+    async def for_cycles(self, cycle_ids: Any, *, role: str = "primary") -> list[Any]:
+        wanted = set(cycle_ids)
+        return [row for row in self._store.reports if row.cycle_id in wanted]
+
+
+class FakeGateDecisionRepository(GateDecisionRepository):
+    def __init__(self, session: Any) -> None:
+        self._store: FakeStore = session.store
+
+    async def for_cycles(self, cycle_ids: Any) -> list[Any]:
+        wanted = set(cycle_ids)
+        return [row for row in self._store.gate_decisions if row.cycle_id in wanted]
 
 
 class FakeSnapshotRepository(SnapshotRepository):
@@ -981,6 +1040,8 @@ def fake_repositories() -> Repositories:
         cycles=FakeCycleRepository,
         llm_calls=FakeLLMCallRepository,
         watchlist_requests=FakeWatchlistRequestRepository,
+        reports=FakeAnalystReportRepository,
+        gate_decisions=FakeGateDecisionRepository,
     )
 
 

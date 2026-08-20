@@ -85,12 +85,15 @@ OWNER_COMMAND_ARGS: dict[str, str] = {
 
 #: The member half. ``/leave`` opens a confirmation rather than acting, which is
 #: still a handler running — reachability is the question here, not effect.
+#: ``/pulse`` is here because it is on the member menu; it is the one entry both
+#: roles may run, and it gets its own both-roles test below.
 MEMBER_COMMAND_ARGS: dict[str, str] = {
     "help": "",
     "capital": " 5000",
     "risk": " 0.75",
     "positions": "",
     "stats": "",
+    "pulse": "",
     "request": " SOLUSDT",
     "leave": "",
 }
@@ -402,3 +405,64 @@ async def test_the_watchlist_button_is_silent_for_a_member(dispatcher: Dispatche
         },
     )
     assert not reached_a_handler(await feed(dispatcher, update))
+
+
+# --------------------------------------------------------------------------- #
+# /pulse — the one command both roles run, so both roles are proven (M8.4)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_pulse_is_reachable_by_both_roles(dispatcher: Dispatcher, user_id: int) -> None:
+    """Every other command in this bot belongs to exactly one role. ``/pulse`` belongs
+    to both, and "both" is the claim that needs proving against the real machinery.
+
+    The member half rides on ``MEMBER_COMMAND_ARGS``' parametrized sweep. The owner
+    half does not: ``commands_router`` is registered *before* ``admin_router``, so a
+    future owner-only handler named ``pulse`` — or an ``OwnerOnly`` filter added to
+    the wrong router — would shadow or silence this one, and nothing in the owner
+    sweep would notice, because ``/pulse`` is not on ``OWNER_COMMANDS``.
+
+    Against a real ``Dispatcher``, because that is where the shadowing would happen:
+    journal/M8_2_REPORT.md §1a's rule is that a path whose failure mode is silence
+    needs a positive test, and it has to run the way production runs.
+    """
+    response = await feed(dispatcher, message_update("/pulse", user_id=user_id))
+    assert reached_a_handler(response), f"/pulse reached no handler for {user_id}"
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_pulse_24h_is_reachable_by_both_roles(dispatcher: Dispatcher, user_id: int) -> None:
+    """The argument is a different query path — ``completed_since`` and an aggregate
+    rather than one cycle — so it gets its own assertion rather than riding on the
+    bare form's."""
+    response = await feed(dispatcher, message_update("/pulse 24h", user_id=user_id))
+    assert reached_a_handler(response), f"/pulse 24h reached no handler for {user_id}"
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_an_unrecognised_pulse_window_is_answered_rather_than_ignored(
+    dispatcher: Dispatcher, user_id: int
+) -> None:
+    """``/pulse 7d`` must not silently render the last cycle: a reader would take one
+    cycle's quiet for a week's."""
+    response = await feed(dispatcher, message_update("/pulse 7d", user_id=user_id))
+    assert reached_a_handler(response)
+
+
+async def test_pulse_is_silent_for_someone_with_no_standing(dispatcher: Dispatcher) -> None:
+    """It is a read of the pipeline, not of a book — and still behind the gate.
+
+    specs/TELEGRAM_UX.md §1: nothing but ``/start`` answers an unknown id, because a
+    reply confirms a live private bot is there. A transparency command is exactly the
+    kind of thing that looks harmless enough to route around the gate.
+
+    Asserted on **outbound calls**, not on :func:`reached_a_handler`. The gate is an
+    outer middleware and a ``DROP`` returns ``None`` from it, which
+    ``feed_update`` hands back verbatim — indistinguishable from a handler that ran
+    and returned nothing. What is observable, and what actually matters, is that the
+    stranger's phone stayed quiet.
+    """
+    bot = FakeBot()
+    await dispatcher.feed_update(bot, message_update("/pulse", user_id=999))  # type: ignore[arg-type]
+    assert bot.calls == [], f"a stranger's /pulse produced {bot.calls}"

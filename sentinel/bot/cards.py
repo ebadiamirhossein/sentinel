@@ -37,6 +37,8 @@ from sentinel.bot.models import (
 from sentinel.bot.views import (
     AlertView,
     PositionView,
+    PulseDayView,
+    PulseView,
     SettingsView,
     StatsView,
     StatusView,
@@ -281,6 +283,145 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
                 "and the tracker keep running."
             )
     return "\n".join(lines)
+
+
+def _pulse_truncation(view: PulseView | PulseDayView) -> list[str]:
+    """What each section had to leave out. Never a silent cut."""
+    return [
+        f"<i>+{dropped} more under “{section}”, not shown.</i>"
+        for section, dropped in view.truncated
+    ]
+
+
+def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
+    """``/pulse`` — the last completed cycle, told the same way to everybody (M8.4).
+
+    Every approved user gets this identical text; only the spend line differs, and it
+    differs because ``view.spend`` is ``None`` for a member rather than because this
+    function checks a role. See :class:`~sentinel.bot.views.PulseView`.
+
+    Nothing here is counted or summed: ``bot/pulse.py`` hands over finished rows and
+    finished totals, exactly as ``TradePlan`` does for a signal card (§1).
+    """
+    if view.at is None:
+        return (
+            "📡 <b>Pulse</b>\n\n"
+            "No cycle has completed yet on this database. The first scan runs one "
+            "scan interval after start-up, not immediately."
+        )
+
+    lines = ["📡 <b>Pulse</b> — last cycle", f"{local_and_utc(view.at, tz)} · {view.status}"]
+    if view.status == "FAILED":
+        lines.append("⚠️ This cycle failed part-way. What follows is how far it got.")
+        if view.error:
+            lines.append(f"  {escape(view.error)}")
+    if view.dry_run:
+        lines.append("⚠️ <b>DRY RUN</b> — the cycle runs in full and nothing is published.")
+    if view.suspended_reason:
+        lines.append(f"⛔ Deep analysis held back: {escape(view.suspended_reason)}")
+
+    lines.append("")
+    if view.screener_silent:
+        lines.append(
+            "🔎 <b>Screener</b> — no usable verdict recorded. Nothing was escalated, "
+            "and that is a degraded cycle rather than a quiet market."
+        )
+    else:
+        lines.append(f"🔎 <b>Screener</b> — {len(view.escalated)} of {view.screened} escalated")
+        for row in view.escalated:
+            lines.append(f"  {escape(row.symbol)} ({row.direction_hint}) — {escape(row.reason)}")
+        if not view.escalated:
+            lines.append("  Nothing looked worth paying to analyse. This is the normal answer.")
+
+    if view.skipped:
+        lines.append("")
+        lines.append("⏭️ <b>Not analysed</b>")
+        for skip in view.skipped:
+            lines.append(f"  {escape(skip.symbol)} — {escape(skip.wording)}")
+
+    if view.verdicts:
+        lines.append("")
+        lines.append("🧠 <b>Analyst</b>")
+        for verdict in view.verdicts:
+            lines.append(
+                f"  {escape(verdict.symbol)} — <b>{verdict.status}</b> · "
+                f"conf {verdict.confidence} · {escape(verdict.setup_type)} "
+                f"{verdict.direction}"
+            )
+            lines.append(f"    <i>{escape(verdict.thesis)}</i>")
+
+    if view.gate:
+        lines.append("")
+        lines.append("🚦 <b>Gate</b>")
+        for decision in view.gate:
+            mark = "✅ " if decision.approved else ""
+            code = "" if decision.approved or not decision.code else f"<b>{decision.code}</b> — "
+            lines.append(f"  {escape(decision.symbol)} — {mark}{code}{escape(decision.wording)}")
+
+    if view.spend is not None and view.spend_usd is not None:
+        at_least = "at least " if view.spend.is_floor else ""
+        lines.append("")
+        lines.append(
+            f"💵 <b>~${view.spend_usd} this cycle</b> · {at_least}${view.spend.day_usd} "
+            f"today of ${view.spend.limit_usd} <i>(estimate, not a bill)</i>"
+        )
+
+    lines.extend(_pulse_truncation(view))
+    lines.append("")
+    lines.append("<i>The pipeline's reasoning, the same for everyone. /pulse 24h for the day.</i>")
+    return "\n".join(lines)
+
+
+def pulse_day_card(view: PulseDayView, tz: ZoneInfo) -> str:
+    """``/pulse 24h`` — the same four sections, aggregated."""
+    lines = [
+        "📡 <b>Pulse</b> — last 24h",
+        f"since {local_and_utc(view.since, tz)}",
+        f"{view.cycles_completed} of {view.cycles_started} cycles completed",
+    ]
+    if view.dry_run:
+        lines.append("⚠️ <b>DRY RUN</b> — nothing in this window was published.")
+
+    if not view.cycles_completed:
+        lines.append("")
+        lines.append("No cycle completed in the last 24 hours.")
+        return "\n".join(lines)
+
+    lines.append("")
+    lines.append("🔎 <b>Escalated</b>")
+    lines.append(_counted(view.escalations, "  nothing was escalated"))
+    lines.append("")
+    lines.append("🧠 <b>Analyst verdicts</b>")
+    lines.append(_counted(view.verdicts, "  nothing reached the analyst"))
+    lines.append("")
+    lines.append("⏭️ <b>Not analysed</b>")
+    lines.append(_counted(view.skips, "  nothing was held back"))
+    lines.append("")
+    lines.append("🚦 <b>Gate</b>")
+    lines.append(_counted(view.gate, "  nothing reached the gate"))
+
+    if view.spend is not None:
+        at_least = "at least " if view.spend.is_floor else ""
+        lines.append("")
+        lines.append(
+            f"💵 <b>Spend</b> — {at_least}${view.spend.day_usd} today of "
+            f"${view.spend.limit_usd} <i>(estimate, not a bill)</i>"
+        )
+
+    lines.extend(_pulse_truncation(view))
+    lines.append("")
+    lines.append(
+        "<i>The pipeline's reasoning, the same for everyone. /pulse for the last cycle.</i>"
+    )
+    return "\n".join(lines)
+
+
+def _counted(rows: Sequence[tuple[str, int]], empty: str) -> str:
+    """``SOLUSDT x4 · LINKUSDT x3`` — one line, because a phone has one column."""
+    if not rows:
+        return empty
+    counted = " · ".join(f"{escape(key)} x{count}" for key, count in rows)
+    return f"  {counted}"
 
 
 def alert_card(view: AlertView, tz: ZoneInfo) -> str:
@@ -570,6 +711,13 @@ HELP_LINES = (
     "nothing to sending a weak setup. Use <code>/stats</code> to see your own "
     "numbers and <code>/positions</code> for what is open.",
     "",
+    "<b>Quiet day?</b> — <code>/pulse</code>",
+    "What the last cycle actually did: what was escalated and why, what the "
+    "analyst concluded, what the gate decided. It is the pipeline's reasoning, "
+    "identical for everyone — no capital, sizing or decisions, yours or anyone "
+    "else's. <code>/pulse 24h</code> for the whole day. Use it to tell a quiet "
+    "market from a system that has stopped.",
+    "",
     "This is experimental software and its win rate is not yet measured. You can lose money.",
     "",
     f"<i>{DISCLAIMER}</i>",
@@ -849,6 +997,8 @@ __all__ = [
     "loss_pause_card",
     "no_capital_card",
     "positions_card",
+    "pulse_card",
+    "pulse_day_card",
     "ready_card",
     "registration_request_card",
     "rejection_card",

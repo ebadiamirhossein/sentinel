@@ -44,6 +44,7 @@ MEMBER_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand(command="risk", description="Set your risk per trade % — /risk 0.75"),
     BotCommand(command="positions", description="Your open signals, marked to market"),
     BotCommand(command="stats", description="Your win rate, avg R, profit factor"),
+    BotCommand(command="pulse", description="What the last cycle did — /pulse 24h"),
     BotCommand(command="request", description="Ask for a symbol — /request SOLUSDT"),
     BotCommand(command="leave", description="Stop receiving signals and remove yourself"),
 )
