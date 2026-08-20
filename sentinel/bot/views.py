@@ -332,6 +332,56 @@ class PulseDayView:
     truncated: tuple[tuple[str, int], ...] = ()
 
 
+@dataclass(frozen=True)
+class SymbolPulseView:
+    """``/pulse SOLUSDT`` — one symbol's last verdict, with nothing trimmed (M8.5).
+
+    The counterpart to :class:`PulseView`, and deliberately its opposite in one
+    respect: that view cuts every piece of prose to fit several symbols on a phone,
+    and this one cuts nothing. If the result does not fit in a Telegram message it is
+    **split across messages**, never shortened — a drill-down that abbreviated would
+    have no reason to exist.
+
+    Two things it carries that ``PulseView`` cannot, because they live only inside
+    ``analyst_reports.report`` as JSONB and have no broken-out column: the
+    ``counter_thesis`` and the ``evidence`` behind each claim.
+
+    The gate half is a :class:`PulseGateView`, the same type the summary card uses,
+    so the shared/personal boundary is applied by the same function and cannot drift
+    between the two surfaces. ``gate`` is ``None`` when there is nothing to report —
+    see ``gate_note`` for which of the two reasons it was.
+
+    **No prices.** ``entry_zone``, ``stop``, ``targets`` and ``invalidation_price``
+    are on the stored report and are absent here by the owner's ruling: printing
+    levels for a symbol the gate rejected would be an unsized trade suggestion with
+    no approval behind it. The prose ``invalidation`` stays; the number does not, and
+    the boundary is this type — a renderer cannot print a field that is not here.
+    """
+
+    symbol: str
+    #: ``None`` when nothing has ever been analysed for this symbol.
+    at: datetime | None
+    #: Whether the symbol is on the watchlist — which of the "nothing found" cases.
+    on_watchlist: bool
+    status: str = ""
+    setup_type: str = ""
+    direction: str = ""
+    timeframe_label: str = ""
+    confidence: int = 0
+    thesis: str = ""
+    #: ``(claim, source_field)`` — specs/PROMPTS.md §2 rule 3's citations.
+    evidence: tuple[tuple[str, str], ...] = ()
+    counter_thesis: str = ""
+    invalidation: str = ""
+    #: The model's own caveat about its inputs. Usually absent; never abbreviated.
+    data_quality_note: str | None = None
+    prompt_version: str = ""
+    model: str = ""
+    gate: PulseGateView | None = None
+    #: Why there is no gate line, when there is none. Empty when ``gate`` is set.
+    gate_note: str = ""
+
+
 __all__ = [
     "AlertView",
     "DataSourceView",
@@ -348,6 +398,7 @@ __all__ = [
     "StatsGroupView",
     "StatsView",
     "StatusView",
+    "SymbolPulseView",
     "TrackerEventView",
     "UserView",
 ]

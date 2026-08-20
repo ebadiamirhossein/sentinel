@@ -122,7 +122,7 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 | `/status` | Pipeline health: last cycle time, data sources OK/degraded, active signals, open risk used, paused? (see the M6 note below) |
 | `/positions` | All ACTIVE signals with live uPnL in R and EUR |
 | `/stats [30d|90d|all]` | Real stats (taken): count, win rate, avg R, profit factor, max DD; then hypothetical (watched/skipped); breakdown by setup_type and prompt version |
-| `/pulse` | **Superseded 2026-08-20 (M8.4) — see §3b.** Was: on-demand market regime summary (P1) |
+| `/pulse [24h\|SYMBOL]` | **Superseded 2026-08-20 (M8.4/M8.5) — see §3b.** Was: on-demand market regime summary (P1) |
 | `/analyze SOLUSDT` | Force deep analysis of one symbol now (P1) |
 | `/watchlist [add|remove SYMBOL]` | View/edit watchlist |
 | `/pause` / `/resume` | Manual pause; resume from loss-limit pause requires confirming button "Yes, resume" |
@@ -299,6 +299,42 @@ a broken one). Four sections:
 
 **`/pulse 24h`** is the same four sections counted rather than listed, over
 completed cycles in the last day, with the completion ratio in the header.
+
+**`/pulse SOLUSDT`** (added 2026-08-20, M8.5) is the drill-down, and the deliberate
+opposite of the two above: they cut every piece of prose to fit several symbols on a
+phone, and this one **cuts nothing.** It shows one symbol's last analyst verdict in
+full — the untruncated thesis, the evidence behind each claim with the snapshot field
+it rests on, the counter-thesis, confidence, setup type, the invalidation text, the
+model's own data-quality note when it raised one, provenance, and what the gate did.
+
+*If it does not fit in one Telegram message it is **split across messages**, never
+shortened.* A drill-down that abbreviated would have no reason to exist. How many
+messages is not knowable in advance — `Evidence.claim` carries no length bound —
+so the renderer paginates and the handler sends what it is handed.
+
+**It shows no prices.** The stored report carries the analyst's `entry_zone`, `stop`,
+`targets` and `invalidation_price`, and none of them appear: printing levels for a
+symbol the gate *rejected* would be an unsized trade suggestion with no approval
+behind it — a signal card with the safety removed. The prose `invalidation_text` stays
+(it is the one field that says what would make the idea wrong, and it is on the signal
+card too); the number does not. The boundary is the view type, which has no field for
+a price.
+
+The gate half folds through the **same** `gate_outcome` the summary card uses, so the
+shared/personal split below is applied once and cannot drift between the two surfaces.
+Two states get their own sentence rather than an empty section: a verdict with no
+`cycle_id` (the column is nullable) cannot be matched to a gate run, and a `WATCHLIST`
+or `NO_SETUP` verdict never reached the gate at all — the orchestrator returns before
+it — which is the expected state for the commonest verdict in the system.
+
+A symbol with nothing stored gets one of two answers, because they are different
+problems: on the watchlist and never escalated far enough to be analysed, or not on
+the watchlist at all (with `/request` and `/watchlist add` named).
+
+The three argument forms cannot collide: `parse_symbol` requires five alphanumeric
+characters and every window word (`24h`, `day`, `1d`, `today`) is shorter. The window
+is still matched first, and an argument that is neither gets the usage line rather
+than silently falling back to the bare form.
 
 It is **read-only**: no new table, no new column, no write of any kind. The screener's
 verdicts come out of the `llm_calls` audit row (they have never had a table of their

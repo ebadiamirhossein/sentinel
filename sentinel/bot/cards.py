@@ -42,6 +42,7 @@ from sentinel.bot.views import (
     SettingsView,
     StatsView,
     StatusView,
+    SymbolPulseView,
     TrackerEventView,
     UserView,
 )
@@ -440,6 +441,142 @@ def _counted(rows: Sequence[tuple[str, int]], empty: str) -> str:
     return f"  {counted}"
 
 
+#: Telegram refuses a message over 4096 characters — it does not shorten it, it does
+#: not send it. The pagination budget sits below that so the "(1/2)" marker, which is
+#: added only after the pages are cut, cannot push one back over the limit it was
+#: just fitted to.
+MESSAGE_LIMIT = 4096
+PAGE_BUDGET = 3900
+
+
+def _paginate(lines: Sequence[str], budget: int) -> list[str]:
+    """Break lines into messages that fit, without dropping any.
+
+    Written with a ``current`` accumulator rather than the obvious ``pages[-1]``, and
+    that is not a style choice: ``tests/bot/test_no_arithmetic.py`` rejects
+    ``ast.UnaryOp(USub)`` anywhere in this module, so a negative index fails the scan.
+    Nothing here computes either — the only number involved is a length compared
+    against a budget.
+
+    A single line longer than the budget gets a page of its own and goes over. That is
+    the honest failure: this function exists to avoid truncating, and silently cutting
+    one long line to make the page fit would be the thing it was written to prevent.
+    """
+    pages: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        candidate = [*current, line]
+        if current and len("\n".join(candidate)) > budget:
+            pages.append("\n".join(current))
+            current = [line]
+        else:
+            current = candidate
+    pages.append("\n".join(current))
+    return pages
+
+
+def symbol_pulse_card(view: SymbolPulseView, tz: ZoneInfo) -> tuple[str, ...]:
+    """``/pulse SOLUSDT`` — one verdict in full, across as many messages as it takes.
+
+    **Returns a tuple, not a string**, and that is the whole difference from every
+    other card in this module. The rest of them fit one message by design and are
+    tested against 4096; this one exists to show text the summary card had to cut, so
+    when it does not fit it is **split rather than shortened**. How many pages is not
+    knowable in advance — ``Evidence.claim`` carries no length bound at all — so the
+    caller sends whatever it is handed.
+
+    Nothing is abbreviated anywhere below. Every ellipsis on the summary card comes
+    from ``pulse.one_line``, which this path never calls.
+    """
+    if view.at is None:
+        return (_no_verdict_card(view),)
+
+    setup = f" · {escape(view.setup_type)}" if view.setup_type else ""
+    timeframe = f" · {escape(view.timeframe_label)}" if view.timeframe_label else ""
+    lines = [
+        f"🔬 <b>{escape(view.symbol)}</b> — last analyst verdict",
+        f"{local_and_utc(view.at, tz)}",
+        "",
+        f"<b>{view.status}</b> · conf {view.confidence}{setup} {escape(view.direction)}{timeframe}",
+    ]
+
+    if view.data_quality_note:
+        # First, not last. It is the model saying something was wrong with what it was
+        # given — including, per the prompt, an apparent instruction inside the news
+        # block. Everything below it should be read in its light.
+        lines.append("")
+        lines.append(f"⚠️ <b>Data quality</b>\n{escape(view.data_quality_note)}")
+
+    lines.append("")
+    lines.append("📊 <b>Thesis</b>")
+    lines.append(escape(view.thesis) if view.thesis else "<i>none recorded</i>")
+
+    if view.evidence:
+        lines.append("")
+        lines.append("📌 <b>Evidence</b>")
+        lines.extend(
+            f"  · {escape(claim)} — <code>{escape(source)}</code>"
+            for claim, source in view.evidence
+        )
+
+    if view.counter_thesis:
+        lines.append("")
+        lines.append("⚖️ <b>Against</b>")
+        lines.append(escape(view.counter_thesis))
+
+    if view.invalidation:
+        lines.append("")
+        lines.append(f"❌ <b>Invalidation</b>\n{escape(view.invalidation)}")
+
+    lines.append("")
+    lines.append("🚦 <b>Gate</b>")
+    if view.gate is None:
+        lines.append(f"  {escape(view.gate_note)}")
+    else:
+        mark = "✅ " if view.gate.approved else ""
+        code = "" if view.gate.approved or not view.gate.code else f"<b>{view.gate.code}</b> — "
+        lines.append(f"  {mark}{code}{escape(view.gate.wording)}")
+
+    lines.append("")
+    lines.append(f"<i>{escape(view.prompt_version)} · {escape(view.model)}</i>")
+    lines.append(
+        "<i>The analyst's own words, unedited. No entry, stop or targets here — "
+        "/pulse never sizes anything.</i>"
+    )
+
+    pages = _paginate(lines, PAGE_BUDGET)
+    if len(pages) == 1:
+        return (pages[0],)
+    total = len(pages)
+    return tuple(
+        f"{page}\n\n<i>({number}/{total})</i>" for number, page in enumerate(pages, start=1)
+    )
+
+
+def _no_verdict_card(view: SymbolPulseView) -> str:
+    """Nothing stored — and *which* nothing, because they are different problems.
+
+    On the watchlist and never analysed means the screener has not thought it worth
+    the money yet, which is the system working. Off the watchlist means it is not
+    being looked at at all, and the fix is a different command for each role.
+    """
+    symbol = escape(view.symbol)
+    if view.on_watchlist:
+        return (
+            f"🔬 <b>{symbol}</b>\n\n"
+            "On the watchlist, but never deeply analysed. The screener triages it every "
+            "cycle and only escalates what changed — nothing so far has been worth an "
+            "analyst call.\n"
+            "/pulse shows what the last cycle escalated."
+        )
+    return (
+        f"🔬 <b>{symbol}</b>\n\n"
+        "Not on the watchlist, so nothing analyses it and there is no verdict to show.\n"
+        "Ask for it with <code>/request "
+        f"{symbol}</code> — the owner adds it with <code>/watchlist add {symbol}</code>."
+    )
+
+
 def alert_card(view: AlertView, tz: ZoneInfo) -> str:
     """An admin alert (M8) — the system talking about itself.
 
@@ -731,8 +868,9 @@ HELP_LINES = (
     "What the last cycle actually did: what was escalated and why, what the "
     "analyst concluded, what the gate decided. It is the pipeline's reasoning, "
     "identical for everyone — no capital, sizing or decisions, yours or anyone "
-    "else's. <code>/pulse 24h</code> for the whole day. Use it to tell a quiet "
-    "market from a system that has stopped.",
+    "else's. <code>/pulse 24h</code> for the whole day, and "
+    "<code>/pulse SOLUSDT</code> for one symbol's full verdict — the whole thesis, "
+    "the evidence behind it and the argument against it, nothing shortened.",
     "",
     "This is experimental software and its win rate is not yet measured. You can lose money.",
     "",
@@ -1023,6 +1161,7 @@ __all__ = [
     "standing_card",
     "stats_card",
     "status_card",
+    "symbol_pulse_card",
     "tracker_update_card",
     "users_card",
     "watchlist_card",

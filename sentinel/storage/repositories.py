@@ -756,6 +756,28 @@ class AnalystReportRepository:
         )
         return list((await self._session.execute(statement)).scalars())
 
+    async def latest_for_symbol(
+        self, symbol: str, *, role: str = "primary"
+    ) -> AnalystReportRow | None:
+        """The newest deep analysis of one symbol — ``/pulse SOLUSDT`` (M8.5).
+
+        Unbounded in time on purpose. The question the drill-down answers is "what did
+        this system last say about this", and a window would turn a stale answer into
+        no answer — which reads as "never analysed", a completely different fact. The
+        card prints when the verdict was formed, so age is visible rather than hidden.
+
+        ``role='primary'`` for the reason ``for_cycles`` and ``latest_non_candidates``
+        share: specs/ENSEMBLE.md §3 stores M10's second opinion in this table, and a
+        shadow verdict is not the pipeline's answer about the symbol.
+        """
+        statement = (
+            select(AnalystReportRow)
+            .where(AnalystReportRow.symbol == symbol, AnalystReportRow.role == role)
+            .order_by(AnalystReportRow.created_at.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(statement)).scalars().first()
+
     async def recent_for_symbol(
         self, symbol: str, limit: int = 3, *, owner_id: int, role: str = "primary"
     ) -> list[PastVerdict]:

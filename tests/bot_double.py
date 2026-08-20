@@ -872,6 +872,18 @@ class FakeAnalystReportRepository(AnalystReportRepository):
         wanted = set(cycle_ids)
         return [row for row in self._store.reports if row.cycle_id in wanted]
 
+    async def latest_for_symbol(self, symbol: str, *, role: str = "primary") -> Any:
+        """Newest first, as the real ``ORDER BY created_at DESC`` returns them.
+
+        ``store.reports`` is seeded oldest-first, so this reverses rather than sorts —
+        the ordering itself is what ``tests/bot/test_persistence.py`` proves against a
+        real database, since only Postgres runs the actual ``ORDER BY``.
+        """
+        for row in reversed(self._store.reports):
+            if row.symbol == symbol and row.role == role:
+                return row
+        return None
+
 
 class FakeGateDecisionRepository(GateDecisionRepository):
     def __init__(self, session: Any) -> None:

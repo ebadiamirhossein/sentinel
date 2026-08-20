@@ -466,3 +466,36 @@ async def test_pulse_is_silent_for_someone_with_no_standing(dispatcher: Dispatch
     bot = FakeBot()
     await dispatcher.feed_update(bot, message_update("/pulse", user_id=999))  # type: ignore[arg-type]
     assert bot.calls == [], f"a stranger's /pulse produced {bot.calls}"
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_pulse_for_one_symbol_is_reachable_by_both_roles(
+    dispatcher: Dispatcher, user_id: int
+) -> None:
+    """The third argument shape, and a third query path — ``latest_for_symbol`` plus a
+    watchlist read — so it gets its own assertion for both roles (M8.5)."""
+    response = await feed(dispatcher, message_update("/pulse SOLUSDT", user_id=user_id))
+    assert reached_a_handler(response), f"/pulse SOLUSDT reached no handler for {user_id}"
+
+
+async def test_a_day_word_is_never_taken_for_a_symbol(dispatcher: Dispatcher) -> None:
+    """The two vocabularies cannot collide — ``parse_symbol`` needs five alphanumeric
+    characters and every day word is shorter — but the *order* is what keeps that
+    decision in one place, so it is asserted rather than left to the coincidence.
+
+    A regression here is quiet in the worst way: ``/pulse 24h`` would fall through to
+    the symbol branch and answer "24H is not on the watchlist", which reads as a
+    broken command rather than as a routing bug.
+    """
+    bot = FakeBot()
+    await dispatcher.feed_update(bot, message_update("/pulse 24h", user_id=MEMBER))  # type: ignore[arg-type]
+    assert bot.calls, "the day form answered nothing at all"
+
+
+async def test_an_unparseable_pulse_argument_gets_the_usage_line(
+    dispatcher: Dispatcher,
+) -> None:
+    """``/pulse !!`` is neither a window nor a symbol. It must be answered, not
+    silently treated as the bare form."""
+    response = await feed(dispatcher, message_update("/pulse !!", user_id=MEMBER))
+    assert reached_a_handler(response)

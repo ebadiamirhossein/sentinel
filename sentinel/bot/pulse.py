@@ -41,7 +41,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sentinel.analyst.models import SetupType
+from pydantic import ValidationError
+
+from sentinel.analyst.models import AnalystReport, CandidateStatus, SetupType
 from sentinel.bot.views import (
     PulseDayView,
     PulseGateView,
@@ -50,11 +52,15 @@ from sentinel.bot.views import (
     PulseVerdictView,
     PulseView,
     SpendView,
+    SymbolPulseView,
 )
+from sentinel.core.logging import get_logger
 from sentinel.risk.models import GateStatus, RejectionReason
 from sentinel.risk.rounding import money
 from sentinel.screener.models import ScreenerVerdict
 from sentinel.storage.models import AnalystReportRow, CycleRow, GateDecisionRow
+
+log = get_logger(__name__)
 
 #: How many rows one section of the card may list before it says it truncated.
 #:
@@ -453,10 +459,125 @@ def pulse_day_view(
     )
 
 
+#: Said when a verdict cannot be matched to a gate run at all. ``cycle_id`` is
+#: nullable on ``analyst_reports``, and a blank section would read as a lost row.
+GATE_UNKNOWN = "this verdict is not linked to a cycle, so its gate run cannot be found"
+
+#: Said when the gate was never asked, which is the *expected* state for anything
+#: that is not a CANDIDATE — the orchestrator returns before the gate for those.
+#: Without the sentence, the commonest verdict in the system renders as a gap.
+GATE_NOT_ASKED = "the gate was never asked — only a CANDIDATE reaches it"
+
+#: And when it should have run and left nothing. Rare, and worth not smoothing over.
+GATE_NO_ROWS = "no gate verdict was recorded for this cycle"
+
+
+def symbol_pulse_view(
+    row: AnalystReportRow | None,
+    decisions: Sequence[GateDecisionRow],
+    *,
+    symbol: str,
+    on_watchlist: bool,
+) -> SymbolPulseView:
+    """One symbol's last verdict, in full — ``/pulse SOLUSDT`` (M8.5).
+
+    The stored ``report`` JSONB is validated back through :class:`AnalystReport`
+    rather than read key by key. Three of the fields this card exists to show —
+    ``counter_thesis``, ``evidence`` and ``data_quality_note`` — have no broken-out
+    column and live only in there, and going through the model means the card is
+    reading the same contract the analyst wrote, not a dict shape it assumes.
+
+    Nothing is shortened here. :func:`one_line` is used all over the summary card and
+    is deliberately **not** used on this one: the point of a drill-down is the text
+    the summary had to cut, and reaching for that helper out of habit would quietly
+    turn this command back into the one it exists to complete. Length is the
+    renderer's problem, and it splits rather than trims.
+    """
+    if row is None:
+        return SymbolPulseView(symbol=symbol, at=None, on_watchlist=on_watchlist)
+
+    # A row that will not validate still has its broken-out columns, and those carry
+    # the verdict itself. Degrade to them rather than refusing the whole card: a
+    # later schema change must not make old verdicts unreadable (the same posture
+    # `screener_verdicts_of` takes one table over).
+    report: AnalystReport | None
+    try:
+        report = AnalystReport.model_validate(row.report)
+    except ValidationError:
+        log.warning(
+            "bot.report_unreadable",
+            symbol=symbol,
+            detail="stored report does not match the current model; showing columns only",
+        )
+        report = None
+
+    gate, note = _gate_for_symbol(row, decisions)
+    return SymbolPulseView(
+        symbol=row.symbol,
+        at=row.created_at,
+        on_watchlist=on_watchlist,
+        status=row.candidate_status,
+        setup_type="" if row.setup_type == SetupType.NONE.value else row.setup_type,
+        direction=row.direction,
+        timeframe_label="" if report is None else report.timeframe_label.value,
+        confidence=row.confidence,
+        thesis=row.thesis,
+        evidence=(
+            ()
+            if report is None
+            else tuple((item.claim, item.source_field) for item in report.evidence)
+        ),
+        counter_thesis="" if report is None else report.counter_thesis,
+        invalidation="" if report is None else report.invalidation_text,
+        data_quality_note=None if report is None else report.data_quality_note,
+        prompt_version=row.prompt_version,
+        model=row.model,
+        gate=gate,
+        gate_note=note,
+    )
+
+
+def _gate_for_symbol(
+    row: AnalystReportRow, decisions: Sequence[GateDecisionRow]
+) -> tuple[PulseGateView | None, str]:
+    """The gate half, folded by the *same* function the summary card uses.
+
+    Reusing :func:`gate_outcome` rather than re-deriving the outcome here is the
+    whole reason the shared/personal boundary cannot drift between the two cards:
+    there is one implementation, and the parametrized sweep over
+    :data:`PERSONAL_REASONS` covers both surfaces through it.
+    """
+    if row.cycle_id is None:
+        return None, GATE_UNKNOWN
+
+    mine = [
+        decision
+        for decision in decisions
+        if decision.cycle_id == row.cycle_id and decision.symbol == row.symbol
+    ]
+    if not mine:
+        return None, (
+            GATE_NO_ROWS
+            if row.candidate_status == CandidateStatus.CANDIDATE.value
+            else GATE_NOT_ASKED
+        )
+
+    code, wording = gate_outcome(mine)
+    return (
+        PulseGateView(
+            symbol=row.symbol, code=code, wording=wording, approved=code == APPROVED_CODE
+        ),
+        "",
+    )
+
+
 __all__ = [
     "APPROVED_CODE",
     "APPROVED_WORDING",
     "BOOK_SKIPS",
+    "GATE_NOT_ASKED",
+    "GATE_NO_ROWS",
+    "GATE_UNKNOWN",
     "MAX_ROWS",
     "PERSONAL_REASONS",
     "PER_ACCOUNT_KEY",
@@ -469,4 +590,5 @@ __all__ = [
     "one_line",
     "pulse_day_view",
     "pulse_view",
+    "symbol_pulse_view",
 ]

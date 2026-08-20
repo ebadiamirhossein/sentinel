@@ -30,10 +30,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sentinel.bot.cards import pulse_card, pulse_day_card
+from sentinel.bot.cards import PAGE_BUDGET, _paginate, pulse_card, pulse_day_card, symbol_pulse_card
 from sentinel.bot.pulse import (
     APPROVED_CODE,
     BOOK_SKIPS,
+    GATE_NO_ROWS,
+    GATE_NOT_ASKED,
+    GATE_UNKNOWN,
     MAX_ROWS,
     PER_ACCOUNT_KEY,
     PER_ACCOUNT_WORDING,
@@ -46,8 +49,9 @@ from sentinel.bot.pulse import (
     one_line,
     pulse_day_view,
     pulse_view,
+    symbol_pulse_view,
 )
-from sentinel.bot.views import PulseView, SpendView
+from sentinel.bot.views import PulseView, SpendView, SymbolPulseView
 from sentinel.core.orchestrator import SkipReason
 from sentinel.risk.models import GateStatus, RejectionReason
 from sentinel.screener.models import DirectionHint, ScreenerVerdict
@@ -110,10 +114,12 @@ def report_row(
     status: str = "CANDIDATE",
     thesis: str = "a thesis",
     setup_type: str = "trend_pullback",
+    report: dict[str, Any] | None = None,
+    cycle_id: UUID | None = CYCLE,
 ) -> Any:
     return AnalystReportRow(
         id=uuid4(),
-        cycle_id=CYCLE,
+        cycle_id=cycle_id,
         symbol=symbol,
         created_at=NOW,
         role="primary",
@@ -125,8 +131,47 @@ def report_row(
         direction="long",
         confidence=78,
         thesis=thesis,
-        report={},
+        report=report
+        if report is not None
+        else stored_report(symbol, status=status, thesis=thesis),
     )
+
+
+def stored_report(
+    symbol: str = "SOLUSDT",
+    *,
+    status: str = "CANDIDATE",
+    thesis: str = "a thesis",
+    counter_thesis: str = "an argument against",
+    evidence: tuple[tuple[str, str], ...] = (("a claim", "features.rsi_1h"),),
+    data_quality_note: str | None = None,
+) -> dict[str, Any]:
+    """The JSONB half of an ``analyst_reports`` row, shaped as the analyst wrote it.
+
+    ``counter_thesis``, ``evidence`` and ``data_quality_note`` exist **only** here —
+    they have no broken-out column — and they are three of the reasons
+    ``/pulse SYMBOL`` exists at all.
+    """
+    return {
+        "schema_version": 1,
+        "symbol": symbol,
+        "candidate_status": status,
+        "setup_type": "trend_pullback",
+        "direction": "long",
+        "timeframe_label": "intraday",
+        "thesis": thesis,
+        "evidence": [{"claim": claim, "source_field": field} for claim, field in evidence],
+        "counter_thesis": counter_thesis,
+        "entry_zone": {"low": 82.1, "high": 83.1},
+        "stop": 81.2,
+        "targets": [85.2, 86.6],
+        "invalidation_price": 81.4,
+        "invalidation_text": "1h close below 81.40",
+        "confidence": 78,
+        "data_quality_note": data_quality_note,
+        "prompt_version": "fable_v1",
+        "model": "claude-fable-5",
+    }
 
 
 def gate_row(
@@ -739,3 +784,308 @@ def test_a_verdict_the_current_model_cannot_read_is_dropped_not_guessed() -> Non
 
 def test_a_verdicts_key_that_is_not_a_list_is_refused() -> None:
     assert screener_verdicts_of({"parsed": {"verdicts": {"SOLUSDT": True}}}) == []
+
+
+# --------------------------------------------------------------------------- #
+# /pulse <SYMBOL> — the drill-down (M8.5)
+#
+# The summary card's tests are all about what it leaves out. These are the
+# opposite: this command exists to show the text /pulse had to cut, so most of
+# what follows asserts that something is present *whole*.
+# --------------------------------------------------------------------------- #
+
+
+LONG_THESIS = " ".join(["reasoning"] * 60)[:600]
+LONG_COUNTER = " ".join(["against"] * 37)[:300]
+
+
+def detail(**kwargs: Any) -> tuple[str, ...]:
+    """Build and render one drill-down, as the handler does."""
+    row = kwargs.pop("row", report_row("SOLUSDT"))
+    return symbol_pulse_card(
+        symbol_pulse_view(
+            row,
+            kwargs.pop("decisions", ()),
+            symbol=kwargs.pop("symbol", "SOLUSDT"),
+            on_watchlist=kwargs.pop("on_watchlist", True),
+        ),
+        kwargs.pop("tz"),
+    )
+
+
+def test_the_whole_verdict_is_shown_with_nothing_shortened(tz: ZoneInfo) -> None:
+    """The point of the command, stated as one assertion.
+
+    A 600-character thesis and a 300-character counter-thesis are the model's own
+    hard caps, so these are the longest either field can be. Both appear verbatim,
+    and no ellipsis appears anywhere — every ellipsis in this system comes from
+    ``pulse.one_line``, which this path must never call.
+    """
+    pages = detail(
+        tz=tz,
+        row=report_row(
+            "SOLUSDT",
+            thesis=LONG_THESIS,
+            report=stored_report(thesis=LONG_THESIS, counter_thesis=LONG_COUNTER),
+        ),
+    )
+    whole = "\n".join(pages)
+    assert LONG_THESIS in whole
+    assert LONG_COUNTER in whole
+    assert "…" not in whole
+
+
+def test_it_shows_the_three_fields_that_live_only_in_the_jsonb(tz: ZoneInfo) -> None:
+    """``counter_thesis``, ``evidence`` and ``data_quality_note`` have no column of
+    their own, so nothing in the system read them before this card."""
+    pages = detail(
+        tz=tz,
+        row=report_row(
+            "SOLUSDT",
+            report=stored_report(
+                counter_thesis="funding is crowded long",
+                evidence=(("RSI 4h at 92.6", "features.rsi_4h"),),
+                data_quality_note="the orderbook snapshot is 11 minutes stale",
+            ),
+        ),
+    )
+    whole = "\n".join(pages)
+    assert "funding is crowded long" in whole
+    assert "RSI 4h at 92.6" in whole and "features.rsi_4h" in whole
+    assert "the orderbook snapshot is 11 minutes stale" in whole
+
+
+def test_the_data_quality_note_comes_before_the_thesis(tz: ZoneInfo) -> None:
+    """It is the model saying something was wrong with what it was given — including,
+    per the prompt, an apparent instruction hidden in the news block. Everything below
+    it should be read in its light, so it cannot sit at the bottom."""
+    page = detail(
+        tz=tz,
+        row=report_row("SOLUSDT", report=stored_report(data_quality_note="stale funding")),
+    )[0]
+    assert page.index("stale funding") < page.index("Thesis")
+
+
+def test_no_price_reaches_the_card(tz: ZoneInfo) -> None:
+    """The owner's ruling, and the reason ``SymbolPulseView`` has no field for one.
+
+    The stored report carries the analyst's entry zone, stop and targets. Printing
+    them for a symbol the gate rejected would be an unsized trade suggestion with no
+    approval behind it — a signal card with the safety removed.
+
+    "No prices" means no *structured* level the reader could act on, not "no digits":
+    ``invalidation_text`` is the analyst's own sentence and it names a level inside
+    itself ("1h close below 81.40"). That sentence is kept — it is the one field that
+    says what would make the idea wrong, it appears on the signal card too, and
+    stripping numbers out of prose would be censoring the analysis rather than
+    declining to size it. What is gone is the *offer*: no zone to buy in, no stop to
+    place, no targets to sell into.
+    """
+    pages = detail(
+        tz=tz,
+        row=report_row("SOLUSDT", report=stored_report()),
+        decisions=[gate_row("SOLUSDT", reason=RejectionReason.RR_TOO_LOW)],
+    )
+    whole = "\n".join(pages)
+    for price in ("82.1", "83.1", "81.2", "85.2", "86.6"):
+        assert price not in whole, f"the analyst's {price} reached a card that must not size"
+    assert "1h close below 81.40" in whole, "the prose invalidation is the analyst's sentence"
+
+    fields = set(SymbolPulseView.__dataclass_fields__)
+    assert not fields & {"entry_zone", "stop", "targets", "invalidation_price"}
+
+
+# --- the boundary, the same sweep as the summary card ----------------------- #
+
+
+@pytest.mark.parametrize("reason", sorted(PERSONAL_REASONS), ids=lambda r: r.value)
+def test_no_personal_rejection_code_reaches_the_drill_down(
+    reason: RejectionReason, tz: ZoneInfo
+) -> None:
+    """M8.4's sweep, extended to the second surface rather than re-derived.
+
+    Both cards fold their ``gate_decisions`` rows through the same
+    ``pulse.gate_outcome``, which is what makes "the boundary cannot drift between
+    them" a fact about the code rather than a hope.
+    """
+    pages = detail(tz=tz, decisions=[gate_row("SOLUSDT", reason=reason)])
+    whole = "\n".join(pages)
+    assert reason.value not in whole
+    assert PER_ACCOUNT_WORDING in whole
+
+
+def test_a_shared_rejection_is_named_on_the_drill_down(tz: ZoneInfo) -> None:
+    whole = "\n".join(
+        detail(tz=tz, decisions=[gate_row("SOLUSDT", reason=RejectionReason.RR_TOO_LOW)])
+    )
+    assert RejectionReason.RR_TOO_LOW.value in whole
+
+
+def test_the_drill_down_carries_no_user_id(tz: ZoneInfo) -> None:
+    whole = "\n".join(
+        detail(
+            tz=tz,
+            decisions=[
+                gate_row("SOLUSDT", approved=True, user_id=987654321),
+                gate_row("SOLUSDT", reason=RejectionReason.NO_CAPITAL, user_id=123456789),
+            ],
+        )
+    )
+    assert "987654321" not in whole and "123456789" not in whole
+
+
+def test_another_symbols_gate_rows_are_not_borrowed(tz: ZoneInfo) -> None:
+    """``for_cycles`` returns every symbol's rows for the cycle, so the filter to this
+    one happens here. Getting it wrong would attribute another symbol's rejection."""
+    whole = "\n".join(
+        detail(
+            tz=tz,
+            decisions=[
+                gate_row("ETHUSDT", reason=RejectionReason.LOW_CONFIDENCE),
+                gate_row("SOLUSDT", approved=True),
+            ],
+        )
+    )
+    assert RejectionReason.LOW_CONFIDENCE.value not in whole
+    assert "✅" in whole
+
+
+# --- degradation ------------------------------------------------------------ #
+
+
+def test_a_watchlist_verdict_says_the_gate_was_never_asked(tz: ZoneInfo) -> None:
+    """The commonest verdict in the system, and it produces no ``gate_decisions`` rows
+    at all — the orchestrator returns before the gate. A blank section would read as a
+    lost row rather than as the pipeline working."""
+    whole = "\n".join(detail(tz=tz, row=report_row("SOLUSDT", status="WATCHLIST"), decisions=()))
+    assert GATE_NOT_ASKED in whole
+
+
+def test_a_candidate_with_no_gate_rows_is_reported_differently(tz: ZoneInfo) -> None:
+    """A CANDIDATE *should* have reached the gate, so its absence is not routine."""
+    whole = "\n".join(detail(tz=tz, decisions=()))
+    assert GATE_NO_ROWS in whole
+    assert GATE_NOT_ASKED not in whole
+
+
+def test_a_report_with_no_cycle_says_the_gate_run_cannot_be_found(tz: ZoneInfo) -> None:
+    """``analyst_reports.cycle_id`` is nullable."""
+    whole = "\n".join(detail(tz=tz, row=report_row("SOLUSDT", cycle_id=None)))
+    assert GATE_UNKNOWN in whole
+
+
+def test_a_symbol_off_the_watchlist_is_told_how_to_get_it_watched(tz: ZoneInfo) -> None:
+    page = detail(tz=tz, row=None, symbol="PEPEUSDT", on_watchlist=False)[0]
+    assert "Not on the watchlist" in page
+    assert "/request PEPEUSDT" in page
+
+
+def test_a_watchlisted_symbol_with_no_verdict_says_the_screener_passed_on_it(
+    tz: ZoneInfo,
+) -> None:
+    """Two different facts, two different sentences: not being looked at, and being
+    looked at every cycle and never found worth an analyst call."""
+    page = detail(tz=tz, row=None, symbol="LTCUSDT", on_watchlist=True)[0]
+    assert "never deeply analysed" in page
+    assert "/request" not in page
+
+
+def test_a_stored_report_the_model_cannot_read_still_shows_its_columns(
+    tz: ZoneInfo,
+) -> None:
+    """A later schema change must not make old verdicts unreadable.
+
+    The verdict itself — status, confidence, setup type, thesis — lives in broken-out
+    columns and survives; only the JSONB-only fields are lost, and losing them is
+    better than refusing the whole card.
+    """
+    whole = "\n".join(
+        detail(tz=tz, row=report_row("SOLUSDT", thesis="still here", report={"nonsense": 1}))
+    )
+    assert "still here" in whole
+    assert "CANDIDATE" in whole
+
+
+# --- pagination ------------------------------------------------------------- #
+
+
+def test_a_verbose_verdict_splits_across_messages_and_loses_nothing(tz: ZoneInfo) -> None:
+    """ "Split rather than truncate", asserted as *nothing was lost*.
+
+    ``Evidence.claim`` carries no length bound — the wire schema strips them and
+    nothing caps it client-side — so the overflow this models is one the analyst can
+    really produce. Asserting only "more than one message" would pass on a card that
+    split correctly and dropped the tail.
+    """
+    claims = tuple((f"claim {index} " + "e" * 300, f"features.f{index}") for index in range(20))
+    pages = detail(
+        tz=tz,
+        row=report_row(
+            "SOLUSDT",
+            thesis=LONG_THESIS,
+            report=stored_report(thesis=LONG_THESIS, counter_thesis=LONG_COUNTER, evidence=claims),
+        ),
+    )
+    assert len(pages) > 1
+    for page in pages:
+        assert len(page) < TELEGRAM_TEXT_LIMIT, "a page was still too long to send"
+
+    whole = "\n".join(pages)
+    assert LONG_THESIS in whole
+    assert LONG_COUNTER in whole
+    for claim, source in claims:
+        assert claim in whole and source in whole
+    assert "…" not in whole
+
+
+def test_a_split_card_numbers_its_pages(tz: ZoneInfo) -> None:
+    claims = tuple((f"claim {index} " + "e" * 300, f"features.f{index}") for index in range(20))
+    pages = detail(tz=tz, row=report_row("SOLUSDT", report=stored_report(evidence=claims)))
+    assert pages[0].endswith(f"<i>(1/{len(pages)})</i>")
+
+
+def test_a_card_that_fits_is_one_message_with_no_page_marker(tz: ZoneInfo) -> None:
+    pages = detail(tz=tz)
+    assert len(pages) == 1
+    assert "(1/1)" not in pages[0]
+
+
+def test_the_paginator_keeps_every_line(tz: ZoneInfo) -> None:
+    """The unit, separately from the card — it is the piece that could silently eat a
+    line, and a missing line in the middle of a thesis is invisible on a phone."""
+    lines = [f"line {index} " + "x" * 100 for index in range(200)]
+    pages = _paginate(lines, PAGE_BUDGET)
+    assert "\n".join(pages).splitlines() == lines
+
+
+def test_an_unsplittable_line_gets_its_own_page_rather_than_being_cut(tz: ZoneInfo) -> None:
+    """One line longer than the budget is the honest failure: this function exists to
+    avoid truncating, so it overflows visibly instead of shortening the line."""
+    huge = "x" * 5000
+    pages = _paginate(["short", huge], PAGE_BUDGET)
+    assert pages == ["short", huge]
+
+
+# --- escaping --------------------------------------------------------------- #
+
+
+def test_analyst_prose_cannot_break_the_markup(tz: ZoneInfo) -> None:
+    """Every field on this card is text a model wrote, and M5 §4 established that news
+    text reaching the analyst is attacker-influenceable."""
+    whole = "\n".join(
+        detail(
+            tz=tz,
+            row=report_row(
+                "SOLUSDT",
+                thesis="EMA 20>50>200 & rising",
+                report=stored_report(
+                    thesis="EMA 20>50>200 & rising",
+                    counter_thesis="<b>not</b> a real tag",
+                    evidence=(("<script>alert(1)</script>", "features.<x>"),),
+                ),
+            ),
+        )
+    )
+    assert "20&gt;50&gt;200 &amp; rising" in whole
+    assert "<script>" not in whole
+    assert "&lt;b&gt;not&lt;/b&gt;" in whole

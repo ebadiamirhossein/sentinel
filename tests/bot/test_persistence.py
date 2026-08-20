@@ -19,6 +19,13 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from sentinel.analyst.models import (
+    AnalystReport,
+    CandidateStatus,
+    Direction,
+    Evidence,
+    SetupType,
+)
 from sentinel.bot.models import (
     MessageKind,
     MessageStatus,
@@ -779,3 +786,108 @@ async def test_the_pulse_reads_are_all_no_ops_on_an_empty_id_list(
     assert await LLMCallRepository(session).screener_verdicts([]) == {}
     assert await AnalystReportRepository(session).for_cycles([]) == []
     assert await GateDecisionRepository(session).for_cycles([]) == []
+
+
+@requires_db
+async def test_latest_for_symbol_returns_the_newest_verdict(session: AsyncSession) -> None:
+    """``/pulse SOLUSDT`` asks what the pipeline **last** said (M8.5).
+
+    The fake reverses a list; only Postgres runs the ``ORDER BY created_at DESC``,
+    and getting it backwards would answer with the oldest opinion on record — which
+    on a market is worse than answering nothing.
+    """
+    for offset, status in ((3, "NO_SETUP"), (1, "CANDIDATE"), (2, "WATCHLIST")):
+        session.add(
+            AnalystReportRow(
+                cycle_id=uuid4(),
+                symbol="SOLUSDT",
+                created_at=PULSE_NOW - timedelta(hours=offset),
+                role="primary",
+                provider="anthropic",
+                model="claude-fable-5",
+                prompt_version="fable_v1",
+                candidate_status=status,
+                setup_type="trend_pullback",
+                direction="long",
+                confidence=78,
+                thesis=status,
+                report={},
+            )
+        )
+    await session.commit()
+
+    latest = await AnalystReportRepository(session).latest_for_symbol("SOLUSDT")
+    assert latest is not None and latest.candidate_status == "CANDIDATE"
+
+
+@requires_db
+async def test_latest_for_symbol_ignores_a_shadow_verdict(session: AsyncSession) -> None:
+    """M10's second opinion is not the pipeline's answer about the symbol, and it is
+    the *newer* row here — so a missing role filter would surface it."""
+    for offset, role, status in ((2, "primary", "CANDIDATE"), (1, "shadow", "NO_SETUP")):
+        session.add(
+            AnalystReportRow(
+                cycle_id=uuid4(),
+                symbol="SOLUSDT",
+                created_at=PULSE_NOW - timedelta(hours=offset),
+                role=role,
+                provider="anthropic",
+                model="claude-fable-5",
+                prompt_version="fable_v1",
+                candidate_status=status,
+                setup_type="trend_pullback",
+                direction="long",
+                confidence=78,
+                thesis=role,
+                report={},
+            )
+        )
+    await session.commit()
+
+    latest = await AnalystReportRepository(session).latest_for_symbol("SOLUSDT")
+    assert latest is not None and latest.role == "primary"
+
+
+@requires_db
+async def test_latest_for_symbol_is_none_for_a_symbol_never_analysed(
+    session: AsyncSession,
+) -> None:
+    assert await AnalystReportRepository(session).latest_for_symbol("PEPEUSDT") is None
+
+
+@requires_db
+async def test_the_stored_report_round_trips_back_through_the_analyst_model(
+    session: AsyncSession,
+) -> None:
+    """The drill-down's whole premise: ``counter_thesis``, ``evidence`` and
+    ``data_quality_note`` have no column and survive only as JSONB.
+
+    Written the way the orchestrator writes it — ``AnalystReportRepository.save`` from
+    a real ``AnalystReport`` — and read back the way ``/pulse SOLUSDT`` reads it, so
+    the two halves are proven against each other rather than against a fixture dict.
+    """
+    report = AnalystReport(
+        symbol="SOLUSDT",
+        candidate_status=CandidateStatus.CANDIDATE,
+        setup_type=SetupType.TREND_PULLBACK,
+        direction=Direction.LONG,
+        thesis="the whole thesis",
+        evidence=(Evidence(claim="RSI 4h at 92.6", source_field="features.rsi_4h"),),
+        counter_thesis="crowded long into resistance",
+        invalidation_text="1h close below 81.40",
+        confidence=78,
+        data_quality_note="the orderbook snapshot is stale",
+        prompt_version="fable_v1",
+        model="claude-fable-5",
+    )
+    await AnalystReportRepository(session).save(
+        report, created_at=PULSE_NOW, provider="anthropic", cycle_id=uuid4()
+    )
+    await session.commit()
+
+    row = await AnalystReportRepository(session).latest_for_symbol("SOLUSDT")
+    assert row is not None
+    restored = AnalystReport.model_validate(row.report)
+    assert restored.counter_thesis == "crowded long into resistance"
+    assert restored.evidence[0].claim == "RSI 4h at 92.6"
+    assert restored.data_quality_note == "the orderbook snapshot is stale"

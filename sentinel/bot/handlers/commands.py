@@ -37,6 +37,7 @@ from sentinel.bot.cards import (
     pulse_card,
     pulse_day_card,
     stats_card,
+    symbol_pulse_card,
     watchlist_request_ack_card,
     watchlist_request_card,
 )
@@ -45,7 +46,7 @@ from sentinel.bot.formatting import escape
 from sentinel.bot.keyboards import watchlist_request_keyboard
 from sentinel.bot.models import SignalDecision
 from sentinel.bot.outbound import SupportsBot
-from sentinel.bot.pulse import pulse_day_view, pulse_view
+from sentinel.bot.pulse import pulse_day_view, pulse_view, symbol_pulse_view
 from sentinel.bot.readmodels import position_view, spend_view, stats_view
 from sentinel.bot.runtime import (
     Invalid,
@@ -195,7 +196,8 @@ async def stats(message: Message, command: CommandObject, ctx: BotContext, actor
 PULSE_DAY_ARGS = frozenset({"24h", "day", "1d", "today"})
 
 PULSE_USAGE = (
-    "❌ Usage: <code>/pulse</code> for the last cycle, or <code>/pulse 24h</code> for the day."
+    "❌ Usage: <code>/pulse</code> for the last cycle, <code>/pulse 24h</code> for the "
+    "day, or <code>/pulse SOLUSDT</code> for one symbol's full verdict."
 )
 
 
@@ -214,17 +216,56 @@ async def pulse(message: Message, command: CommandObject, ctx: BotContext, actor
     the renderer would be a boundary that survives only as long as everybody
     remembers it is there (M8.1 §6).
     """
-    raw = (command.args or "").strip().lower()
-    if raw and raw not in PULSE_DAY_ARGS:
-        await message.answer(PULSE_USAGE)
-        return
+    raw = (command.args or "").strip().split()[0].lower() if command.args else ""
 
-    now = ctx.clock.now()
-    spend = await _pulse_spend(ctx, now=now, owner=actor.is_owner)
-    if raw:
+    # The day words are checked first, and the two vocabularies cannot collide:
+    # `parse_symbol` needs five alphanumeric characters and every day word is
+    # shorter. Stated as an ordering anyway — a future `/pulse week` would be a
+    # four-letter word that is also not a symbol, and the order is what keeps that
+    # decision in one place.
+    if raw in PULSE_DAY_ARGS:
+        now = ctx.clock.now()
+        spend = await _pulse_spend(ctx, now=now, owner=actor.is_owner)
         await message.answer(await _pulse_day(ctx, now=now, spend=spend))
         return
+
+    if raw:
+        parsed = parse_symbol(raw)
+        if isinstance(parsed, Invalid):
+            await message.answer(PULSE_USAGE)
+            return
+        for page in await _pulse_symbol(ctx, parsed):
+            await message.answer(page)
+        return
+
+    spend = await _pulse_spend(ctx, now=ctx.clock.now(), owner=actor.is_owner)
     await message.answer(await _pulse_cycle(ctx, spend=spend))
+
+
+async def _pulse_symbol(ctx: BotContext, symbol: str) -> tuple[str, ...]:
+    """§3b ``/pulse SOLUSDT`` — one symbol's last verdict, in full (M8.5).
+
+    **No spend argument.** This card carries no cost figure for anybody, so unlike the
+    other two forms there is nothing here that varies by role — the owner and a member
+    get byte-identical text. The symbol is not verified against the exchange either:
+    the question is "what did we last say about this", and for a symbol nobody has
+    analysed the answer is the same whether or not the exchange lists it.
+
+    Returns pages, because the card splits rather than truncates when the analyst was
+    verbose. Usually one.
+    """
+    async with ctx.database.session() as session:
+        row = await ctx.repositories.reports(session).latest_for_symbol(symbol)
+        decisions = (
+            []
+            if row is None or row.cycle_id is None
+            else await ctx.repositories.gate_decisions(session).for_cycles([row.cycle_id])
+        )
+        stored = await ctx.repositories.settings(session).all()
+
+    watchlist = effective_config(ctx.settings, stored).watchlist
+    view = symbol_pulse_view(row, decisions, symbol=symbol, on_watchlist=symbol in watchlist)
+    return symbol_pulse_card(view, ctx.tz)
 
 
 async def _pulse_spend(ctx: BotContext, *, now: datetime, owner: bool) -> SpendView | None:

@@ -191,6 +191,26 @@ see what the pipeline was doing, and M8.2's spend controls made quiet the expect
 * New spec section `TELEGRAM_UX.md` §3b, superseding §3's unbuilt "market regime
   summary (P1)" row under the same name.
 
+## M8.5 — `/pulse <SYMBOL>`, the drill-down (0.25 day)
+Added 2026-08-20, hours after M8.4. `/pulse` and `/pulse 24h` are summaries — every
+piece of prose on them is cut to fit a phone — so the question a reader has after
+reading one ("why did it say *that* about ETHUSDT?") was the question they could not ask.
+
+* `/pulse SOLUSDT` — one symbol's last analyst verdict with **nothing truncated**: the
+  full thesis, the evidence list with each claim's source field, the counter-thesis,
+  confidence, setup type, invalidation text, the data-quality note, provenance, and the
+  gate's outcome. Three of those live only in `analyst_reports.report` as JSONB and had
+  never been read by anything.
+* **Splits across messages rather than shortening.** Not "two": `Evidence.claim` has no
+  length bound at all, so the page count is computed, not assumed.
+* **No prices.** `entry_zone`, `stop`, `targets` and `invalidation_price` are on the
+  stored report and absent from the card — levels for a gate-rejected symbol would be an
+  unsized trade suggestion with no approval behind it. The prose invalidation stays.
+* The gate half reuses M8.4's `gate_outcome`, so the SHARED/PERSONAL boundary has one
+  implementation and the parametrized sweep covers both surfaces through it.
+* Read-only, no migration. One new query, `AnalystReportRepository.latest_for_symbol`.
+* Same access as `/pulse` (all approved users), reachability proven for both roles.
+
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.
