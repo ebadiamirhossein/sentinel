@@ -30,7 +30,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sentinel.bot.cards import PAGE_BUDGET, _paginate, pulse_card, pulse_day_card, symbol_pulse_card
+from sentinel.bot.cards import (
+    CAPPED_NOTE,
+    PAGE_BUDGET,
+    _paginate,
+    pulse_card,
+    pulse_day_card,
+    symbol_pulse_card,
+)
 from sentinel.bot.pulse import (
     APPROVED_CODE,
     BOOK_SKIPS,
@@ -45,6 +52,7 @@ from sentinel.bot.pulse import (
     SHARED_WORDING,
     SKIP_WORDING,
     THESIS_CHARS,
+    _cap_of,
     gate_outcome,
     one_line,
     pulse_day_view,
@@ -1089,3 +1097,46 @@ def test_analyst_prose_cannot_break_the_markup(tz: ZoneInfo) -> None:
     assert "20&gt;50&gt;200 &amp; rising" in whole
     assert "<script>" not in whole
     assert "&lt;b&gt;not&lt;/b&gt;" in whole
+
+
+# --------------------------------------------------------------------------- #
+# Prose the *pipeline* cut, on a card that promises the analyst's own words
+#
+# Found on live data: BTCUSDT's stored thesis is exactly 600 characters and ends
+# mid-word ("…watch for a d"), because `llm.schema.capped` sliced it at write
+# time (M8.2 #7, truncate-don't-discard). This card says "unedited" in its
+# footer, so a sentence stopping mid-word reads as this command breaking its own
+# promise unless it says which of the two did it.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_thesis_cut_at_the_analysts_own_limit_says_who_cut_it(tz: ZoneInfo) -> None:
+    at_cap = "x" * _cap_of("thesis")
+    whole = "\n".join(
+        detail(tz=tz, row=report_row("SOLUSDT", thesis=at_cap, report=stored_report(thesis=at_cap)))
+    )
+    assert CAPPED_NOTE in whole
+    assert at_cap in whole, "the note explains the cut; it does not replace the text"
+
+
+def test_a_counter_thesis_at_its_limit_is_marked_too(tz: ZoneInfo) -> None:
+    at_cap = "y" * _cap_of("counter_thesis")
+    whole = "\n".join(
+        detail(tz=tz, row=report_row("SOLUSDT", report=stored_report(counter_thesis=at_cap)))
+    )
+    assert whole.count(CAPPED_NOTE) == 1, "only the field that was actually cut is marked"
+
+
+def test_prose_that_fits_carries_no_note(tz: ZoneInfo) -> None:
+    """The commonest case by far — the live distribution sits at 476-598 against 600 —
+    and a note on every card would train the reader to ignore it."""
+    assert CAPPED_NOTE not in "\n".join(detail(tz=tz))
+
+
+def test_the_caps_are_read_from_the_analyst_model_not_written_down_here() -> None:
+    """The numbers are already stated in the model, in ``capped()`` and in the field
+    description the prompt sends. A fourth copy in the bot is the one nobody updates,
+    so the bot reads the model — and this asserts that it still can.
+    """
+    assert _cap_of("thesis") == 600
+    assert _cap_of("counter_thesis") == 300

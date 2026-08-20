@@ -1,8 +1,8 @@
 # M8.5 — `/pulse <SYMBOL>`, the drill-down
 
 **Date:** 2026-08-20
-**Status:** DONE — `make check` green (**1299** hermetic tests, **1349** with the
-Postgres suite), `mypy --strict` clean over 216 files, 100% branch coverage on
+**Status:** DONE and **deployed** — `make check` green (**1303** hermetic tests,
+**1353** with the Postgres suite), `mypy --strict` clean over 216 files, 100% branch coverage on
 `sentinel/risk/` untouched, **no migration**.
 
 M8.4 shipped the summary this morning. This is the answer to the question it raises.
@@ -177,6 +177,60 @@ Worth naming individually:
   so the write path and the read path are proven against each other rather than against
   a fixture dict.
 
+## 7a. What the live database found: the card was breaking its own promise
+
+Rendered against the production database from inside the container, as M8.4 §9a
+established. `/pulse ETHUSDT` came back with a ten-item evidence list far longer than
+any fixture (source fields like
+`features.timeframes.15m.ema_stack, features.timeframes.1h.ema_stack, …`), and it
+rendered cleanly. `/pulse BTCUSDT` did not:
+
+```
+… A retest of the 69,900-70,300 breakout shelf can't clear min RR 1.5 with a stop
+safely beyond the 69,000 sweep zone, so no tradable candidate yet — watch for a d
+```
+
+**It stops mid-word.** Not this card's doing: the stored thesis is exactly 600
+characters, because `llm.schema.capped` sliced it at write time (M8.2 #7's
+truncate-don't-discard ruling). The database confirms it —
+
+```
+ETHUSDT|548  BTCUSDT|600  ETHUSDT|543  DOGEUSDT|560  ADAUSDT|512 …
+```
+
+— one row sitting exactly on the cap in a distribution otherwise spread across
+476-598.
+
+The bug is not the truncation, which is correct and already reasoned about. The bug is
+that **this card's footer says "the analyst's own words, unedited"**, and here they had
+been edited — by the pipeline, hours earlier, at a layer the reader cannot see. A
+sentence ending mid-word on a command whose entire promise is "nothing shortened" reads
+as this command breaking that promise. That is worse than the truncation itself: it
+makes the one guarantee the drill-down offers untrustworthy.
+
+Fields now carry a note where the length equals the analyst's declared cap:
+
+> *(this hit the analyst's own length limit and was cut when it was stored — not by
+> this card)*
+
+Three details worth recording:
+
+* **The cap is read off `AnalystReport.model_fields`, not written down in the bot.**
+  600 and 300 are already stated in the model, in the payload's `capped()` validator
+  and in the field description the prompt sends. A fourth copy in `bot/pulse.py` would
+  be the one nobody updates when a cap moves.
+* **Length-equals-cap is the only signal there is.** `capped` slices and leaves no
+  mark. Text landing exactly on the cap without having overrun is possible and
+  vanishingly unlikely, so the wording says where the cut came from rather than
+  asserting the analyst wrote more.
+* **The note explains the cut; it does not replace the text.** Asserted, because
+  "handle the truncated case" is very easy to implement as hiding it.
+
+Same shape as M8.4 §9a's three findings, and the same lesson one milestone on: a
+fixture proves a card contains the right facts, and only real data shows how it reads.
+Every fixture in the suite had a short thesis, because a fixture author writes a short
+thesis.
+
 ## 8. Notes for M9
 
 - **`/pulse SOLUSDT` is the false-positive review tool.** M9's weekly review is "look at
@@ -185,6 +239,9 @@ Worth naming individually:
 - **`data_quality_note` is now visible for the first time.** If the analyst has been
   quietly flagging stale inputs, this is where it will show up — and it is also where a
   prompt-injection attempt in the news block would surface.
+- **`llm.field_truncated` now has a second reader.** The log line has been countable
+  since M8.2; the note on this card is where a drifting median becomes visible without
+  anybody going looking. One of ten live theses is sitting on the cap.
 - **The evidence list is the prompt-tuning signal.** specs/PROMPTS.md §2 rule 3 asks for
   one citation per claim; whether the model actually does that is now readable without
   a database session.

@@ -41,6 +41,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from annotated_types import MaxLen
 from pydantic import ValidationError
 
 from sentinel.analyst.models import AnalystReport, CandidateStatus, SetupType
@@ -472,6 +473,35 @@ GATE_NOT_ASKED = "the gate was never asked — only a CANDIDATE reaches it"
 GATE_NO_ROWS = "no gate verdict was recorded for this cycle"
 
 
+def _cap_of(field: str) -> int:
+    """The analyst's declared length limit for one prose field.
+
+    Read off :class:`AnalystReport` rather than written down here. The number is
+    already stated in three places — the model, the payload's ``capped()`` validator
+    and the field description the prompt sends — and a fourth copy in the bot would
+    be the one nobody updates.
+    """
+    return next(
+        constraint.max_length
+        for constraint in AnalystReport.model_fields[field].metadata
+        if isinstance(constraint, MaxLen)
+    )
+
+
+def _was_capped(text: str, field: str) -> bool:
+    """Whether this text was cut by ``llm.schema.capped`` before it was stored.
+
+    Length equal to the cap is the only signal there is — ``capped`` slices and does
+    not mark — and text that lands on exactly the cap without having overrun it is
+    possible but vanishingly unlikely (the live distribution sits at 476-598 against
+    600). The card hedges accordingly and says where the cut came from rather than
+    asserting the analyst wrote more; a reader who sees a sentence stop mid-word
+    otherwise concludes this command truncated it, which is the one thing it promises
+    not to do.
+    """
+    return len(text) == _cap_of(field)
+
+
 def symbol_pulse_view(
     row: AnalystReportRow | None,
     decisions: Sequence[GateDecisionRow],
@@ -522,12 +552,16 @@ def symbol_pulse_view(
         timeframe_label="" if report is None else report.timeframe_label.value,
         confidence=row.confidence,
         thesis=row.thesis,
+        thesis_capped=_was_capped(row.thesis, "thesis"),
         evidence=(
             ()
             if report is None
             else tuple((item.claim, item.source_field) for item in report.evidence)
         ),
         counter_thesis="" if report is None else report.counter_thesis,
+        counter_thesis_capped=(
+            report is not None and _was_capped(report.counter_thesis, "counter_thesis")
+        ),
         invalidation="" if report is None else report.invalidation_text,
         data_quality_note=None if report is None else report.data_quality_note,
         prompt_version=row.prompt_version,

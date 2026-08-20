@@ -510,6 +510,7 @@ def symbol_pulse_card(view: SymbolPulseView, tz: ZoneInfo) -> tuple[str, ...]:
     lines.append("")
     lines.append("📊 <b>Thesis</b>")
     lines.append(escape(view.thesis) if view.thesis else "<i>none recorded</i>")
+    lines.extend(_capped_note(view.thesis_capped))
 
     if view.evidence:
         lines.append("")
@@ -523,6 +524,7 @@ def symbol_pulse_card(view: SymbolPulseView, tz: ZoneInfo) -> tuple[str, ...]:
         lines.append("")
         lines.append("⚖️ <b>Against</b>")
         lines.append(escape(view.counter_thesis))
+        lines.extend(_capped_note(view.counter_thesis_capped))
 
     if view.invalidation:
         lines.append("")
@@ -551,6 +553,19 @@ def symbol_pulse_card(view: SymbolPulseView, tz: ZoneInfo) -> tuple[str, ...]:
     return tuple(
         f"{page}\n\n<i>({number}/{total})</i>" for number, page in enumerate(pages, start=1)
     )
+
+
+#: Said under a field the pipeline itself cut. This card's promise is the analyst's
+#: words unedited, and ``llm.schema.capped`` edits them at write time — so where a
+#: sentence stops mid-word, the reader is told which of the two did it.
+CAPPED_NOTE = (
+    "<i>(this hit the analyst's own length limit and was cut when it was stored — "
+    "not by this card)</i>"
+)
+
+
+def _capped_note(capped: bool) -> list[str]:
+    return [CAPPED_NOTE] if capped else []
 
 
 def _no_verdict_card(view: SymbolPulseView) -> str:

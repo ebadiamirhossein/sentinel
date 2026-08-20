@@ -373,6 +373,13 @@ class SymbolPulseView:
     evidence: tuple[tuple[str, str], ...] = ()
     counter_thesis: str = ""
     invalidation: str = ""
+    #: True when the field was already at the analyst's own length cap when it was
+    #: stored, i.e. ``llm.schema.capped`` cut it before this card ever saw it. The
+    #: card promises the analyst's words unedited; where they *were* edited — by the
+    #: pipeline, at write time — it has to say so, or a sentence ending mid-word
+    #: reads as this command breaking its own promise.
+    thesis_capped: bool = False
+    counter_thesis_capped: bool = False
     #: The model's own caveat about its inputs. Usually absent; never abbreviated.
     data_quality_note: str | None = None
     prompt_version: str = ""
