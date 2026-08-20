@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from sentinel.bot.models import SignalDecision
+from sentinel.core.markets import Market
 from sentinel.stats.models import Population
 from sentinel.stats.queries import StatsRepository, build_report
 from sentinel.storage.repositories import SignalRepository
@@ -75,7 +76,10 @@ async def report_for(store: FakeStore, user_id: int, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(
         "sentinel.stats.queries.SignalRepository",
-        lambda session: FakeSignalRepository(session),
+        # ``market`` is keyword-only on the real repository from M10a, and the fake
+        # takes it too — so the double is substituted with the same signature rather
+        # than one that silently ignores the scoping.
+        lambda session, *, market=Market.CRYPTO: FakeSignalRepository(session, market=market),
     )
     return await build_report(
         Session(store),  # type: ignore[arg-type]
@@ -99,11 +103,13 @@ async def test_the_real_population_never_contains_another_users_decision(
     owner_report = await report_for(store, OWNER, monkeypatch)
     member_report = await report_for(store, MEMBER, monkeypatch)
 
-    assert owner_report.real.count == 0, "somebody else's Taken is not the owner's record"
-    assert owner_report.hypothetical.count == 1
-    assert member_report.real.count == 1
-    assert member_report.real.total_r == Decimal("-1.00")
-    assert member_report.hypothetical.count == 0
+    assert owner_report.book(Population.REAL).count == 0, (
+        "somebody else's Taken is not the owner's record"
+    )
+    assert owner_report.book(Population.HYPOTHETICAL).count == 1
+    assert member_report.book(Population.REAL).count == 1
+    assert member_report.book(Population.REAL).total_r == Decimal("-1.00")
+    assert member_report.book(Population.HYPOTHETICAL).count == 0
 
 
 async def test_two_users_answering_the_same_analysis_keep_separate_books(
@@ -116,8 +122,8 @@ async def test_two_users_answering_the_same_analysis_keep_separate_books(
     owner_report = await report_for(store, OWNER, monkeypatch)
     member_report = await report_for(store, MEMBER, monkeypatch)
 
-    assert owner_report.real.win_rate_pct == Decimal("100")
-    assert member_report.real.win_rate_pct == Decimal("0")
+    assert owner_report.book(Population.REAL).win_rate_pct == Decimal("100")
+    assert member_report.book(Population.REAL).win_rate_pct == Decimal("0")
 
 
 async def test_the_breakdowns_are_scoped_too(
@@ -131,7 +137,7 @@ async def test_the_breakdowns_are_scoped_too(
     owner_report = await report_for(store, OWNER, monkeypatch)
 
     assert owner_report.by_setup == ()
-    assert owner_report.real.count == 0
+    assert owner_report.book(Population.REAL).count == 0
 
 
 async def test_an_empty_book_reports_nothing_measured_rather_than_zero(
@@ -141,8 +147,8 @@ async def test_an_empty_book_reports_nothing_measured_rather_than_zero(
     works"; "nothing measured yet" is the truth."""
     report = await report_for(store, MEMBER, monkeypatch)
 
-    assert report.real.count == 0
-    assert report.real.measured is False
+    assert report.book(Population.REAL).count == 0
+    assert report.book(Population.REAL).measured is False
 
 
 def test_every_book_reading_query_requires_a_user() -> None:

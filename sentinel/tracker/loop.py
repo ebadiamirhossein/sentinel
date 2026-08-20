@@ -30,14 +30,16 @@ graph, not just the behaviour.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
-from sentinel.bot.models import TERMINAL_STATUSES, SignalStatus
+from sentinel.bot.models import TERMINAL_STATUSES, SignalStatus, UserAccount
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import Settings
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.risk.accounting import avg_fill_price, realized_r
 from sentinel.risk.costs import funding_settlements, realized_costs_eur
 from sentinel.risk.models import PauseReason, PauseState, TradePlan
@@ -52,6 +54,7 @@ from sentinel.storage.repositories import (
     SignalExitRepository,
     SignalFillRepository,
     SignalRepository,
+    UserMarketPauseRepository,
     UserRepository,
 )
 from sentinel.tracker.detect import observe
@@ -94,6 +97,9 @@ class TrackerRepositories:
     risk_state: type[RiskStateRepository] = RiskStateRepository
     settings: type[RuntimeSettingsRepository] = RuntimeSettingsRepository
     users: type[UserRepository] = UserRepository
+    #: M10a — the per-market half of the daily-loss rail. ``users`` above keeps the
+    #: combined-across-markets one, which is why both are here.
+    user_market_pause: type[UserMarketPauseRepository] = UserMarketPauseRepository
 
 
 @dataclass
@@ -131,7 +137,18 @@ def already_paused_for_loss(current: PauseState, now: datetime) -> bool:
 
 
 class TrackerLoop:
-    """Runs one tick over every open signal."""
+    """Runs one tick over every open signal **in one market**.
+
+    The market is explicit rather than implied (M10a), and that is the whole reason
+    it is a parameter: a ``PriceFeed`` wraps exactly one exchange adapter, so a
+    tracker can only follow signals it can price. Leaving it to a default would mean
+    that the day a second market has open signals, they are silently never tracked —
+    fills missed, stops missed, outcomes never resolved — and nothing would say so.
+    That is the silence-as-success failure this project has met twice.
+
+    M10b adds a second feed and a second loop; until then there is one adapter and
+    one market, and this states which.
+    """
 
     def __init__(
         self,
@@ -139,12 +156,16 @@ class TrackerLoop:
         feed: PriceFeed,
         settings: Settings,
         *,
+        market: Market = LEGACY_MARKET,
         clock: Clock | None = None,
         repositories: TrackerRepositories | None = None,
     ) -> None:
         self._database = database
         self._feed = feed
         self._settings = settings
+        #: Which market this loop can price, and therefore the only one whose
+        #: signals it reads. Every repository below is bound to it.
+        self._market = market
         self._clock = clock or SystemClock()
         self._repos = repositories or TrackerRepositories()
 
@@ -156,7 +177,7 @@ class TrackerLoop:
         self._feed.reset()
 
         async with self._database.session() as session:
-            rows = await self._repos.signals(session).open_signals()
+            rows = await self._repos.signals(session, market=self._market).open_signals()
 
         for row in rows:
             try:
@@ -319,7 +340,9 @@ class TrackerLoop:
                     detail=event.detail,
                 )
 
-            await self._repos.signals(session).advance(row.id, **self._rollup(tracking, now=now))
+            await self._repos.signals(session, market=self._market).advance(
+                row.id, **self._rollup(tracking, now=now)
+            )
             await session.commit()
 
         for event in journal:
@@ -423,24 +446,112 @@ class TrackerLoop:
 
         **Per user from M8.1**, and it has to be: the limit is a percentage of
         *somebody's* capital, and there is no longer one capital. Each user's realized
-        EUR is divided by their own, compared against the same configured limit, and
-        the pause is written to their own ``users`` row where it holds back their cards
-        and nobody else's. The operator's system-wide ``/pause`` is untouched and still
-        lives in ``risk_state``.
+        EUR is divided by their own, compared against the same configured limit.
 
-        Returns the ids newly paused, so the caller can tell them — a member has no
-        ``/status`` to consult and would otherwise just stop hearing from us.
+        **Two rails from M10a, and they answer different questions.** A loss confined
+        to one market stops that market and leaves a good day elsewhere alone; a loss
+        that is only bearable *because* it is spread across markets still has to stop
+        everything. So this runs once per market against ``user_market_pauses``, and
+        once combined against the ``users`` row — which keeps exactly the meaning M8.1
+        gave it. The operator's ``/pause`` is untouched in ``risk_state``.
+
+        Returns the ids newly paused by **either** rail, deduplicated, so the caller
+        tells each person once — a member has no ``/status`` to consult and would
+        otherwise just stop hearing from us.
         """
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         limit_pct = self._settings.config.risk.daily_loss_limit_pct
         async with self._database.session() as session:
-            realized_by_user = await self._repos.signals(session).realized_eur_by_user_since(
-                day_start
-            )
             accounts = {
                 account.telegram_user_id: account
                 for account in await self._repos.users(session).approved()
             }
+
+        paused: list[int] = []
+        for market in self._settings.config.enabled_markets:
+            paused.extend(
+                await self._enforce_market_loss(
+                    market, accounts=accounts, day_start=day_start, limit_pct=limit_pct, now=now
+                )
+            )
+        paused.extend(
+            await self._enforce_combined_loss(
+                accounts=accounts, day_start=day_start, limit_pct=limit_pct, now=now
+            )
+        )
+        # Deduplicated, order preserved: one bad day can trip both rails, and two
+        # identical "you are paused" messages is a worse experience than one.
+        return list(dict.fromkeys(paused))
+
+    async def _enforce_market_loss(
+        self,
+        market: Market,
+        *,
+        accounts: dict[int, UserAccount],
+        day_start: datetime,
+        limit_pct: Decimal,
+        now: datetime,
+    ) -> list[int]:
+        """One market's daily-loss rail, per user (M10a)."""
+        async with self._database.session() as session:
+            realized_by_user = await self._repos.signals(
+                session, market=market
+            ).realized_eur_by_user_since(day_start)
+            current = await self._repos.user_market_pause(session, market=market).load_many(
+                sorted(realized_by_user)
+            )
+
+        paused: list[int] = []
+        for user_id, realized in sorted(realized_by_user.items()):
+            account = accounts.get(user_id)
+            if account is None:
+                continue
+            if already_paused_for_loss(account.pause, now):
+                # The combined rail already stopped this person, everywhere. Raising
+                # the narrower one on top would change nothing about what they
+                # receive and would send a second "you are paused" notice for the
+                # same bad day — the per-minute repetition M7 built
+                # ``already_paused_for_loss`` to prevent, arriving by a new route.
+                continue
+            state, loss_pct = self._loss_state(
+                realized, account=account, current=current[user_id], limit_pct=limit_pct, now=now
+            )
+            if state is None:
+                continue
+            async with self._database.session() as session:
+                await self._repos.user_market_pause(session, market=market).save(
+                    user_id, state, at=now
+                )
+                await session.commit()
+            paused.append(user_id)
+            log.warning(
+                "tracker.daily_loss_limit",
+                scope="market",
+                market=market.value,
+                user_id=user_id,
+                realized_loss_pct=str(loss_pct),
+                limit_pct=str(limit_pct),
+                until=None if state.until is None else state.until.isoformat(),
+            )
+        return paused
+
+    async def _enforce_combined_loss(
+        self,
+        *,
+        accounts: dict[int, UserAccount],
+        day_start: datetime,
+        limit_pct: Decimal,
+        now: datetime,
+    ) -> list[int]:
+        """The across-markets rail, written to the ``users`` row (M8.1's columns).
+
+        A day that lost 2% in each of two markets is a 4% day, and neither
+        per-market rail would have noticed. This is the one that does.
+        """
+        async with self._database.session() as session:
+            realized_by_user = await self._repos.signals(
+                session
+            ).realized_eur_by_user_since_across_markets(day_start)
 
         paused: list[int] = []
         for user_id, realized in sorted(realized_by_user.items()):
@@ -450,18 +561,10 @@ class TrackerLoop:
                 # the measurement is theirs — but a pause on a book nothing will be
                 # delivered to would be bookkeeping for its own sake.
                 continue
-            loss_pct = realized_loss_pct(realized, capital_eur=account.capital_eur)
-            state = evaluate_daily_loss(
-                realized_loss_pct=loss_pct,
-                limit_pct=limit_pct,
-                now=now,
-                current=account.pause,
+            state, loss_pct = self._loss_state(
+                realized, account=account, current=account.pause, limit_pct=limit_pct, now=now
             )
-            if not (
-                state.paused
-                and state.reason is PauseReason.DAILY_LOSS_LIMIT
-                and not already_paused_for_loss(account.pause, now)
-            ):
+            if state is None:
                 continue
             async with self._database.session() as session:
                 await self._repos.users(session).set_pause(user_id, state, at=now)
@@ -469,12 +572,40 @@ class TrackerLoop:
             paused.append(user_id)
             log.warning(
                 "tracker.daily_loss_limit",
+                scope="combined",
                 user_id=user_id,
                 realized_loss_pct=str(loss_pct),
                 limit_pct=str(limit_pct),
                 until=None if state.until is None else state.until.isoformat(),
             )
         return paused
+
+    @staticmethod
+    def _loss_state(
+        realized: Sequence[Decimal],
+        *,
+        account: UserAccount,
+        current: PauseState,
+        limit_pct: Decimal,
+        now: datetime,
+    ) -> tuple[PauseState | None, Decimal]:
+        """The §7 decision for one book, or ``None`` when nothing new should happen.
+
+        Shared by both rails above so the arithmetic — and, more importantly,
+        ``already_paused_for_loss``'s guard against sliding an existing pause's
+        expiry forward for ever — has exactly one implementation.
+        ``risk.rails.evaluate_daily_loss`` is called unchanged.
+        """
+        loss_pct = realized_loss_pct(realized, capital_eur=account.capital_eur)
+        state = evaluate_daily_loss(
+            realized_loss_pct=loss_pct, limit_pct=limit_pct, now=now, current=current
+        )
+        fresh = (
+            state.paused
+            and state.reason is PauseReason.DAILY_LOSS_LIMIT
+            and not already_paused_for_loss(current, now)
+        )
+        return (state if fresh else None), loss_pct
 
 
 __all__ = [

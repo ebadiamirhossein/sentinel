@@ -26,6 +26,7 @@ from sentinel.bot.notices import UserNotifier
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import CycleOrchestrator, CycleResult
 from sentinel.storage.db import Database
 
@@ -34,7 +35,8 @@ log = get_logger(__name__)
 
 def render(result: CycleResult) -> str:
     lines = [
-        f"── cycle {result.cycle_id} {'(DRY RUN)' if result.dry_run else ''} ──",
+        f"── {result.market.value} cycle {result.cycle_id} "
+        f"{'(DRY RUN)' if result.dry_run else ''} ──",
         f"symbols       {result.symbols_scanned} scanned of {result.symbols_requested} "
         f"({result.symbols_skipped} skipped at ingestion)",
         f"screener      {result.candidates} candidate(s)",
@@ -53,18 +55,25 @@ def render(result: CycleResult) -> str:
     return "\n".join(lines)
 
 
-async def run(settings: Settings, *, dry_run: bool) -> int:
-    if dry_run and not settings.config.dry_run:
+async def run(settings: Settings, *, market: Market = LEGACY_MARKET, dry_run: bool) -> int:
+    market_config = settings.config.market(market)
+    if dry_run and not market_config.dry_run:
+        # ``--dry-run`` overrides this market's flag only. A global override would
+        # silence a second market the operator never mentioned, which on the one
+        # command that exists to rehearse safely is the wrong direction to be wrong.
+        market_config = market_config.model_copy(update={"dry_run": True})
         settings = Settings(
             secrets=settings.secrets,
-            config=settings.config.model_copy(update={"dry_run": True}),
+            config=settings.config.model_copy(
+                update={"markets": {**settings.config.markets, market: market_config}}
+            ),
         )
 
     database = Database(settings.secrets.database_url)
     factory: Callable[[int], SignalPublisher] | None = None
     notices = None
     bot = None
-    if settings.secrets.telegram_bot_token is not None and not settings.config.dry_run:
+    if settings.secrets.telegram_bot_token is not None and not market_config.dry_run:
         bot = build_bot(settings)
         sender = bot
         tz = zone_info(settings.config.telegram.owner_timezone)
@@ -78,17 +87,19 @@ async def run(settings: Settings, *, dry_run: bool) -> int:
                 chat_ids=(user_id,),
                 telegram=settings.config.telegram,
                 tz=tz,
+                market=market,
+                show_market=settings.config.multi_market,
             )
 
         notices = UserNotifier(database, bot, telegram=settings.config.telegram)
-    elif settings.config.dry_run:
+    elif market_config.dry_run:
         print("dry run: the cycle will run in full and publish nothing.\n")
     else:
         print("no TELEGRAM_BOT_TOKEN — an approved plan will be stored, not sent.\n")
 
     try:
         result = await CycleOrchestrator(
-            settings, database, publisher_factory=factory, notices=notices
+            settings, database, market=market, publisher_factory=factory, notices=notices
         ).run()
     finally:
         if bot is not None:
@@ -107,11 +118,17 @@ def main() -> None:
         action="store_true",
         help="force dry run for this cycle, whatever config.yaml says",
     )
+    parser.add_argument(
+        "--market",
+        default=LEGACY_MARKET.value,
+        choices=[market.value for market in Market],
+        help="which market to scan (default: crypto)",
+    )
     args = parser.parse_args()
 
     settings = load_settings()
     configure_logging(settings.secrets.log_level, json_logs=settings.secrets.json_logs)
-    raise SystemExit(asyncio.run(run(settings, dry_run=args.dry_run)))
+    raise SystemExit(asyncio.run(run(settings, market=Market(args.market), dry_run=args.dry_run)))
 
 
 if __name__ == "__main__":  # pragma: no cover — CLI entrypoint

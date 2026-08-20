@@ -30,6 +30,7 @@ from sentinel.bot.models import (
     UserAccount,
     UserStatus,
 )
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.ingestion.models import Candle, OHLCVSeries
 from sentinel.risk.models import PauseState
 from sentinel.storage.repositories import (
@@ -39,6 +40,7 @@ from sentinel.storage.repositories import (
     SignalExitRepository,
     SignalFillRepository,
     SignalRepository,
+    UserMarketPauseRepository,
     UserRepository,
 )
 from sentinel.tracker.loop import TrackerRepositories
@@ -57,6 +59,8 @@ class FakeSignalRow:
     number: int = 1
     #: M8.1 — whose signal, and therefore whose loss limit and whose chat.
     user_id: int = OWNER_ID
+    #: M10a — which market, and therefore which per-market loss rail it feeds.
+    market: Market = LEGACY_MARKET
     status: str = SignalStatus.PENDING_ENTRY.value
     decision: str | None = None
     dry_run: bool = False
@@ -85,6 +89,9 @@ class FakeStore:
     pause: PauseState = field(default_factory=PauseState)
     #: The ``users`` rows the daily-loss rail divides each book by (M8.1).
     users: dict[int, UserAccount] = field(default_factory=dict)
+    #: M10a — ``user_market_pauses``, the per-market half of that rail. ``pause``
+    #: above is still the operator's global one.
+    user_market_pauses: dict[tuple[int, Market], PauseState] = field(default_factory=dict)
     committed: int = 0
 
     def add_signal(self, record: SignalRecord, **overrides: Any) -> FakeSignalRow:
@@ -94,6 +101,7 @@ class FakeStore:
             symbol=record.plan.symbol,
             number=record.number,
             user_id=record.user_id,
+            market=record.market,
             status=record.status.value,
             decision=None if record.decision is None else record.decision.value,
             dry_run=record.dry_run,
@@ -142,8 +150,9 @@ def _store(session: Any) -> FakeStore:
 
 
 class FakeSignalRepository(SignalRepository):
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self._store = _store(session)
+        self._market = market
 
     async def open_signals(self) -> list[Any]:
         return [
@@ -151,6 +160,16 @@ class FakeSignalRepository(SignalRepository):
         ]
 
     async def realized_eur_by_user_since(self, since: datetime) -> dict[int, list[Decimal]]:
+        """This market's realized P&L, as the real one now filters it (M10a)."""
+        return self._realized(since, market=self._market)
+
+    async def realized_eur_by_user_since_across_markets(
+        self, since: datetime
+    ) -> dict[int, list[Decimal]]:
+        """Every market's — the combined daily-loss rail's input."""
+        return self._realized(since, market=None)
+
+    def _realized(self, since: datetime, *, market: Market | None) -> dict[int, list[Decimal]]:
         grouped: dict[int, list[Decimal]] = {}
         for row in self._store.signals.values():
             if (
@@ -159,6 +178,7 @@ class FakeSignalRepository(SignalRepository):
                 and row.closed_at is not None
                 and row.closed_at >= since
                 and row.realized_eur is not None
+                and (market is None or row.market is market)
             ):
                 grouped.setdefault(row.user_id, []).append(row.realized_eur)
         return grouped
@@ -255,6 +275,23 @@ class FakeEventRepository(SignalEventRepository):
         return [_Row(row) for row in self._store.events_for(signal_id)]
 
 
+class FakeUserMarketPauseRepository(UserMarketPauseRepository):
+    """``user_market_pauses``, in memory and keyed exactly as the real table is."""
+
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
+        self._store = _store(session)
+        self._market = market
+
+    async def load(self, user_id: int) -> PauseState:
+        return self._store.user_market_pauses.get((user_id, self._market), PauseState())
+
+    async def load_many(self, user_ids: Any) -> dict[int, PauseState]:
+        return {user_id: await self.load(user_id) for user_id in user_ids}
+
+    async def save(self, user_id: int, state: PauseState, *, at: datetime) -> None:
+        self._store.user_market_pauses[(user_id, self._market)] = state
+
+
 class FakeRiskStateRepository(RiskStateRepository):
     def __init__(self, session: Any) -> None:
         self._store = _store(session)
@@ -308,6 +345,7 @@ def fake_repositories() -> TrackerRepositories:
         risk_state=FakeRiskStateRepository,
         settings=FakeSettingsRepository,
         users=FakeUserRepository,
+        user_market_pause=FakeUserMarketPauseRepository,
     )
 
 

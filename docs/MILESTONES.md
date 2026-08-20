@@ -255,14 +255,73 @@ with no AI in it — had never been readable from a phone.
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.
 
-## M10 — Ensemble shadow mode (1 day)
-OpenAI GPT-5.6 Sol as second AnalystProvider per docs/specs/ENSEMBLE.md §3; parallel shadow analysis; comparer; /stats compare-models.
+> **Renumbering (2026-08-20, from M10a).** The owner asked for a second *market*
+> before a second *model*, so M10 splits into **M10a** (the market dimension, below)
+> and **M10b** (the forex adapter). Ensemble shadow mode moves M10 → **M11** and the
+> consensus gate M11 → **M12**; the read-only dashboard becomes **M13**.
+> docs/specs/ENSEMBLE.md carries a dated correction rather than being rewritten —
+> this file is the forward plan, that one is the recorded decision.
+
+## M10a — The market dimension (1–2 days) ✅
+Added 2026-08-20. Teaches the system to hold more than one market **without adding a
+second one**. No forex code whatsoever: no adapter, no provider, no spec.
+
+* A `market` column on every table whose rows belong to one market (migration
+  `0010`), backfilled to `crypto` and NOT NULL. `MarketScopedRepository` binds a
+  repository instance to a market, so every write stamps it and every read filters
+  on it — a decision made once per call site rather than on thirty methods.
+* A `markets:` config block — `enabled`, `dry_run`, `adapter`, `watchlist`,
+  `scan_interval_minutes` and an LLM budget, per market. A config file with **no**
+  `markets:` block is still valid and reads as crypto-only, which is what the
+  deployed server runs; a file carrying both shapes is refused at load.
+* Per-market LLM sub-budgets under a **global ceiling** ($10 crypto + $4 forex
+  against $11), so markets compete rather than stack. One market's overspend never
+  stops another's analysis.
+* Pause becomes four rails — global, per market, per user, per (user, market) —
+  composed in `core/pauses.py` and handed to the **unchanged** risk engine as the
+  single `PauseState` it has always taken. `/pause` with no argument is still
+  system-wide.
+* Statistics gain the market as a fourth dimension and it is the strict one:
+  `StatsReport` has no field that could hold a merged figure, and `summarize()`
+  raises on rows from two markets.
+* One scan job per enabled market; with forex disabled, exactly one, at 60 minutes.
+
+**Tests:** a golden-cycle regression suite built first — features, chart bytes,
+assembled prompt, gate decision and rejection reason, and **every** Telegram surface
+(`/status /stats /pulse /pulse 24h /pulse SYMBOL /positions /watchlist /snapshot
+/journal`) asserted byte-identical, and asserted again when rendered from the frozen
+pre-M10a config the server actually loads. A 16-row pause truth table. Explicit
+proof that a forex overspend does not stop crypto, and the reverse.
+**Demo:** `make check` green with every golden unchanged; `ops/verify-migration.sh`
+takes a populated production dump up, down and up again with row counts intact.
+**Exit criteria:** crypto output byte-identical, risk engine untouched (zero-line
+diff, 100% branch coverage unchanged), migration verified against a populated copy.
+
+## M10b — Forex adapter (spec pending — do not implement)
+The second market itself: a `MarketDataAdapter` for the Saxo Bank OpenAPI, market-hours
+awareness, economic-calendar blackouts (FOMC/CPI/NFP), DXY as the regime anchor, and
+an honest account of what forex does *not* have — no funding, no open interest, no
+true volume. **No specification exists yet.** M10a deliberately wrote none: the design
+belongs here, and guessing at it would have been the thing that made M10a too big.
+Open questions M10a recorded for this milestone: whether crypto keeps a reserved
+budget floor so a new unmeasured market cannot squeeze the measured one, and whether
+`ohlcv_candles` needs `market` in its primary key before two markets can share a
+symbol string.
+
+## M11 — Ensemble shadow mode (1 day) (spec pending — do not implement)
+OpenAI GPT-5.6 Sol as second AnalystProvider per docs/specs/ENSEMBLE.md §3; parallel
+shadow analysis; comparer; `/stats compare-models`. Was M10 before M10a's renumbering.
 **Demo:** signal card shows the 2nd-opinion footer; stats command splits by agreement.
 
-## M11 — Consensus gate (½ day, feature-flagged, only if M10 exit criteria met)
-Deterministic gating table per docs/specs/ENSEMBLE.md §4.
+## M12 — Consensus gate (½ day, feature-flagged, only if M11 exit criteria met) (spec pending — do not implement)
+Deterministic gating table per docs/specs/ENSEMBLE.md §4. Was M11.
+
+## M13 — Read-only web dashboard (spec pending — do not implement)
+Read-only over the existing Postgres; auth for owner and members; hosted on the same
+box behind the existing Caddy. Telegram stays the delivery surface and keeps the
+buttons. Journal, pulse, stats and charts as pages. PRD P2 slot.
 
 ## Later (P1/P2 backlog)
-Daily digest & weekly report → `/analyze` on demand → event blackout windows → backtest harness on stored snapshots → forex adapter → optional web dashboard → (much later, only if stats justify) approval-gated execution behind a hard feature flag.
+Daily digest & weekly report → `/analyze` on demand → event blackout windows → backtest harness on stored snapshots → (much later, only if stats justify) approval-gated execution behind a hard feature flag.
 
 **Total estimate: ~10–12 focused build days + 2 weeks shakedown.**

@@ -1,0 +1,9 @@
+{
+  "evaluated_at": "2026-08-18T12:00:00Z",
+  "message": "reward-to-risk at TP1 is below the minimum once fees and funding are paid (1.42R net vs 1.63R gross \u2014 \u20ac6.45 of costs on a \u20ac74.12 risk)",
+  "plan": null,
+  "prompt_version": "fable_v1",
+  "reason": "NET_RR_TOO_LOW",
+  "status": "REJECTED",
+  "symbol": "BTCUSDT"
+}

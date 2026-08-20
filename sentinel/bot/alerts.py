@@ -23,9 +23,8 @@ makes the spend guard itself self-clearing at 00:00 UTC.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from sentinel.bot.cards import alert_card
@@ -36,12 +35,25 @@ from sentinel.core.alerts import Alert, AlertKind, CycleOutcome, cycle_alert
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import Settings
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import CycleResult
 from sentinel.llm.spend import SpendState, spend_window
 from sentinel.storage.db import Database
 from sentinel.storage.repositories import CycleRepository, LLMCallRepository
 
 log = get_logger(__name__)
+
+
+class MarketScopedFactory[T](Protocol):
+    """How the alerter builds a market-bound repository (M10a).
+
+    A protocol rather than ``Callable[[Any], T]``: the market is keyword-only, and a
+    bare callable type would accept a test double that ignored it — which would
+    quietly evaluate a failure streak against the wrong market's cycles.
+    """
+
+    def __call__(self, session: Any, *, market: Market) -> T: ...
+
 
 #: Which spend transitions are worth a message, and what to call each one. A
 #: state that did not change is not news; WARN → LIMIT_REACHED is.
@@ -70,15 +82,22 @@ class AdminAlerter:
         chat_ids: tuple[int, ...],
         settings: Settings,
         tz: ZoneInfo,
+        market: Market = LEGACY_MARKET,
         clock: Clock | None = None,
-        cycles: Callable[[Any], CycleRepository] = CycleRepository,
-        llm_calls: Callable[[Any], LLMCallRepository] = LLMCallRepository,
+        cycles: MarketScopedFactory[CycleRepository] = CycleRepository,
+        llm_calls: MarketScopedFactory[LLMCallRepository] = LLMCallRepository,
     ) -> None:
         self._database = database
         self._bot = bot
         self._chat_ids = chat_ids
         self._settings = settings
         self._tz = tz
+        #: Which market's cycles this alerter watches (M10a). A failure streak is
+        #: per market: with two markets running, "3 cycles failed" is a different
+        #: and much less alarming statement when it is one market's scan and the
+        #: other is healthy, and an alert that could not say which would send the
+        #: owner to the wrong logs at 3am.
+        self._market = market
         self._clock = clock or SystemClock()
         self._cycles = cycles
         self._llm_calls = llm_calls
@@ -106,13 +125,18 @@ class AdminAlerter:
     async def _cycle_alert(self) -> Alert | None:
         config = self._settings.config
         threshold = config.alerts.consecutive_cycle_failures
+        # This market's own interval, not the global default (M10a): the rail asks
+        # "has a cycle been RUNNING for longer than it should", and "should" is a
+        # per-market figure now. Reading the shared default would make a market on a
+        # slower cadence look permanently stuck.
         stale_after = timedelta(
-            minutes=config.schedule.scan_interval_minutes * config.alerts.stale_cycle_multiplier
+            minutes=config.market(self._market).scan_interval_minutes
+            * config.alerts.stale_cycle_multiplier
         )
         async with self._database.session() as session:
             # One more row than the threshold needs, so a recovery has the run
             # behind it to look at.
-            rows = await self._cycles(session).recent(limit=threshold * 4)
+            rows = await self._cycles(session, market=self._market).recent(limit=threshold * 4)
         return cycle_alert(
             [
                 CycleOutcome(
@@ -143,7 +167,7 @@ class AdminAlerter:
             return None
         day_start, month_start = spend_window(self._clock.now())
         async with self._database.session() as session:
-            totals = await self._llm_calls(session).spend_totals(
+            totals = await self._llm_calls(session, market=self._market).spend_totals(
                 day_start=day_start,
                 month_start=month_start,
                 priced_models=tuple(self._settings.config.llm.pricing),

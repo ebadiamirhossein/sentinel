@@ -54,6 +54,7 @@ from sentinel.bot.context import BotContext
 from sentinel.bot.handlers.guard import FAILED
 from sentinel.bot.keyboards import AdminAction, AdminCallback, WatchlistCallback
 from sentinel.bot.menu import MEMBER_COMMANDS, OWNER_COMMANDS
+from sentinel.bot.runtime import watchlist_key
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
 from tests.bot_double import (
@@ -394,7 +395,7 @@ async def test_request_is_reachable_and_the_owner_button_answers_it(
     answered = await feed(dispatcher, update)
     assert reached_a_handler(answered), "the watchlist Approve button reached no handler"
     assert "ATOMUSDT" not in store.watchlist_requests, "the request is still pending"
-    assert "ATOMUSDT" in store.settings["watchlist"]
+    assert "ATOMUSDT" in store.settings[watchlist_key()]
 
 
 async def test_the_watchlist_button_is_silent_for_a_member(dispatcher: Dispatcher) -> None:
@@ -615,3 +616,36 @@ async def test_a_member_command_does_its_own_job_rather_than_apologising(
         f"/{command} failed and apologised — the guard is working and the handler is "
         "not. The traceback is in the captured log."
     )
+
+
+# --------------------------------------------------------------------------- #
+# M10a — the market-argument forms, through the real Dispatcher
+# --------------------------------------------------------------------------- #
+
+#: Every command that grew an optional market argument at M10a. Each is a *new
+#: dispatch path*: three of these handlers gained a ``CommandObject`` parameter they
+#: did not take before, and aiogram resolves handler arguments by name at call time
+#: — so a signature the dispatcher cannot satisfy fails at runtime, in production,
+#: as silence. journal/M8_2_REPORT.md §1a's rule, applied to the new arguments.
+MARKET_ARGUMENT_COMMANDS = (
+    "/status crypto",
+    "/pause crypto",
+    "/resume crypto",
+    "/watchlist crypto",
+    "/pulse crypto",
+    "/stats crypto",
+)
+
+
+@pytest.mark.parametrize("text", MARKET_ARGUMENT_COMMANDS)
+async def test_the_market_argument_forms_reach_a_handler(dispatcher: Dispatcher, text: str) -> None:
+    response = await feed(dispatcher, message_update(text, user_id=OWNER))
+    assert reached_a_handler(response), f"{text} reached no handler"
+
+
+@pytest.mark.parametrize("text", ["/status", "/pause", "/resume", "/watchlist"])
+async def test_the_bare_forms_still_reach_a_handler(dispatcher: Dispatcher, text: str) -> None:
+    """The argument is optional, and the bare form is the one the owner's fingers
+    know. A required ``CommandObject`` would have broken exactly these."""
+    response = await feed(dispatcher, message_update(text, user_id=OWNER))
+    assert reached_a_handler(response), f"{text} reached no handler"

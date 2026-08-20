@@ -25,9 +25,10 @@ from sentinel.bot.auth import Actor
 from sentinel.bot.context import BotContext
 from sentinel.bot.handlers import admin, commands
 from sentinel.bot.models import SignalDecision
-from sentinel.bot.runtime import WATCHLIST
+from sentinel.bot.runtime import watchlist_key
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
+from sentinel.core.markets import Market
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.models import PauseReason, PauseState
 from tests.bot_double import (
@@ -97,7 +98,8 @@ def ctx(store: FakeStore, tz: ZoneInfo, clock: FrozenClock) -> BotContext:
 
 
 #: Handlers that take no ``CommandObject`` — they have no arguments to parse.
-NO_ARGS = (commands.positions, admin.status, admin.settings, admin.pause, admin.resume)
+#: ``/status`` left this set at M10a: it takes an optional market.
+NO_ARGS = (commands.positions, admin.settings)
 
 
 async def run(
@@ -330,7 +332,7 @@ async def test_watchlist_add_verifies_the_symbol_against_the_exchange(
     checked = BotContext(**{**ctx.__dict__, "symbol_checker": Checker()})
     message = await run(admin.watchlist, checked, "add NOTREALUSDT")
 
-    assert WATCHLIST not in store.settings
+    assert watchlist_key() not in store.settings
     assert "not a Binance" in message.last
 
 
@@ -341,21 +343,21 @@ async def test_watchlist_add_accepts_a_symbol_the_exchange_knows(
 
     store.instruments["INJUSDT"] = SOL_META
     message = await run(admin.watchlist, ctx, "add INJUSDT")
-    assert "INJUSDT" in store.settings[WATCHLIST]
+    assert "INJUSDT" in store.settings[watchlist_key()]
     assert "INJUSDT" in message.last
 
 
 async def test_watchlist_remove_drops_a_symbol(ctx: BotContext, store: FakeStore) -> None:
     message = await run(admin.watchlist, ctx, "remove BTCUSDT")
-    assert "BTCUSDT" not in store.settings[WATCHLIST]
+    assert "BTCUSDT" not in store.settings[watchlist_key()]
     assert "BTCUSDT" not in message.last
 
 
 async def test_watchlist_refuses_to_empty_itself(ctx: BotContext, store: FakeStore) -> None:
     """An empty watchlist means the scan cycle has nothing to do."""
-    store.settings[WATCHLIST] = ["BTCUSDT"]
+    store.settings[watchlist_key()] = ["BTCUSDT"]
     message = await run(admin.watchlist, ctx, "remove BTCUSDT")
-    assert store.settings[WATCHLIST] == ["BTCUSDT"]
+    assert store.settings[watchlist_key()] == ["BTCUSDT"]
     assert "empty the watchlist" in message.last
 
 
@@ -364,7 +366,7 @@ async def test_watchlist_rejects_malformed_arguments(
     ctx: BotContext, store: FakeStore, args: str
 ) -> None:
     message = await run(admin.watchlist, ctx, args)
-    assert WATCHLIST not in store.settings
+    assert watchlist_key() not in store.settings
     assert "Usage" in message.last or "does not look like a symbol" in message.last
 
 
@@ -372,3 +374,92 @@ def _uuid(seed: int) -> Any:
     from uuid import UUID
 
     return UUID(int=seed)
+
+
+# --------------------------------------------------------------------------- #
+# M10a — /pause and /resume take a market, and default to everything
+# --------------------------------------------------------------------------- #
+
+
+async def test_pause_with_no_argument_is_still_system_wide(
+    ctx: BotContext, store: FakeStore
+) -> None:
+    """The one behaviour in this milestone that must not have quietly narrowed.
+
+    ``/pause`` is what somebody types when something is wrong, usually on a phone,
+    usually in a hurry. It writes the same ``risk_state`` row it has written since
+    M4, and it writes no per-market row at all.
+    """
+    message = await run(admin.pause, ctx, store=store)
+
+    assert store.pause.paused is True
+    assert store.market_pauses == {}
+    assert "for anyone" in message.last
+
+
+async def test_pause_can_target_one_market(ctx: BotContext, store: FakeStore) -> None:
+    message = await run(admin.pause, ctx, "crypto", store=store)
+
+    assert store.market_pauses[Market.CRYPTO].paused is True
+    assert store.pause.paused is False, "the global rail is untouched"
+    assert "crypto" in message.last
+
+
+async def test_pausing_one_market_leaves_the_other_alone(ctx: BotContext, store: FakeStore) -> None:
+    await run(admin.pause, ctx, "forex", store=store)
+
+    assert store.market_pauses[Market.FOREX].paused is True
+    assert Market.CRYPTO not in store.market_pauses
+
+
+async def test_a_market_that_is_not_a_market_is_refused(ctx: BotContext, store: FakeStore) -> None:
+    """Not silently treated as "everything". ``/pause crytpo`` must not read as
+    ``/pause``, which would stop the market the typist did not mean to stop —
+    or, worse, look like it stopped one when it stopped all of them."""
+    message = await run(admin.pause, ctx, "crytpo", store=store)
+
+    assert store.pause.paused is False
+    assert store.market_pauses == {}
+    assert "Usage" in message.last
+
+
+async def test_resume_lifts_the_global_pause(ctx: BotContext, store: FakeStore) -> None:
+    await run(admin.pause, ctx, store=store)
+
+    message = await run(admin.resume, ctx, store=store)
+
+    assert store.pause.paused is False
+    assert "Resumed" in message.last
+
+
+async def test_resume_targets_one_market(ctx: BotContext, store: FakeStore) -> None:
+    await run(admin.pause, ctx, "crypto", store=store)
+    await run(admin.pause, ctx, "forex", store=store)
+
+    await run(admin.resume, ctx, "crypto", store=store)
+
+    assert store.market_pauses[Market.CRYPTO].paused is False
+    assert store.market_pauses[Market.FOREX].paused is True, "forex stays paused"
+
+
+async def test_resuming_a_market_that_is_not_paused_says_so(
+    ctx: BotContext, store: FakeStore
+) -> None:
+    message = await run(admin.resume, ctx, "forex", store=store)
+
+    assert "Not paused" in message.last
+
+
+async def test_the_global_resume_does_not_lift_a_market_pause(
+    ctx: BotContext, store: FakeStore
+) -> None:
+    """Deliberate, and worth stating: they are different rails, and a global
+    ``/resume`` silently clearing a market pause the owner set separately would
+    restart a market they had stopped on purpose."""
+    await run(admin.pause, ctx, "forex", store=store)
+    await run(admin.pause, ctx, store=store)
+
+    await run(admin.resume, ctx, store=store)
+
+    assert store.pause.paused is False
+    assert store.market_pauses[Market.FOREX].paused is True

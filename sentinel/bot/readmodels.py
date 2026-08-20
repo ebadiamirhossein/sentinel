@@ -29,12 +29,12 @@ from sentinel.bot.views import (
     UserView,
 )
 from sentinel.core.alerts import Alert, AlertKind
-from sentinel.core.config import LLMConfig
+from sentinel.core.config import LLMConfig, MarketConfig
 from sentinel.llm.spend import SpendTotals, evaluate_spend
 from sentinel.risk.accounting import Exit, Fill, unrealized_r
 from sentinel.risk.models import TradePlan
 from sentinel.risk.rounding import money, percent, ratio
-from sentinel.stats.models import PerformanceStats, StatsReport
+from sentinel.stats.models import Book, PerformanceStats, Population, StatsReport
 from sentinel.storage.models import SignalEventRow, SignalExitRow, SignalFillRow, SignalRow
 
 HUNDRED = Decimal("100")
@@ -184,22 +184,47 @@ def alert_view(alert: Alert, *, spend: SpendView | None = None) -> AlertView:
     )
 
 
-def spend_view(totals: SpendTotals, config: LLMConfig) -> SpendView:
+def spend_view(
+    totals: SpendTotals, config: LLMConfig, *, market: MarketConfig | None = None
+) -> SpendView:
+    """Today's spend as a card reads it.
+
+    ``market`` names the budget the figure is being compared against (M10a): the
+    totals are one market's, so the ceiling beside them has to be that market's too,
+    or a reader would see "$7.42 of $10" where the real limit was $4. ``None`` keeps
+    the pre-M10a global figures, which is what the deployment-wide surfaces want.
+
+    The *state* still comes from :func:`evaluate_spend` against whichever budget is
+    in play, so the word and the number can never disagree.
+    """
+    llm = (
+        config
+        if market is None
+        else config.model_copy(
+            update={
+                "daily_spend_limit_usd": market.llm_daily_budget_usd,
+                "daily_spend_warn_usd": market.llm_daily_warn_usd,
+            }
+        )
+    )
     return SpendView(
         day_usd=money(totals.day_usd),
         month_usd=money(totals.month_usd),
-        limit_usd=config.daily_spend_limit_usd,
-        warn_usd=config.daily_spend_warn_usd,
-        state=evaluate_spend(totals, config).value,
+        limit_usd=llm.daily_spend_limit_usd,
+        warn_usd=llm.daily_spend_warn_usd,
+        state=evaluate_spend(totals, llm).value,
         is_floor=totals.is_floor,
         unpriced_calls=totals.unpriced_calls,
     )
 
 
-def _group(label: str, stats: PerformanceStats) -> StatsGroupView:
+def _group(book: Book, stats: PerformanceStats) -> StatsGroupView:
     return StatsGroupView(
-        label=label,
-        note=POPULATION_NOTES[label],
+        label=book.label,
+        # Keyed by the population, not by the rendered label: the label carries the
+        # market from M10a and the note is about what the population *means*, which
+        # is the same sentence in every market.
+        note=POPULATION_NOTES[_note_key(book)],
         measured=stats.measured,
         count=stats.count,
         filled=stats.filled,
@@ -223,14 +248,26 @@ def _group(label: str, stats: PerformanceStats) -> StatsGroupView:
     )
 
 
-def stats_view(report: StatsReport) -> StatsView:
+def _note_key(book: Book) -> str:
+    return "DRY RUN" if book.population is Population.DRY_RUN else book.population.value
+
+
+def stats_view(report: StatsReport, *, header: str = "") -> StatsView:
+    """One market's report as the card's inputs.
+
+    ``header`` names the market and is empty unless more than one is enabled, so a
+    crypto-only deployment renders the card exactly as it did before M10a. The
+    DRY RUN block still appears only when it holds something — a population that has
+    never happened is noise on a phone, and it was already hidden that way.
+    """
     return StatsView(
         window=report.window,
+        market=header,
         since=report.since,
-        groups=(
-            _group("REAL", report.real),
-            _group("HYPOTHETICAL", report.hypothetical),
-            *((_group("DRY RUN", report.dry_run),) if report.dry_run.count else ()),
+        groups=tuple(
+            _group(entry.book, entry.stats)
+            for entry in report.books
+            if entry.book.population is not Population.DRY_RUN or entry.stats.count
         ),
         by_setup=tuple(
             StatsBreakdownView(

@@ -4,35 +4,90 @@
 # Secrets NEVER live here — they come from .env / environment only.
 # Every value below is transcribed from the specs; see the reference next to each block.
 
-# M7 — first-run safety. true = run the full cycle (ingestion, screener, charts,
-# analyst, risk gate, persistence) and publish NOTHING to Telegram: the would-be
-# card is rendered by the same renderer and logged verbatim, the signal is stored
-# with dry_run=true, and the tracker resolves it silently. /stats reports dry-run
-# outcomes as their own population, never merged into real or hypothetical.
-# Run 24h with this true before letting the system post for real.
+# M10a — one block per market. Everything in here used to be a single global
+# value, and every one of them is something two markets would disagree about.
 #
-# Turned OFF 2026-08-19 (owner instruction), after the M8.2 shakedown: the pipeline
-# ran end to end all day, the spend rails were verified live ($0.24/cycle against
-# $0.75 before), and the owner wants real cards. Signals now reach Telegram.
-dry_run: false
+# A config file with NO `markets:` block is still valid and is read as crypto-only,
+# synthesised from the old top-level `dry_run` / `watchlist` /
+# `watchlist_max_symbols` keys. That is not politeness to old files: it is the shape
+# the server is running, because docs/DEPLOY.md §6/§13 edit the deployed config in
+# place. A file may carry one shape or the other and NEVER both — a `markets:` block
+# alongside a top-level `dry_run:` is refused at load, because two places to set the
+# same flag is one place for it to be wrong, silently, in the direction that
+# publishes real cards during a rehearsal.
+#
+# NOTHING about crypto changes here. Every value below is transcribed from the keys
+# it replaced; tests/golden asserts the resulting output byte for byte.
+markets:
+  crypto:
+    enabled: true
+    # Turned OFF 2026-08-19 (owner instruction), after the M8.2 shakedown: the
+    # pipeline ran end to end all day, the spend rails were verified live
+    # ($0.24/cycle against $0.75 before), and the owner wants real cards. true = run
+    # the full cycle and publish NOTHING: the would-be card is rendered by the same
+    # renderer and logged verbatim, the signal is stored with dry_run=true, and the
+    # tracker resolves it silently. /stats reports dry-run outcomes as their own
+    # population, never merged into real or hypothetical.
+    dry_run: false
+    adapter: crypto_binance
+    # 60, not 15 (M8.2, owner ruling 2026-08-19). The setup timeframe is 1h, so a
+    # 15-minute scan asked the analyst about the same unclosed candle four times.
+    scan_interval_minutes: 60
+    # M8.3: every symbol here is screened every cycle and can buy a ~$0.28 analyst
+    # call, so this is the single biggest lever on the bill. The cap binds
+    # /watchlist add and members' /request equally.
+    watchlist_max_symbols: 15
+    # PRD.md §7 — configurable at runtime via /watchlist.
+    watchlist:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - BNBUSDT
+      - XRPUSDT
+      - DOGEUSDT
+      - AVAXUSDT
+      - LINKUSDT
+      - LTCUSDT
+      - ADAUSDT
+    # This market's own daily LLM ceiling, and the level at which it warns. 10.00 is
+    # today's live `llm.daily_spend_limit_usd` carried across unchanged — M10a's
+    # brief proposed 8.00, and tightening a live spend rail in the middle of the
+    # measurement window is a behaviour change the milestone exists to avoid
+    # (correction recorded 2026-08-20, journal/M10a_REPORT.md).
+    # Written as `10` and `7`, NOT `10.00`. YAML parses `10.00` as the float 10.0,
+    # which becomes Decimal("10.0") and renders on /status as "$10.0" where today's
+    # card says "$10". Decimal equality would not have caught it — Decimal("10.0")
+    # == Decimal("10") — but the /status golden did. A one-character difference on a
+    # live card is exactly the change this milestone is forbidden to make.
+    llm_daily_budget_usd: 10
+    llm_daily_warn_usd: 7
 
-# PRD.md §7 — default watchlist (configurable at runtime via /watchlist).
+  # NOT IMPLEMENTED. M10a adds the market dimension and no forex code whatsoever:
+  # no adapter is registered under `forex_saxo`, and core/wiring.py refuses to build
+  # one rather than running a market that would quietly ingest nothing. This block
+  # exists so the shape is reviewable — and testable — before M10b fills it in.
+  forex:
+    enabled: false
+    dry_run: true
+    adapter: forex_saxo
+    scan_interval_minutes: 60
+    watchlist_max_symbols: 15
+    watchlist:
+      - EURUSD
+      - GBPUSD
+      - USDJPY
+    llm_daily_budget_usd: 4
+    llm_daily_warn_usd: 3
+
+# The ceiling above both sub-budgets. Reaching it stops new deep analysis in EVERY
+# market; reaching a sub-budget stops only that one.
 #
-# M8.3: `watchlist_max_symbols` caps the total. Every symbol here is screened
-# every cycle and can buy a ~$0.28 analyst call, so this is the single biggest
-# lever on the bill. It binds /watchlist add and members' /request equally.
-watchlist_max_symbols: 15
-watchlist:
-  - BTCUSDT
-  - ETHUSDT
-  - SOLUSDT
-  - BNBUSDT
-  - XRPUSDT
-  - DOGEUSDT
-  - AVAXUSDT
-  - LINKUSDT
-  - LTCUSDT
-  - ADAUSDT
+# 10 + 4 = 14 against a ceiling of 11, deliberately. Sub-budgets that summed to the
+# ceiling would let a quiet market reserve money a busy one could have used, all day,
+# every day. They compete instead. The consequence, which is real the day forex is
+# enabled: a forex-heavy morning can leave crypto with less than its own 10.00. See
+# journal/M10a_REPORT.md — M10b decides whether the measured market gets a floor.
+llm_daily_budget_global_usd: 11
 
 # PRD.md F1 (15 min cycle), ARCHITECTURE.md §3 (tracker every 60s).
 schedule:

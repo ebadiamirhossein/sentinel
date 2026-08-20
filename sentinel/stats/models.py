@@ -3,8 +3,8 @@
 PRD G2: "Win rate, average R, profit factor, and max drawdown are computable at
 any time via /stats. The system's real success rate is *known*, not guessed."
 
-Three populations, reported separately and never merged, because they answer
-three different questions:
+Three populations **times the market they were measured in** (M10a), reported
+separately and never merged, because they answer different questions:
 
 * **REAL** — the owner pressed ✅ Taken. This is their record.
 * **HYPOTHETICAL** — 👀 Watching or ❌ Skip. specs/TELEGRAM_UX.md §2 resolves these
@@ -12,6 +12,22 @@ three different questions:
 * **DRY RUN** — produced by a rehearsal cycle and never published. Nobody pressed
   anything, so folding these into either of the above would put paper results
   into the numbers the live system is later judged against.
+
+M10a adds the fourth dimension and gives it the **stricter** guarantee of the two.
+Populations have one long-standing documented exception — ``by_setup`` and
+``by_prompt_version`` deliberately span REAL+HYPOTHETICAL, by owner ruling at M7,
+because "which setups does the analyst get right" is a question about the analyst
+rather than about which cards somebody acted on. **Markets have no such exception**,
+so it can be enforced rather than merely intended:
+
+* :class:`StatsReport` has no field that could hold a merged figure. It carries a
+  tuple of :class:`BookStats`, each labelled with its :class:`Book`, instead of the
+  three scalar fields it used to. There is nowhere to put a total.
+* :func:`~sentinel.stats.compute.summarize` **raises** if handed rows from more than
+  one market.
+
+Averaging a EUR/USD book into a BTC one would produce a number with no meaning that
+nothing would flag — the same objection M8.1 made to averaging two users.
 
 No LLM (CLAUDE.md's deterministic modules). ``Decimal`` throughout; the only
 ``float`` in the module is at ``SetupStat``'s boundary, which M5 defined.
@@ -27,6 +43,7 @@ from pydantic import BaseModel, ConfigDict
 
 from sentinel.analyst.models import Direction, SetupType
 from sentinel.bot.models import SignalDecision
+from sentinel.core.markets import LEGACY_MARKET, Market
 
 
 class Frozen(BaseModel):
@@ -62,6 +79,10 @@ class ResolvedSignal(Frozen):
     direction: Direction
     setup_type: SetupType
     prompt_version: str | None
+    #: Which market this outcome was measured in (M10a). On the row rather than
+    #: inferred from the symbol: the symbol is disjoint across markets *today*, and
+    #: a statistic must not rest on an assumption that could stop being true.
+    market: Market = LEGACY_MARKET
     population: Population
     #: False for a signal that expired or invalidated before any rung filled.
     filled: bool
@@ -104,6 +125,36 @@ class PerformanceStats(Frozen):
         return self.filled > 0
 
 
+class Book(Frozen):
+    """One population in one market — the unit a statistic may be computed over.
+
+    Frozen and hashable, so it is a dictionary key rather than a pair of parallel
+    arguments that could get out of step.
+    """
+
+    population: Population
+    market: Market
+
+    @property
+    def label(self) -> str:
+        """``REAL`` or ``REAL · forex`` — what ``/stats`` prints above the block.
+
+        The market is appended only when it is not the historical default, so a
+        crypto-only deployment renders the exact three labels it rendered before
+        M10a. The condition is the *value*, not a config flag, because this is a
+        pure model and must not depend on what happens to be enabled.
+        """
+        base = "DRY RUN" if self.population is Population.DRY_RUN else self.population.value
+        return base if self.market is LEGACY_MARKET else f"{base} · {self.market.value}"
+
+
+class BookStats(Frozen):
+    """One book's figures, inseparable from the book they describe."""
+
+    book: Book
+    stats: PerformanceStats
+
+
 class Breakdown(Frozen):
     """One row of a by-setup or by-prompt-version table."""
 
@@ -112,14 +163,21 @@ class Breakdown(Frozen):
 
 
 class StatsReport(Frozen):
-    """Everything ``/stats [30d|90d|all]`` renders."""
+    """Everything ``/stats [30d|90d|all]`` renders, for **one market**.
+
+    Per market from M10a, and it is the type that makes the rule hold: there is no
+    ``real``/``hypothetical``/``dry_run`` field any more and no total anywhere, so a
+    renderer cannot print a merged figure by reaching for one. A caller covering two
+    markets builds two reports and renders two blocks.
+    """
 
     window: str
     since: datetime | None
     generated_at: datetime
-    real: PerformanceStats
-    hypothetical: PerformanceStats
-    dry_run: PerformanceStats
+    market: Market = LEGACY_MARKET
+    #: One entry per population, in :class:`Population` order, always all three —
+    #: an absent book and an empty one are different facts, and ``/stats`` says so.
+    books: tuple[BookStats, ...] = ()
     #: Over REAL + HYPOTHETICAL together. With <=5 signals a day the taken-only
     #: sample is too thin to split by setup type for months, and the question a
     #: breakdown answers — "which setups does the *pipeline* get right" — is about
@@ -127,8 +185,17 @@ class StatsReport(Frozen):
     by_setup: tuple[Breakdown, ...] = ()
     by_prompt_version: tuple[Breakdown, ...] = ()
 
+    def book(self, population: Population) -> PerformanceStats:
+        """One population's figures. Raises if the report does not carry it."""
+        for entry in self.books:
+            if entry.book.population is population:
+                return entry.stats
+        raise KeyError(f"{self.market.value} report carries no {population.value} book")
+
 
 __all__ = [
+    "Book",
+    "BookStats",
     "Breakdown",
     "PerformanceStats",
     "Population",

@@ -55,6 +55,12 @@ from sentinel.bot.export import journal_filename, journal_workbook
 from sentinel.bot.formatting import escape
 from sentinel.bot.handlers.guard import answers_on_failure
 from sentinel.bot.keyboards import watchlist_request_keyboard
+from sentinel.bot.markets import (
+    market_of_symbol,
+    parse_market,
+    resolve_markets,
+    section_header,
+)
 from sentinel.bot.models import SignalDecision
 from sentinel.bot.outbound import SupportsBot
 from sentinel.bot.pulse import pulse_day_view, pulse_view, symbol_pulse_view
@@ -71,8 +77,9 @@ from sentinel.bot.runtime import (
 from sentinel.bot.snapshot import snapshot_view
 from sentinel.bot.views import SpendView
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.risk.models import TradePlan
-from sentinel.stats.journal import build_journal
+from sentinel.stats.journal import JournalBook, build_journal
 from sentinel.stats.queries import WINDOWS, build_report, parse_window, window_start
 
 log = get_logger(__name__)
@@ -156,31 +163,40 @@ async def positions(message: Message, ctx: BotContext, actor: Actor) -> None:
     comes from ``risk/accounting.py``. The snapshot feed is shared — it is market
     data — but the signals, the sizing and therefore every euro figure are the
     caller's alone.
-    """
-    async with ctx.database.session() as session:
-        rows = await ctx.repositories.signals(session).with_decision(
-            SignalDecision.TAKEN, user_id=actor.user_id
-        )
-        fills = await ctx.repositories.fills(session).for_signals([row.id for row in rows])
-        exits = await ctx.repositories.exits(session).for_signals([row.id for row in rows])
-        marks = {
-            row.symbol: snapshot.last_price
-            for snapshot in await ctx.repositories.snapshots(session).latest_per_symbol()
-            for row in rows
-            if row.symbol == snapshot.symbol
-        }
 
-    views = [
-        position_view(
-            row,
-            TradePlan.model_validate(row.plan),
-            fills.get(row.id, []),
-            exits.get(row.id, []),
-            mark_price=marks.get(row.symbol),
-        )
-        for row in rows
-    ]
-    await message.answer(positions_card(views, ctx.tz))
+    **Per market from M10a**, in config order, each block headed by its market when
+    more than one is enabled. Positions are never summed across markets: the mark,
+    the R and the euro figures all come from one market's own price feed.
+    """
+    config = effective_config(ctx.settings, {})
+    blocks: list[str] = []
+    async with ctx.database.session() as session:
+        for market in config.enabled_markets:
+            rows = await ctx.repositories.signals(session, market=market).with_decision(
+                SignalDecision.TAKEN, user_id=actor.user_id
+            )
+            fills = await ctx.repositories.fills(session).for_signals([row.id for row in rows])
+            exits = await ctx.repositories.exits(session).for_signals([row.id for row in rows])
+            marks = {
+                row.symbol: snapshot.last_price
+                for snapshot in await ctx.repositories.snapshots(
+                    session, market=market
+                ).latest_per_symbol()
+                for row in rows
+                if row.symbol == snapshot.symbol
+            }
+            views = [
+                position_view(
+                    row,
+                    TradePlan.model_validate(row.plan),
+                    fills.get(row.id, []),
+                    exits.get(row.id, []),
+                    mark_price=marks.get(row.symbol),
+                )
+                for row in rows
+            ]
+            blocks.append(positions_card(views, ctx.tz, header=section_header(market, config)))
+    await message.answer("\n\n".join(blocks))
 
 
 @commands_router.message(Command("stats"))
@@ -198,13 +214,40 @@ async def stats(message: Message, command: CommandObject, ctx: BotContext, actor
     same setup differently: without the user filter, one person's Taken would land in
     another person's record. It is not a filter on the report — it is a filter on the
     query, and ``SignalRepository`` requires it.
+
+    **And a fourth dimension at M10a: the market.** One block per enabled market,
+    never a sum — a win rate that averaged a forex book into a crypto one would move
+    when a market was switched on, which is not a fact about anything. The argument
+    takes a market as well as a window (``/stats forex``, ``/stats 90d``); with one
+    market enabled the card is exactly the one M8.1 shipped.
     """
-    window = parse_window(command.args)
+    config = effective_config(ctx.settings, {})
+    markets = resolve_markets(command.args, config)
+    if isinstance(markets, Invalid):
+        await message.answer(f"❌ {markets.message}")
+        return
+    # A market name is not a window. Without this, ``/stats forex`` would fall
+    # through ``parse_window``'s "anything unrecognised is 30d" branch — the right
+    # answer by accident, and the wrong one the day a market is named "all".
+    window = parse_window(None if parse_market(command.args or "") else command.args)
+
     async with ctx.database.session() as session:
-        report = await build_report(
-            session, window=window, now=ctx.clock.now(), user_id=actor.user_id
+        reports = [
+            await build_report(
+                session,
+                window=window,
+                now=ctx.clock.now(),
+                user_id=actor.user_id,
+                market=market,
+            )
+            for market in markets
+        ]
+    await message.answer(
+        "\n\n".join(
+            stats_card(stats_view(report, header=section_header(report.market, config)), ctx.tz)
+            for report in reports
         )
-    await message.answer(stats_card(stats_view(report), ctx.tz))
+    )
 
 
 #: What ``/pulse`` accepts after the command. Anything else is answered with usage
@@ -241,10 +284,37 @@ async def pulse(message: Message, command: CommandObject, ctx: BotContext, actor
     # shorter. Stated as an ordering anyway — a future `/pulse week` would be a
     # four-letter word that is also not a symbol, and the order is what keeps that
     # decision in one place.
+    config = effective_config(ctx.settings, {})
+
     if raw in PULSE_DAY_ARGS:
         now = ctx.clock.now()
-        spend = await _pulse_spend(ctx, now=now, owner=actor.is_owner)
-        await message.answer(await _pulse_day(ctx, now=now, spend=spend))
+        blocks = [
+            await _pulse_day(
+                ctx,
+                now=now,
+                market=market,
+                header=section_header(market, config),
+                spend=await _pulse_spend(ctx, now=now, market=market, owner=actor.is_owner),
+            )
+            for market in config.enabled_markets
+        ]
+        await message.answer("\n\n".join(blocks))
+        return
+
+    named = parse_market(raw) if raw else None
+    if named is not None:
+        if named not in config.enabled_markets:
+            await message.answer(f"❌ <b>{named.value}</b> is not enabled on this deployment.")
+            return
+        now = ctx.clock.now()
+        await message.answer(
+            await _pulse_cycle(
+                ctx,
+                market=named,
+                header=section_header(named, config),
+                spend=await _pulse_spend(ctx, now=now, market=named, owner=actor.is_owner),
+            )
+        )
         return
 
     if raw:
@@ -256,8 +326,17 @@ async def pulse(message: Message, command: CommandObject, ctx: BotContext, actor
             await message.answer(page)
         return
 
-    spend = await _pulse_spend(ctx, now=ctx.clock.now(), owner=actor.is_owner)
-    await message.answer(await _pulse_cycle(ctx, spend=spend))
+    now = ctx.clock.now()
+    blocks = [
+        await _pulse_cycle(
+            ctx,
+            market=market,
+            header=section_header(market, config),
+            spend=await _pulse_spend(ctx, now=now, market=market, owner=actor.is_owner),
+        )
+        for market in config.enabled_markets
+    ]
+    await message.answer("\n\n".join(blocks))
 
 
 async def _pulse_symbol(ctx: BotContext, symbol: str) -> tuple[str, ...]:
@@ -273,20 +352,29 @@ async def _pulse_symbol(ctx: BotContext, symbol: str) -> tuple[str, ...]:
     verbose. Usually one.
     """
     async with ctx.database.session() as session:
-        row = await ctx.repositories.reports(session).latest_for_symbol(symbol)
+        stored = await ctx.repositories.settings(session).all()
+        config = effective_config(ctx.settings, stored)
+        # The symbol names its own market — symbols are disjoint across markets — so
+        # a reader never types one. See ``bot/markets.market_of_symbol``.
+        market = market_of_symbol(symbol, config)
+        reports = ctx.repositories.reports(session, market=market)
+        row = await reports.latest_for_symbol(symbol)
         decisions = (
             []
             if row is None or row.cycle_id is None
-            else await ctx.repositories.gate_decisions(session).for_cycles([row.cycle_id])
+            else await ctx.repositories.gate_decisions(session, market=market).for_cycles(
+                [row.cycle_id]
+            )
         )
-        stored = await ctx.repositories.settings(session).all()
 
-    watchlist = effective_config(ctx.settings, stored).watchlist
+    watchlist = config.market(market).watchlist
     view = symbol_pulse_view(row, decisions, symbol=symbol, on_watchlist=symbol in watchlist)
     return symbol_pulse_card(view, ctx.tz)
 
 
-async def _pulse_spend(ctx: BotContext, *, now: datetime, owner: bool) -> SpendView | None:
+async def _pulse_spend(
+    ctx: BotContext, *, now: datetime, market: Market, owner: bool
+) -> SpendView | None:
     """Today's LLM spend — **the owner's, and nobody else's to see**.
 
     specs/TELEGRAM_UX.md §7: the spend guard is an owner-only channel because a
@@ -298,26 +386,38 @@ async def _pulse_spend(ctx: BotContext, *, now: datetime, owner: bool) -> SpendV
         return None
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     async with ctx.database.session() as session:
-        totals = await ctx.repositories.llm_calls(session).spend_totals(
+        totals = await ctx.repositories.llm_calls(session, market=market).spend_totals(
             day_start=day_start,
             month_start=day_start.replace(day=1),
             priced_models=tuple(ctx.settings.config.llm.pricing),
         )
-    return spend_view(totals, ctx.settings.config.llm)
+    return spend_view(totals, ctx.settings.config.llm, market=ctx.settings.config.market(market))
 
 
-async def _pulse_cycle(ctx: BotContext, *, spend: SpendView | None) -> str:
-    """The last cycle that actually finished — not the one currently running."""
+async def _pulse_cycle(
+    ctx: BotContext, *, market: Market, header: str, spend: SpendView | None
+) -> str:
+    """This market's last cycle that actually finished — not the one running.
+
+    Per market from M10a: the scheduler runs one job per enabled market, so "the
+    last cycle" is a question with one answer per market and no answer at all across
+    them. The header is empty unless a second market is enabled.
+    """
     async with ctx.database.session() as session:
-        cycle = await ctx.repositories.cycles(session).latest_completed()
+        cycle = await ctx.repositories.cycles(session, market=market).latest_completed()
         if cycle is None:
             return pulse_card(
-                pulse_view(None, screener=(), reports=(), decisions=(), spend=spend), ctx.tz
+                pulse_view(None, screener=(), reports=(), decisions=(), spend=spend),
+                ctx.tz,
+                header=header,
             )
         cycle_ids = [cycle.cycle_id]
-        screener = await ctx.repositories.llm_calls(session).screener_verdicts(cycle_ids)
-        reports = await ctx.repositories.reports(session).for_cycles(cycle_ids)
-        decisions = await ctx.repositories.gate_decisions(session).for_cycles(cycle_ids)
+        calls = ctx.repositories.llm_calls(session, market=market)
+        screener = await calls.screener_verdicts(cycle_ids)
+        reports = await ctx.repositories.reports(session, market=market).for_cycles(cycle_ids)
+        decisions = await ctx.repositories.gate_decisions(session, market=market).for_cycles(
+            cycle_ids
+        )
 
     view = pulse_view(
         cycle,
@@ -326,20 +426,25 @@ async def _pulse_cycle(ctx: BotContext, *, spend: SpendView | None) -> str:
         decisions=decisions,
         spend=spend,
     )
-    return pulse_card(view, ctx.tz)
+    return pulse_card(view, ctx.tz, header=header)
 
 
-async def _pulse_day(ctx: BotContext, *, now: datetime, spend: SpendView | None) -> str:
-    """The same four sections over a day, counted rather than listed."""
+async def _pulse_day(
+    ctx: BotContext, *, now: datetime, market: Market, header: str, spend: SpendView | None
+) -> str:
+    """The same four sections over a day, counted rather than listed — per market."""
     since = now - timedelta(hours=24)
     async with ctx.database.session() as session:
-        cycles_repo = ctx.repositories.cycles(session)
+        cycles_repo = ctx.repositories.cycles(session, market=market)
         cycles = await cycles_repo.completed_since(since)
         _, started = await cycles_repo.completion_since(since)
         cycle_ids = [cycle.cycle_id for cycle in cycles]
-        screener = await ctx.repositories.llm_calls(session).screener_verdicts(cycle_ids)
-        reports = await ctx.repositories.reports(session).for_cycles(cycle_ids)
-        decisions = await ctx.repositories.gate_decisions(session).for_cycles(cycle_ids)
+        calls = ctx.repositories.llm_calls(session, market=market)
+        screener = await calls.screener_verdicts(cycle_ids)
+        reports = await ctx.repositories.reports(session, market=market).for_cycles(cycle_ids)
+        decisions = await ctx.repositories.gate_decisions(session, market=market).for_cycles(
+            cycle_ids
+        )
 
     view = pulse_day_view(
         cycles,
@@ -350,7 +455,7 @@ async def _pulse_day(ctx: BotContext, *, now: datetime, spend: SpendView | None)
         decisions=decisions,
         spend=spend,
     )
-    return pulse_day_card(view, ctx.tz)
+    return pulse_day_card(view, ctx.tz, header=header)
 
 
 #: ``/journal`` accepts the same windows ``/stats`` does, plus its own default.
@@ -400,6 +505,12 @@ async def journal(
     the default, on M8.4's ruling for ``/pulse 7d``: a person who typed ``/journal
     7d`` and received their whole history would not notice they had been answered a
     different question.
+
+    **One sheet per (population, market) pair from M10a**, never merged. A running
+    balance walks *within* a sheet, and one that stepped from a EUR/USD trade into a
+    BTC one would mean nothing — the same objection M8.6 makes to stepping from a
+    trade you took into one you skipped. With one market the sheet names are exactly
+    M8.6's, because a reader's saved files and formulas already refer to them.
     """
     raw = (command.args or "").strip().split()[0].lower() if command.args else ""
     window = raw or DEFAULT_JOURNAL_WINDOW
@@ -408,22 +519,32 @@ async def journal(
         return
 
     now = ctx.clock.now()
+    config = effective_config(ctx.settings, {})
+    books: list[JournalBook] = []
+    exported = 0
     async with ctx.database.session() as session:
-        rows = await ctx.repositories.signals(session).journal_since(
-            window_start(window, now=now), user_id=actor.user_id
-        )
-        signal_ids = [row.id for row in rows]
-        fills = await ctx.repositories.fills(session).for_signals(signal_ids)
-        exits = await ctx.repositories.exits(session).for_signals(signal_ids)
+        for market in config.enabled_markets:
+            rows = await ctx.repositories.signals(session, market=market).journal_since(
+                window_start(window, now=now), user_id=actor.user_id
+            )
+            signal_ids = [row.id for row in rows]
+            fills = await ctx.repositories.fills(session).for_signals(signal_ids)
+            exits = await ctx.repositories.exits(session).for_signals(signal_ids)
+            exported += len(rows)
+            # A market with nothing in the window gets no sheets at all. The
+            # always-written pair (Real, Hypothetical) exists so an *empty* sheet
+            # reads as "you have none of these" — repeating that for a market the
+            # reader may not even have enabled would be noise, not honesty.
+            if rows or market is LEGACY_MARKET:
+                books.extend(build_journal(rows, fills=fills, exits=exits, market=market))
 
-    if not rows:
+    if not exported:
         # A file with nothing but headers is indistinguishable from a broken export,
         # and the reader would open it to find out which it was.
         await message.answer(journal_empty_card(window))
         return
 
-    books = build_journal(rows, fills=fills, exits=exits)
-    log.info("bot.journal_exported", user_id=actor.user_id, window=window, signals=len(rows))
+    log.info("bot.journal_exported", user_id=actor.user_id, window=window, signals=exported)
     await bot.send_document(
         chat_id=actor.user_id,
         document=BufferedInputFile(
@@ -459,10 +580,12 @@ async def snapshot(message: Message, command: CommandObject, ctx: BotContext) ->
         return
 
     async with ctx.database.session() as session:
-        row = await ctx.repositories.snapshots(session).latest_for_symbol(parsed)
         stored = await ctx.repositories.settings(session).all()
+        config = effective_config(ctx.settings, stored)
+        market = market_of_symbol(parsed, config)
+        row = await ctx.repositories.snapshots(session, market=market).latest_for_symbol(parsed)
 
-    watchlist = effective_config(ctx.settings, stored).watchlist
+    watchlist = config.market(market).watchlist
     view = snapshot_view(row, symbol=parsed, on_watchlist=parsed in watchlist)
     await message.answer(snapshot_card(view, ctx.tz))
 
@@ -518,15 +641,20 @@ async def request(
     async with ctx.database.session() as session:
         stored = await ctx.repositories.settings(session).all()
         config = effective_config(ctx.settings, stored)
-        current: tuple[str, ...] = tuple(config.watchlist)
+        # A request joins one market's watchlist. The symbol usually names it; when
+        # it is on nobody's list yet — which is the normal case for a request — this
+        # is the first enabled market, i.e. crypto on every deployment that exists.
+        market = market_of_symbol(parsed, config)
+        market_config = config.market(market)
+        current: tuple[str, ...] = tuple(market_config.watchlist)
 
         if parsed in current:
             await message.answer(f"{escape(parsed)} is already on the watchlist.")
             return
-        if len(current) >= config.watchlist_max_symbols:
+        if len(current) >= market_config.watchlist_max_symbols:
             await message.answer(
                 f"❌ The watchlist is full ({len(current)} of "
-                f"{config.watchlist_max_symbols}). Ask the owner to make room first."
+                f"{market_config.watchlist_max_symbols}). Ask the owner to make room first."
             )
             return
 
@@ -536,7 +664,7 @@ async def request(
             await message.answer(f"❌ {escape(unknown.message)}")
             return
 
-        requests = ctx.repositories.watchlist_requests(session)
+        requests = ctx.repositories.watchlist_requests(session, market=market)
         created = await requests.request(parsed, user_id=actor.user_id, at=now)
         owner = await ctx.repositories.users(session).owner()
         await session.commit()
@@ -560,7 +688,7 @@ async def request(
             actor.account,
             ctx.tz,
             size=len(current),
-            cap=config.watchlist_max_symbols,
+            cap=market_config.watchlist_max_symbols,
         ),
         parse_mode=ctx.settings.config.telegram.parse_mode,
         reply_markup=watchlist_request_keyboard(parsed),

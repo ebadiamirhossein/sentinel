@@ -11,10 +11,20 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from sentinel.analyst.models import Direction, SetupType
 from sentinel.bot.models import SignalDecision
-from sentinel.stats.compute import by_key, max_drawdown_r, split, summarize, tracked
-from sentinel.stats.models import Population, ResolvedSignal, population_of
+from sentinel.core.markets import Market
+from sentinel.stats.compute import (
+    by_key,
+    in_market,
+    max_drawdown_r,
+    split,
+    summarize,
+    tracked,
+)
+from sentinel.stats.models import Book, Population, ResolvedSignal, population_of
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
@@ -191,6 +201,10 @@ def test_drawdown_ignores_the_order_the_rows_arrive_in() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def crypto(population: Population) -> Book:
+    return Book(population=population, market=Market.CRYPTO)
+
+
 def test_the_three_populations_never_merge() -> None:
     books = split(
         [
@@ -199,9 +213,73 @@ def test_the_three_populations_never_merge() -> None:
             outcome("2.00", population=Population.DRY_RUN, minutes=3),
         ]
     )
-    assert [len(books[group]) for group in Population] == [1, 1, 1]
-    assert summarize(books[Population.REAL]).total_r == Decimal("1.00")
-    assert summarize(books[Population.DRY_RUN]).total_r == Decimal("2.00")
+    assert [len(books[crypto(group)]) for group in Population] == [1, 1, 1]
+    assert summarize(books[crypto(Population.REAL)]).total_r == Decimal("1.00")
+    assert summarize(books[crypto(Population.DRY_RUN)]).total_r == Decimal("2.00")
+
+
+# --------------------------------------------------------------------------- #
+# M10a — the market is the fourth dimension, and the strict one
+# --------------------------------------------------------------------------- #
+
+
+def test_split_keys_every_book_by_market_too() -> None:
+    """Every (population, market) combination is present, empty ones included.
+
+    An absent book and an empty one are different facts, and a caller that had to
+    tell them apart with ``.get()`` would eventually get it wrong in the direction
+    that reports a market as having no signals when it was simply never asked.
+    """
+    books = split([outcome("1.00", population=Population.REAL, minutes=1)])
+
+    assert set(books) == {
+        Book(population=population, market=market) for market in Market for population in Population
+    }
+    assert len(books[Book(population=Population.REAL, market=Market.FOREX)]) == 0
+
+
+def test_summarize_refuses_to_merge_two_markets() -> None:
+    """The enforceable half of "populations never merge" (M10a Step 6).
+
+    Markets have no documented exception, unlike REAL+HYPOTHETICAL, which ``by_key``
+    spans on purpose. So this one can be a rule rather than an intention: an average
+    across a EUR/USD book and a BTC one is a number with no meaning, and nothing
+    downstream could tell it had been produced.
+    """
+    mixed = [
+        outcome("1.00", population=Population.REAL, minutes=1),
+        outcome("-1.00", population=Population.REAL, minutes=2).model_copy(
+            update={"market": Market.FOREX}
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="more than one market"):
+        summarize(mixed)
+
+
+def test_summarize_is_happy_with_one_market() -> None:
+    """The refusal must not fire on the ordinary case, or it would be turned off."""
+    assert (
+        summarize(
+            [
+                outcome("1.00", population=Population.REAL, minutes=1),
+                outcome("-1.00", population=Population.REAL, minutes=2),
+            ]
+        ).count
+        == 2
+    )
+
+
+def test_in_market_filters_without_merging() -> None:
+    rows = [
+        outcome("1.00", population=Population.REAL, minutes=1),
+        outcome("2.00", population=Population.REAL, minutes=2).model_copy(
+            update={"market": Market.FOREX}
+        ),
+    ]
+
+    assert summarize(in_market(rows, Market.CRYPTO)).total_r == Decimal("1.00")
+    assert summarize(in_market(rows, Market.FOREX)).total_r == Decimal("2.00")
 
 
 def test_dry_run_is_excluded_from_the_breakdowns() -> None:

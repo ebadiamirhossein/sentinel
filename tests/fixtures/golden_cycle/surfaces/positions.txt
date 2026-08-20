@@ -1,0 +1,17 @@
+📈 <b>Positions</b> (marked ✅ Taken)
+
+<b>#1 SOLUSDT LONG</b> · trend_pullback · PARTIALLY_FILLED
+  entry 82.55 · stop 83.10 · risk €74.98 · 5x
+  targets 85.20 / 86.60 / 88.90
+  filled 2.34% · mark 85.20
+  open: 0.22R (€16.57)
+  🛡️ stop moved to 83.10 (breakeven)
+  expires 2026-08-18 03:00 EEST (2026-08-18 00:00 UTC)
+
+<b>#2 SOLUSDT LONG</b> · trend_pullback · PENDING_ENTRY
+  entry 82.55 · stop 81.20 · risk €74.98 · 5x
+  targets 85.20 / 86.60 / 88.90
+  unfilled — the ladder is still resting
+  expires 2026-08-17 03:00 EEST (2026-08-17 00:00 UTC)
+
+<i>Open PnL is marked at the tracker's last observed price and is not a fill. Banked figures are realized and gross of costs.</i>

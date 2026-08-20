@@ -1,0 +1,31 @@
+🩺 <b>Status</b>
+
+⏸️ <b>PAUSED</b> [system] — MANUAL · until: no expiry
+/resume to lift it.
+
+<b>Sizing</b>
+  capital: €10000
+  risk per trade: 0.75%
+  watchlist: 10 symbols
+
+<b>Data</b>
+  ✅ BTCUSDT OK · 2026-08-18 14:56 EEST (2026-08-18 11:56 UTC)
+  ⚠️ SOLUSDT DEGRADED (funding, news) · 2026-08-18 14:56 EEST (2026-08-18 11:56 UTC)
+
+<b>Signals</b>
+  delivered: 8 · awaiting your call: 1
+  marked taken: 4
+  open now: 2 · today: 2/5
+  ⚠️ 1 message(s) claimed but never confirmed — not re-sent, to avoid a double post (specs/TELEGRAM_UX.md §6).
+
+<b>Risk in use</b>
+  open risk: 1.50% of 2.25%
+  positions: 2 of 4
+
+<b>Cycle</b>
+  last: 2026-08-18 14:58 EEST (2026-08-18 11:58 UTC) · OK
+  completed: 23 of 24 in 30d
+
+<b>LLM spend</b> <i>(estimate, not a bill)</i>
+  today: $7.42 of $10 · WARN
+  month to date: $38.10

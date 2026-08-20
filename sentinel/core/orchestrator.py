@@ -54,6 +54,8 @@ from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID, uuid4
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from sentinel.analyst.history import build_history_block
 from sentinel.analyst.models import AnalystReport, CandidateStatus
 from sentinel.analyst.providers.anthropic_fable import AnthropicFableAnalyst
@@ -66,15 +68,23 @@ from sentinel.bot.runtime import account_state, effective_config
 from sentinel.charts.models import ChartImage, ChartSpec
 from sentinel.charts.renderer import render_album
 from sentinel.core.clock import Clock, SystemClock
-from sentinel.core.config import AppConfig, Settings
+from sentinel.core.config import AppConfig, MarketConfig, Settings
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
+from sentinel.core.pauses import effective_pause
 from sentinel.core.wiring import assemble_with_features, snapshot_assembler
 from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import FxRate, MarketSnapshot
 from sentinel.llm.client import AnthropicClient
 from sentinel.llm.errors import AnalystUnavailable
 from sentinel.llm.models import LLMCall, LLMCallStatus
-from sentinel.llm.spend import SpendState, evaluate_spend, spend_window
+from sentinel.llm.spend import (
+    SpendScope,
+    SpendState,
+    SpendVerdict,
+    evaluate_market_spend,
+    spend_window,
+)
 from sentinel.risk.engine import RiskEngine
 from sentinel.risk.models import (
     AccountState,
@@ -94,10 +104,12 @@ from sentinel.storage.repositories import (
     FxRateRepository,
     GateDecisionRepository,
     LLMCallRepository,
+    MarketPauseStateRepository,
     RiskStateRepository,
     RuntimeSettingsRepository,
     SignalRepository,
     SnapshotRepository,
+    UserMarketPauseRepository,
     UserRepository,
 )
 
@@ -120,6 +132,11 @@ class CycleRepositories:
     settings: type[RuntimeSettingsRepository] = RuntimeSettingsRepository
     fx: type[FxRateRepository] = FxRateRepository
     users: type[UserRepository] = UserRepository
+    #: M10a's two per-market pause rails. Both are read on the gate path, so both
+    #: are seams for the same reason the rest are: they decide whether a plan
+    #: reaches a person, and that must be testable on every run.
+    market_pause: type[MarketPauseStateRepository] = MarketPauseStateRepository
+    user_market_pause: type[UserMarketPauseRepository] = UserMarketPauseRepository
 
 
 class SkipReason(StrEnum):
@@ -218,6 +235,10 @@ class CycleResult:
     """What one cycle did. Logged, stored on the ``cycles`` row, asserted in tests."""
 
     cycle_id: UUID
+    #: Which market this cycle scanned (M10a). On the result rather than only on
+    #: the row, because the admin alerter reads a result and must say which market
+    #: failed — "the cycle failed" is a different message when there are two.
+    market: Market = LEGACY_MARKET
     dry_run: bool = False
     symbols_requested: int = 0
     symbols_scanned: int = 0
@@ -235,6 +256,10 @@ class CycleResult:
     #: exactly one cycle sees OK→WARN, and it is the cycle that caused it.
     spend_state_before: SpendState | None = None
     spend_state_after: SpendState | None = None
+    #: Which ceiling the guard was speaking about when it last spoke — this
+    #: market's own budget, or the global one above it (M10a Step 4).
+    spend_scope_before: SpendScope | None = None
+    spend_scope_after: SpendScope | None = None
     #: Why each symbol was dropped before the analyst — a quiet cycle explains
     #: itself from the row rather than only from the logs. Union-level from M8.1: a
     #: symbol appears here only when *no* eligible user could have received it.
@@ -255,6 +280,7 @@ class CycleOrchestrator:
         settings: Settings,
         database: Database,
         *,
+        market: Market = LEGACY_MARKET,
         publisher_factory: Callable[[int], SignalPublisher] | None = None,
         notices: UserNotifier | None = None,
         clock: Clock | None = None,
@@ -262,6 +288,12 @@ class CycleOrchestrator:
     ) -> None:
         self._settings = settings
         self._database = database
+        #: Which market this cycle scans (M10a). One orchestrator per enabled
+        #: market, one scheduled job each; every row this instance writes carries
+        #: it and every row it reads is filtered by it. The default is crypto,
+        #: because that is the only market with an adapter and every row that
+        #: exists today belongs to it.
+        self._market = market
         #: One publisher per recipient (M8.1). A factory rather than an instance,
         #: because each user's card goes to their own chat and carries their own
         #: ``user_id`` onto the signal row. ``None`` means no bot is configured — the
@@ -271,20 +303,54 @@ class CycleOrchestrator:
         self._clock = clock or SystemClock()
         self._repos = repositories or CycleRepositories()
 
+    # ---- market-scoped repositories ----------------------------------------
+    #
+    # Every repository below is bound to this cycle's market on construction, so a
+    # query that forgot the filter is impossible rather than merely discouraged.
+    # Written as accessors rather than repeated ``market=self._market`` keywords at
+    # eighteen call sites, for the same reason ``MarketScopedRepository`` exists:
+    # the market is a property of the cycle, and stating it once is the only way it
+    # cannot drift.
+
+    def _snapshots(self, session: AsyncSession) -> SnapshotRepository:
+        return self._repos.snapshots(session, market=self._market)
+
+    def _llm_calls(self, session: AsyncSession) -> LLMCallRepository:
+        return self._repos.llm_calls(session, market=self._market)
+
+    def _reports(self, session: AsyncSession) -> AnalystReportRepository:
+        return self._repos.reports(session, market=self._market)
+
+    def _gate_decisions(self, session: AsyncSession) -> GateDecisionRepository:
+        return self._repos.gate_decisions(session, market=self._market)
+
+    def _signals(self, session: AsyncSession) -> SignalRepository:
+        return self._repos.signals(session, market=self._market)
+
+    def _cycles(self, session: AsyncSession) -> CycleRepository:
+        return self._repos.cycles(session, market=self._market)
+
+    def _market_config(self, config: AppConfig) -> MarketConfig:
+        return config.market(self._market)
+
     async def run(self) -> CycleResult:
         cycle_id = uuid4()
         started = self._clock.now()
 
         stored = await self._runtime_state()
         config = effective_config(self._settings, stored)
-        symbols = list(config.watchlist)
+        market = self._market_config(config)
+        symbols = list(market.watchlist)
         result = CycleResult(
-            cycle_id=cycle_id, dry_run=config.dry_run, symbols_requested=len(symbols)
+            cycle_id=cycle_id,
+            market=self._market,
+            dry_run=market.dry_run,
+            symbols_requested=len(symbols),
         )
 
         async with self._database.session() as session:
-            await self._repos.cycles(session).start(
-                cycle_id, at=started, dry_run=config.dry_run, symbols=len(symbols)
+            await self._cycles(session).start(
+                cycle_id, at=started, dry_run=market.dry_run, symbols=len(symbols)
             )
             await session.commit()
 
@@ -297,6 +363,7 @@ class CycleOrchestrator:
             log.error(
                 "cycle.failed",
                 cycle_id=str(cycle_id),
+                market=self._market.value,
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
@@ -306,6 +373,7 @@ class CycleOrchestrator:
         log.info(
             "cycle.complete",
             cycle_id=str(cycle_id),
+            market=self._market.value,
             status=status,
             dry_run=result.dry_run,
             scanned=result.symbols_scanned,
@@ -347,7 +415,7 @@ class CycleOrchestrator:
             result.symbols_skipped = len(symbols) - len(snapshots)
 
             async with self._database.session() as session:
-                repo = self._repos.snapshots(session)
+                repo = self._snapshots(session)
                 for snapshot in snapshots:
                     await repo.save(snapshot)
                 await session.commit()
@@ -402,8 +470,9 @@ class CycleOrchestrator:
         # Read once, before anything expensive runs. The screener's own calls are
         # not recorded yet, so this is genuinely "where the day stood when this
         # cycle began" — the left-hand side of the transition M8 alerts on.
-        state, reason = await self._spend_state(started)
-        result.spend_state_before = state
+        verdict, reason = await self._spend_state(started, config=config)
+        result.spend_state_before = verdict.state
+        result.spend_scope_before = verdict.scope
 
         # A pause holds back the expensive tier too. The gate would reject every
         # plan with PAUSED anyway (§2 rule 7), so analysing first would buy a
@@ -424,14 +493,25 @@ class CycleOrchestrator:
 
         # The spend guard bites here, after the cheap pass and before the
         # expensive one — exactly the split it is meant to make.
-        if allowed and state is SpendState.LIMIT_REACHED:
+        if allowed and verdict.suspends_analysis:
             result.analysis_suspended = True
             result.suspended_reason = reason
+            # The detail names *which* ceiling bit. "spend limit reached" was
+            # unambiguous with one budget; with a market budget under a global one
+            # it would leave M9 unable to tell "crypto spent its own" from "the
+            # deployment spent everything", which call for opposite responses.
+            detail = (
+                "global spend ceiling reached"
+                if verdict.scope is SpendScope.GLOBAL
+                else f"{self._market.value} spend limit reached"
+            )
             for symbol in allowed:
-                result.skipped[symbol] = Skip(SkipReason.SPEND_LIMIT, "spend limit reached")
+                result.skipped[symbol] = Skip(SkipReason.SPEND_LIMIT, detail)
             log.warning(
                 "cycle.analysis_suspended",
                 cycle_id=str(result.cycle_id),
+                market=self._market.value,
+                scope=verdict.scope.value,
                 reason=reason,
                 held_back=sorted(allowed),
                 detail="the screener and the tracker keep running",
@@ -458,13 +538,15 @@ class CycleOrchestrator:
 
         result.spend_usd_estimate = sum((call.cost_usd_estimate for call in calls), Decimal(0))
         async with self._database.session() as session:
-            await self._repos.llm_calls(session).record_many(calls)
+            await self._llm_calls(session).record_many(calls)
             await session.commit()
 
         # Re-read *after* the commit above, so this cycle's own calls are in the
         # total. A guard that only ever looked at yesterday's spend would notice
         # the crossing one cycle late — fifteen minutes and ~$0.32 too late.
-        result.spend_state_after, _ = await self._spend_state(started)
+        after, _ = await self._spend_state(started, config=config)
+        result.spend_state_after = after.state
+        result.spend_scope_after = after.scope
 
     async def _analyse_symbol(
         self,
@@ -507,7 +589,7 @@ class CycleOrchestrator:
             (call for call in reversed(analyst.calls) if call.status is LLMCallStatus.OK), None
         )
         async with self._database.session() as session:
-            await self._repos.reports(session).save(
+            await self._reports(session).save(
                 report,
                 created_at=snapshot.captured_at,
                 provider=AnthropicFableAnalyst.name,
@@ -600,7 +682,7 @@ class CycleOrchestrator:
         )
 
         async with self._database.session() as session:
-            await self._repos.gate_decisions(session).record(
+            await self._gate_decisions(session).record(
                 decision, cycle_id=result.cycle_id, user_id=user.telegram_user_id
             )
             await session.commit()
@@ -618,7 +700,7 @@ class CycleOrchestrator:
             return
 
         result.approved += 1
-        if config.dry_run:
+        if self._market_config(config).dry_run:
             await self._record_dry_run(result, decision.plan, charts, user_id=user.telegram_user_id)
             return
 
@@ -668,12 +750,13 @@ class CycleOrchestrator:
         record = SignalRecord(
             plan=plan,
             user_id=user_id,
+            market=self._market,
             cycle_id=result.cycle_id,
             chart_params=tuple(chart.params.to_json_dict() for chart in charts),
             dry_run=True,
         )
         async with self._database.session() as session:
-            claimed = await self._repos.signals(session).claim(record)
+            claimed = await self._signals(session).claim(record)
             await session.commit()
         if claimed is None:  # pragma: no cover — a fresh plan_id per evaluation
             return
@@ -683,11 +766,12 @@ class CycleOrchestrator:
         log.info(
             "cycle.dry_run_card",
             cycle_id=str(result.cycle_id),
+            market=self._market.value,
             symbol=plan.symbol,
             user_id=user_id,
             number=claimed.number,
             detail="not sent — dry_run is on",
-            card=signal_card(claimed, tz),
+            card=signal_card(claimed, tz, show_market=self._settings.config.multi_market),
         )
 
     # ---- guards ------------------------------------------------------------
@@ -730,7 +814,7 @@ class CycleOrchestrator:
             return set()
 
         async with self._database.session() as session:
-            signals = self._repos.signals(session)
+            signals = self._signals(session)
             open_by_user = await signals.open_symbols_by_user()
             resolutions_by_user = await signals.resolutions_by_user_since(
                 started - timedelta(hours=risk.signal_cooldown_hours)
@@ -785,7 +869,7 @@ class CycleOrchestrator:
             return {}
         since = started - timedelta(minutes=minutes)
         async with self._database.session() as session:
-            latest = await self._repos.reports(session).latest_non_candidates(since=since)
+            latest = await self._reports(session).latest_non_candidates(since=since)
         return {symbol: at + timedelta(minutes=minutes) for symbol, at in latest.items()}
 
     @staticmethod
@@ -823,23 +907,62 @@ class CycleOrchestrator:
         return self._settings.secrets.owner_user_id
 
     async def _paused(self) -> bool:
-        async with self._database.session() as session:
-            pause = await self._repos.risk_state(session).load()
-        return pause.is_active(self._clock.now())
+        """Is *this market* held back before the expensive tier? (M10a Step 5.)
 
-    async def _spend_state(self, started: datetime) -> tuple[SpendState, str]:
-        day_start, month_start = spend_window(started)
+        The operator's two rails only. A user's daily-loss pause is personal and is
+        applied inside the fan-out, where it can hold one person's card without
+        suppressing an analysis everybody else is owed.
+        """
+        now = self._clock.now()
         async with self._database.session() as session:
-            totals = await self._repos.llm_calls(session).spend_totals(
+            global_pause = await self._repos.risk_state(session).load()
+            market_pause = await self._repos.market_pause(session, market=self._market).load()
+        return global_pause.is_active(now) or market_pause.is_active(now)
+
+    async def _spend_state(
+        self, started: datetime, *, config: AppConfig
+    ) -> tuple[SpendVerdict, str]:
+        """This market's spend verdict under both ceilings, and how to say it.
+
+        Two totals are read, not one: this market's day, and the whole
+        deployment's. They are the same number while only one market is enabled,
+        and the sentence below then reads exactly as it did before M10a.
+        """
+        day_start, month_start = spend_window(started)
+        # The config is passed in rather than re-resolved. ``effective_config`` reads
+        # ``runtime_settings``, and this is called twice per cycle — the caller
+        # already holds the answer, and a second read could even disagree with the
+        # first if the owner edited the watchlist mid-cycle.
+        market = self._market_config(config)
+        async with self._database.session() as session:
+            calls = self._llm_calls(session)
+            totals = await calls.spend_totals(
                 day_start=day_start,
                 month_start=month_start,
-                priced_models=tuple(self._settings.config.llm.pricing),
+                priced_models=tuple(config.llm.pricing),
             )
-        state = evaluate_spend(totals, self._settings.config.llm)
+            overall = await calls.spend_totals_across_markets(
+                day_start=day_start,
+                month_start=month_start,
+                priced_models=tuple(config.llm.pricing),
+            )
+
+        verdict = evaluate_market_spend(
+            market_totals=totals,
+            global_totals=overall,
+            market=market,
+            global_limit_usd=config.llm_daily_budget_global_usd,
+            config=config.llm,
+        )
         floor = "at least " if totals.is_floor else ""
-        return state, (
-            f"{floor}${totals.day_usd} spent today against a "
-            f"${self._settings.config.llm.daily_spend_limit_usd} limit"
+        if verdict.scope is SpendScope.GLOBAL:
+            return verdict, (
+                f"{floor}${overall.day_usd} spent today across all markets against a "
+                f"${config.llm_daily_budget_global_usd} ceiling"
+            )
+        return verdict, (
+            f"{floor}${totals.day_usd} spent today on {self._market.value} against a "
+            f"${market.llm_daily_budget_usd} limit"
         )
 
     # ---- inputs ------------------------------------------------------------
@@ -872,8 +995,12 @@ class CycleOrchestrator:
 
         async with self._database.session() as session:
             fx = await self._repos.fx(session).get()
-            system_pause = await self._repos.risk_state(session).load()
-            signals = self._repos.signals(session)
+            global_pause = await self._repos.risk_state(session).load()
+            market_pause = await self._repos.market_pause(session, market=self._market).load()
+            user_market_pause = await self._repos.user_market_pause(
+                session, market=self._market
+            ).load(uid)
+            signals = self._signals(session)
             open_taken = await signals.open_taken(user_id=uid)
             open_symbols = await signals.open_symbols(user_id=uid)
             resolutions = await signals.resolutions_since(
@@ -888,7 +1015,19 @@ class CycleOrchestrator:
             open_risk_pct=open_risk_pct([plan.risk_per_trade_pct for plan in plans]),
             open_positions=len(plans),
             cooldown_until=cooldowns,
-            pause=system_pause if system_pause.is_active(now) else user.pause,
+            # Four rails, composed in ``core/pauses.py`` and handed to the gate as
+            # the single ``PauseState`` it has always taken. ``sentinel/risk/`` is
+            # untouched by this milestone and needs no notion of a market: it asks
+            # "is this account paused", and the answer is now assembled from more
+            # places than it was.
+            pause=effective_pause(
+                global_pause=global_pause,
+                market_pause=market_pause,
+                user_pause=user.pause,
+                user_market_pause=user_market_pause,
+                market=self._market,
+                now=now,
+            ).state,
             signals_today=today,
         )
         _, skipped = select_symbols(
@@ -914,7 +1053,7 @@ class CycleOrchestrator:
         if owner_id is None:
             return build_history_block(symbol, [], [])
         async with self._database.session() as session:
-            verdicts = await self._repos.reports(session).recent_for_symbol(
+            verdicts = await self._reports(session).recent_for_symbol(
                 symbol, limit=self._settings.config.llm.history_verdicts, owner_id=owner_id
             )
             stats = await setup_stats(session, now=self._clock.now(), owner_id=owner_id)
@@ -943,7 +1082,7 @@ class CycleOrchestrator:
 
     async def _close_cycle(self, result: CycleResult, *, status: str) -> None:
         async with self._database.session() as session:
-            await self._repos.cycles(session).finish(
+            await self._cycles(session).finish(
                 result.cycle_id,
                 at=self._clock.now(),
                 status=status,

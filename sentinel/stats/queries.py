@@ -16,8 +16,16 @@ from sentinel.analyst.history import SetupStat
 from sentinel.analyst.models import Direction, SetupType
 from sentinel.bot.models import SignalDecision
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.stats.compute import by_key, split, summarize, tracked
-from sentinel.stats.models import Population, ResolvedSignal, StatsReport, population_of
+from sentinel.stats.models import (
+    Book,
+    BookStats,
+    Population,
+    ResolvedSignal,
+    StatsReport,
+    population_of,
+)
 from sentinel.storage.models import SignalRow
 from sentinel.storage.repositories import SignalRepository
 
@@ -50,6 +58,7 @@ def resolved_from_row(row: SignalRow) -> ResolvedSignal:
     """
     decision = None if row.decision is None else SignalDecision(row.decision)
     return ResolvedSignal(
+        market=Market(row.market),
         signal_id=str(row.id),
         number=row.number,
         symbol=row.symbol,
@@ -68,31 +77,43 @@ def resolved_from_row(row: SignalRow) -> ResolvedSignal:
 
 
 class StatsRepository:
-    """Reads the resolved book. Never commits, like every repository here."""
+    """Reads the resolved book for **one market**. Never commits, like the rest."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, market: Market = LEGACY_MARKET) -> None:
         self._session = session
+        self._market = market
 
     async def resolved(
         self, *, user_id: int, since: datetime | None = None
     ) -> list[ResolvedSignal]:
-        rows = await SignalRepository(self._session).resolved_since(since, user_id=user_id)
+        rows = await SignalRepository(self._session, market=self._market).resolved_since(
+            since, user_id=user_id
+        )
         return [resolved_from_row(row) for row in rows]
 
 
 async def build_report(
-    session: AsyncSession, *, window: str, now: datetime, user_id: int
+    session: AsyncSession,
+    *,
+    window: str,
+    now: datetime,
+    user_id: int,
+    market: Market = LEGACY_MARKET,
 ) -> StatsReport:
-    """Assemble everything ``/stats`` renders, in one pass over the window.
+    """Assemble everything ``/stats`` renders for one user in one market.
 
     ``user_id`` is required, and it is the load-bearing argument of this function
     from M8.1. ``Population.REAL`` is defined by ``decision == TAKEN``; under one
     shared analysis several people answer the same setup differently, so without the
     filter one person's Taken lands in another person's record — the exact number PRD
     G2 exists to make trustworthy.
+
+    ``market`` joins it at M10a for the same reason one dimension out: a win rate
+    that averaged two markets would move when a market was enabled, which is not a
+    fact about anything. A caller covering both builds two reports.
     """
     since = window_start(window, now=now)
-    resolved = await StatsRepository(session).resolved(since=since, user_id=user_id)
+    resolved = await StatsRepository(session, market=market).resolved(since=since, user_id=user_id)
     books = split(resolved)
     followed = tracked(resolved)
 
@@ -100,16 +121,27 @@ async def build_report(
         window=window,
         since=since,
         generated_at=now,
-        real=summarize(books[Population.REAL]),
-        hypothetical=summarize(books[Population.HYPOTHETICAL]),
-        dry_run=summarize(books[Population.DRY_RUN]),
+        market=market,
+        books=tuple(
+            BookStats(
+                book=Book(population=population, market=market),
+                stats=summarize(books[Book(population=population, market=market)]),
+            )
+            for population in Population
+        ),
         by_setup=by_key(followed, "setup_type"),
         by_prompt_version=by_key(followed, "prompt_version"),
     )
 
 
 async def setup_stats(
-    session: AsyncSession, *, now: datetime, owner_id: int, days: int = 30, minimum: int = 1
+    session: AsyncSession,
+    *,
+    now: datetime,
+    owner_id: int,
+    market: Market = LEGACY_MARKET,
+    days: int = 30,
+    minimum: int = 1,
 ) -> list[SetupStat]:
     """specs/PROMPTS.md §3's "rolling 30-day stats per setup_type" for the prompt.
 
@@ -129,7 +161,7 @@ async def setup_stats(
     ``float`` at this boundary only, because ``SetupStat`` has taken floats since
     M5 and this is a prompt line rather than money math.
     """
-    resolved = await StatsRepository(session).resolved(
+    resolved = await StatsRepository(session, market=market).resolved(
         since=now - timedelta(days=days), user_id=owner_id
     )
     rows = by_key(tracked(resolved), "setup_type", minimum=minimum)

@@ -580,6 +580,48 @@ roles** against a real `Dispatcher`, with silence for a caller with no standing.
 > this codebase: split, never shorten. `help_card()` returns pages through the same
 > `_paginate` `/pulse <SYMBOL>` uses.
 
+## 3e. Markets on the surfaces (added 2026-08-20, M10a)
+
+M10a gives the system a market dimension without adding a second market. This section
+fixes what every user-facing command does with it, once and in one place, so six
+renderers do not each decide it slightly differently.
+
+**The default: no argument covers every enabled market, in the order `config.yaml`
+names them.** Not "the first one", and not "crypto". A reader who types `/stats` and
+is shown one market's numbers, with nothing on the card saying another exists, has
+been told something false by omission — the failure mode this project has already met
+twice (the dead admin router, the silent `/snapshot`).
+
+**The rule that protects the live system: with one market enabled, every surface
+renders exactly the text it rendered before M10a.** One function decides it —
+`bot/markets.section_header`, which returns an empty string unless
+`AppConfig.multi_market` — and `tests/golden` pins every surface byte for byte, both
+from the repo's config and from the frozen pre-M10a config the server actually loads.
+
+| Command | With one market | With two |
+|---|---|---|
+| `/status [market]` | unchanged | **one market at a time**, defaulting to the first enabled; every figure on the card is per market and summing two would produce totals no rail compares anything to |
+| `/stats [market\|window]` | unchanged | one block per market, each headed; never a combined figure |
+| `/pulse [market]` | unchanged | one "last completed cycle" block per market — the scheduler runs a job per market, so there is one answer each and none across them |
+| `/pulse 24h` | unchanged | one aggregated block per market |
+| `/pulse <SYMBOL>` | unchanged | the **symbol names its market**; a reader never types one |
+| `/snapshot <SYMBOL>` | unchanged | as above |
+| `/positions` | unchanged | one block per market; the mark, the R and the euro figures come from one market's own feed |
+| `/watchlist [market] [add\|remove SYM]` | unchanged | lists every market; an edit names its market, and only needs to when more than one is enabled |
+| `/journal [window]` | unchanged sheet names | one sheet per (population, market) pair — a running balance walks *within* a sheet, and one stepping from a EUR/USD trade into a BTC one would mean nothing |
+| `/pause [market]` · `/resume [market]` | unchanged | **no argument is still system-wide.** `/pause` is what somebody types when something is wrong, often on a phone, often in a hurry, and it must not quietly have become narrower than it was. A market is named by typing it. |
+
+**A disabled market named explicitly is an error, not an empty answer.** Somebody
+asking for forex today is told it is switched off; handing them a blank card they
+would read as "no signals yet" is the same lie by omission as above.
+
+**A market name is not a window.** `/stats forex` must not fall through
+`parse_window`'s "anything unrecognised is 30d" branch — right by accident today, and
+wrong the day a market is named `all`.
+
+**The signal card** takes the tag only when more than one market is enabled, and the
+tagged card differs from the untagged one by the tag alone (asserted, not assumed).
+
 ## 4. Tracker notifications (replies to the original card)
 
 - `📥 Entry 1 filled @ 83.10 (40%)` … `📥 Ladder complete, avg 82.68`

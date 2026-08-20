@@ -24,9 +24,12 @@ from sentinel.bot.models import SignalRecord
 from sentinel.bot.notifier import TrackerNotifier
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import CycleOrchestrator, CycleRepositories, CycleResult
 from sentinel.risk.models import TradePlan
 from tests.bot_double import FakeBot, FakeDatabase, FakeStore, _SignalRow
+
+from .conftest import rehearsing
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 CHAT_ID = 4242
@@ -34,17 +37,13 @@ CHAT_ID = 4242
 
 @pytest.fixture
 def dry_settings() -> Settings:
-    config = load_config()
-    return Settings(
-        secrets=Secrets(_env_file=None),
-        config=config.model_copy(update={"dry_run": True}),
-    )
+    return rehearsing(Settings(secrets=Secrets(_env_file=None), config=load_config()))
 
 
 class Signals:
     """Only ``claim`` — the one write the dry-run path makes."""
 
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self.store: FakeStore = session.store
 
     async def claim(self, record: SignalRecord) -> SignalRecord | None:
@@ -175,9 +174,12 @@ async def test_turning_the_flag_off_does_not_retrospectively_make_it_real(
     # Built explicitly rather than from load_config(): a deployment that is
     # currently rehearsing has `dry_run: true` in its own config.yaml, and this
     # test is about the stored row, not about what the checkout happens to say.
+    crypto = dry_settings.config.market().model_copy(update={"dry_run": False})
     live = Settings(
         secrets=dry_settings.secrets,
-        config=dry_settings.config.model_copy(update={"dry_run": False}),
+        config=dry_settings.config.model_copy(
+            update={"markets": {**dry_settings.config.markets, Market.CRYPTO: crypto}}
+        ),
     )
-    assert live.config.dry_run is False
+    assert live.config.market().dry_run is False
     assert stored.dry_run is True, "the stored row is immutable, not derived from config"

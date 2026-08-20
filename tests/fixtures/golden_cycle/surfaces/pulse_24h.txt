@@ -1,0 +1,20 @@
+📡 <b>Pulse</b> — last 24h
+since 2026-08-17 15:00 EEST (12:00 UTC)
+2 of 24 cycles completed
+⚠️ 1 of these were rehearsals and published nothing.
+
+🔎 <b>Escalated</b>
+  LINKUSDT x2 · SOLUSDT x2
+
+🧠 <b>Analyst verdicts</b>
+  CANDIDATE x1
+
+⏭️ <b>Not analysed</b>
+  OPEN_SIGNAL x2 · RECENTLY_ANALYSED x2
+
+🚦 <b>Gate</b>
+  APPROVED x1 · per-account x1
+
+💵 <b>Spend</b> — $7.42 today of $10 <i>(estimate, not a bill)</i>
+
+<i>The pipeline's reasoning, the same for everyone. /pulse for the last cycle.</i>

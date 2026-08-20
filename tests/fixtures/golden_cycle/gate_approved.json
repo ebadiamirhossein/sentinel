@@ -1,0 +1,142 @@
+{
+  "evaluated_at": "2026-08-18T12:00:00Z",
+  "message": "approved for human review",
+  "plan": {
+    "avg_entry": "64001.25",
+    "avg_fill_price": "63961.5",
+    "capital_eur": "10000",
+    "confidence": 74,
+    "costs": {
+      "cost_pct_of_risk": "8.6",
+      "entry_fee_eur": "1.85",
+      "funding_available": false,
+      "funding_charged_eur": "0.00",
+      "funding_eur": "0.00",
+      "funding_interval_hours": 8,
+      "funding_rate": null,
+      "funding_settlements": 0,
+      "maker_fee_pct": "0.02",
+      "round_trip_cost_eur": "6.45",
+      "stop_exit_fee_eur": "4.60",
+      "taker_fee_pct": "0.05",
+      "tp_exit_fees_eur": [
+        "4.72",
+        "4.77",
+        "4.85"
+      ]
+    },
+    "created_at": "2026-08-18T12:00:00Z",
+    "direction": "long",
+    "entries": [
+      {
+        "distance_pct": "0.08",
+        "notional_eur": "2711.42",
+        "notional_usdt": "3143.3500",
+        "price": "64150.0",
+        "qty": "0.049",
+        "weight_pct": "40"
+      },
+      {
+        "distance_pct": "-0.2",
+        "notional_eur": "3145.50",
+        "notional_usdt": "3646.5750",
+        "price": "63975.0",
+        "qty": "0.057",
+        "weight_pct": "35"
+      },
+      {
+        "distance_pct": "-0.47",
+        "notional_eur": "3412.06",
+        "notional_usdt": "3955.6000",
+        "price": "63800.0",
+        "qty": "0.062",
+        "weight_pct": "25"
+      }
+    ],
+    "eurusd_rate": "1.1593",
+    "expires_at": "2026-08-19T00:00:00Z",
+    "gate_status": "APPROVED_FOR_HUMAN",
+    "instrument": {
+      "contract_size": "1",
+      "fetched_at": "2026-08-18T12:00:00Z",
+      "min_notional": "50",
+      "qty_step": "0.001",
+      "source": "binance_usdm",
+      "symbol": "BTCUSDT",
+      "tick_size": "0.1"
+    },
+    "last_price": "64100.0",
+    "liq_buffer_ok": true,
+    "liq_distance_pct": "10",
+    "management_plan": "TP1: close 40%, move stop to breakeven. TP2: close 35%. TP3: close remainder or trail by 1xATR.",
+    "margin_eur": "926.90",
+    "notional_eur": "9268.98",
+    "notional_usdt": "10745.5250",
+    "planned_risk_eur": "75.00",
+    "report": {
+      "candidate_status": "CANDIDATE",
+      "confidence": 74,
+      "counter_thesis": "Funding is mildly crowded long.",
+      "data_quality_note": null,
+      "direction": "long",
+      "entry_zone": {
+        "high": "64150.0",
+        "low": "63800.0"
+      },
+      "evidence": [
+        {
+          "claim": "1h RSI reset to 48",
+          "source_field": "features.1h.rsi14"
+        }
+      ],
+      "invalidation_price": "63450.0",
+      "invalidation_text": "1h close below 63450 breaks the demand shelf.",
+      "model": "claude-fable-5",
+      "prompt_version": "fable_v1",
+      "schema_version": 1,
+      "setup_type": "trend_pullback",
+      "stop": "63450.0",
+      "symbol": "BTCUSDT",
+      "targets": [
+        "65100.0",
+        "65900.0",
+        "67000.0"
+      ],
+      "thesis": "4h regime up, 1h pullback into demand, 15m reclaim with volume.",
+      "timeframe_label": "intraday"
+    },
+    "risk_eur": "74.12",
+    "risk_per_trade_pct": "0.75",
+    "rr_targets": [
+      "1.99",
+      "3.44",
+      "5.44"
+    ],
+    "rr_targets_net": [
+      "1.75",
+      "3.08",
+      "4.92"
+    ],
+    "schema_version": 3,
+    "setup_type": "trend_pullback",
+    "stop": "63450.0",
+    "stop_distance_pct": "0.86",
+    "suggested_leverage": 10,
+    "symbol": "BTCUSDT",
+    "target_distances_pct": [
+      "1.72",
+      "2.97",
+      "4.69"
+    ],
+    "targets": [
+      "65100.0",
+      "65900.0",
+      "67000.0"
+    ],
+    "timeframe_label": "intraday"
+  },
+  "prompt_version": "fable_v1",
+  "reason": null,
+  "status": "APPROVED_FOR_HUMAN",
+  "symbol": "BTCUSDT"
+}

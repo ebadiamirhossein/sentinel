@@ -69,12 +69,21 @@ def _side(direction: Direction) -> str:
     return "🟢 LONG" if direction is Direction.LONG else "🔴 SHORT"
 
 
-def signal_card(record: SignalRecord, tz: ZoneInfo) -> str:
-    """The core message (§1). Charts go in an album above it, buttons below it."""
+def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False) -> str:
+    """The core message (§1). Charts go in an album above it, buttons below it.
+
+    ``show_market`` adds the market to the header line, and defaults to **off**
+    (M10a Step 7). With one market enabled there is nothing to disambiguate, and a
+    tag added unconditionally would change every crypto card in the middle of a live
+    measurement window — the one thing the milestone is forbidden to do. The caller
+    passes ``AppConfig.multi_market``; ``tests/golden`` pins the untagged form byte
+    for byte.
+    """
     plan = record.plan
     report = plan.report
+    tag = f"{record.market.value.upper()} · " if show_market else ""
     lines = [
-        f"{_side(plan.direction)} — {escape(plan.symbol)}   "
+        f"{_side(plan.direction)} — {tag}{escape(plan.symbol)}   "
         f"[{plan.setup_type.value} · {plan.timeframe_label.value} · conf {plan.confidence}]",
         f"{escape(report.prompt_version or 'prompt n/a')} · Signal #{record.number} · "
         f"{local_and_utc(plan.created_at, tz)}",
@@ -197,8 +206,14 @@ def rejection_card(decision: GateDecision, tz: ZoneInfo, moment: datetime) -> st
 
 
 def status_card(view: StatusView, tz: ZoneInfo) -> str:
-    """§3 ``/status`` — pipeline health, from what the pipeline actually measures."""
-    lines = ["🩺 <b>Status</b>", ""]
+    """§3 ``/status`` — pipeline health, from what the pipeline actually measures.
+
+    One market's health. ``view.market`` is the market header and is empty unless
+    more than one is enabled, so with forex off this is byte for byte M8.1's card.
+    """
+    lines = [view.market] if view.market else []
+    lines.append("🩺 <b>Status</b>")
+    lines.append("")
 
     if view.dry_run:
         lines.append(
@@ -303,7 +318,7 @@ def _dropped(view: PulseView | PulseDayView, section: str) -> list[str]:
     ]
 
 
-def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
+def pulse_card(view: PulseView, tz: ZoneInfo, *, header: str = "") -> str:
     """``/pulse`` — the last completed cycle, told the same way to everybody (M8.4).
 
     Every approved user gets this identical text; only the spend line differs, and it
@@ -314,13 +329,16 @@ def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
     finished totals, exactly as ``TradePlan`` does for a signal card (§1).
     """
     if view.at is None:
-        return (
+        empty = (
             "📡 <b>Pulse</b>\n\n"
             "No cycle has completed yet on this database. The first scan runs one "
             "scan interval after start-up, not immediately."
         )
+        return f"{header}\n{empty}" if header else empty
 
-    lines = ["📡 <b>Pulse</b> — last cycle", f"{local_and_utc(view.at, tz)} · {view.status}"]
+    lines = [header] if header else []
+    lines.append("📡 <b>Pulse</b> — last cycle")
+    lines.append(f"{local_and_utc(view.at, tz)} · {view.status}")
     if view.status == "FAILED":
         lines.append("⚠️ This cycle failed part-way. What follows is how far it got.")
         if view.error:
@@ -385,13 +403,16 @@ def pulse_card(view: PulseView, tz: ZoneInfo) -> str:
     return "\n".join(lines)
 
 
-def pulse_day_card(view: PulseDayView, tz: ZoneInfo) -> str:
+def pulse_day_card(view: PulseDayView, tz: ZoneInfo, *, header: str = "") -> str:
     """``/pulse 24h`` — the same four sections, aggregated."""
-    lines = [
-        "📡 <b>Pulse</b> — last 24h",
-        f"since {local_and_utc(view.since, tz)}",
-        f"{view.cycles_completed} of {view.cycles_started} cycles completed",
-    ]
+    lines = [header] if header else []
+    lines.extend(
+        [
+            "📡 <b>Pulse</b> — last 24h",
+            f"since {local_and_utc(view.since, tz)}",
+            f"{view.cycles_completed} of {view.cycles_started} cycles completed",
+        ]
+    )
     if view.dry_run_cycles and view.dry_run_cycles == view.cycles_completed:
         lines.append("⚠️ <b>DRY RUN</b> — nothing in this window was published.")
     elif view.dry_run_cycles:
@@ -868,7 +889,7 @@ def alert_card(view: AlertView, tz: ZoneInfo) -> str:
     return "\n".join(lines)
 
 
-def positions_card(positions: Sequence[PositionView], tz: ZoneInfo) -> str:
+def positions_card(positions: Sequence[PositionView], tz: ZoneInfo, *, header: str = "") -> str:
     """§3 ``/positions`` — Taken signals, marked to market.
 
     M6 shipped this showing the plan as issued and said in words that live uPnL
@@ -877,9 +898,12 @@ def positions_card(positions: Sequence[PositionView], tz: ZoneInfo) -> str:
     unchanged, the bot still renders and never computes.
     """
     if not positions:
-        return "📭 <b>Positions</b>\n\nNothing marked ✅ Taken yet."
+        empty = "📭 <b>Positions</b>\n\nNothing marked ✅ Taken yet."
+        return f"{header}\n{empty}" if header else empty
 
-    lines = ["📈 <b>Positions</b> (marked ✅ Taken)", ""]
+    lines = [header] if header else []
+    lines.append("📈 <b>Positions</b> (marked ✅ Taken)")
+    lines.append("")
     for position in positions:
         lines.append(
             f"<b>#{position.number} {escape(position.symbol)} "
@@ -997,9 +1021,17 @@ def decision_ack_card(decision: SignalDecision, number: int, symbol: str) -> str
 
 
 def stats_card(view: StatsView, tz: ZoneInfo) -> str:
-    """§3 ``/stats [30d|90d|all]`` — three populations, then the breakdowns."""
+    """§3 ``/stats [30d|90d|all]`` — three populations, then the breakdowns.
+
+    One market's figures. ``view.market`` is the market header and is empty unless
+    more than one is enabled, so with forex off this renders the text it rendered
+    before M10a. Nothing here ever sums two markets, because a ``StatsView`` only
+    ever describes one — see :class:`~sentinel.stats.models.StatsReport`.
+    """
     since = "all time" if view.since is None else f"since {local_date_time(view.since, tz)}"
-    lines = [f"📊 <b>Stats</b> ({view.window} · {since})", ""]
+    lines = [view.market] if view.market else []
+    lines.append(f"📊 <b>Stats</b> ({view.window} · {since})")
+    lines.append("")
 
     for group in view.groups:
         lines.append(f"<b>{group.label}</b> <i>{group.note}</i>")
@@ -1057,9 +1089,16 @@ def settings_card(view: SettingsView) -> str:
     return "\n".join(lines).rstrip()
 
 
-def watchlist_card(symbols: Sequence[str], source: str) -> str:
-    """§3 ``/watchlist`` — the symbols the scan cycle will cover."""
-    lines = [f"👁️ <b>Watchlist</b> ({len(symbols)} symbols) <i>[{source}]</i>", ""]
+def watchlist_card(symbols: Sequence[str], source: str, *, header: str = "") -> str:
+    """§3 ``/watchlist`` — the symbols the scan cycle will cover.
+
+    ``header`` names the market and is empty unless more than one is enabled
+    (``bot/markets.section_header``), so with forex off this renders the exact text
+    it rendered before M10a.
+    """
+    lines = [header] if header else []
+    lines.append(f"👁️ <b>Watchlist</b> ({len(symbols)} symbols) <i>[{source}]</i>")
+    lines.append("")
     lines.extend(f"  · {escape(symbol)}" for symbol in symbols)
     lines.append("")
     lines.append("<i>/watchlist add SOLUSDT · /watchlist remove SOLUSDT</i>")

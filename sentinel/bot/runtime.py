@@ -33,6 +33,7 @@ from typing import Any, Protocol
 
 from sentinel.bot.models import UserAccount
 from sentinel.core.config import AppConfig, RiskConfig, Settings, load_config
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.models import AccountState
 
@@ -44,7 +45,24 @@ from sentinel.risk.models import AccountState
 #: them and because ``/settings`` should be able to explain where a value came from.
 CAPITAL_EUR = "capital_eur"
 RISK_PER_TRADE_PCT = "risk_per_trade_pct"
+
+#: The pre-M10a watchlist key, when there was only one watchlist. Migration 0010
+#: renames the stored row to ``watchlist:crypto``; this name survives as the
+#: **fallback** read below, so a database that has not been migrated yet — or one
+#: restored from an older dump — still finds the owner's watchlist instead of
+#: silently falling back to config.yaml's.
 WATCHLIST = "watchlist"
+
+
+def watchlist_key(market: Market = LEGACY_MARKET) -> str:
+    """``runtime_settings`` key holding one market's watchlist (M10a).
+
+    A key per market rather than one key holding a mapping: ``config_changes``
+    records an old and a new value per key, and a single blob would make "who
+    changed the crypto watchlist, and when" unanswerable the moment a second market
+    shared the row.
+    """
+    return f"{WATCHLIST}:{market.value}"
 
 
 @dataclass(frozen=True)
@@ -130,12 +148,36 @@ async def verify_symbol(
     return None
 
 
+def stored_watchlist(stored: dict[str, Any], market: Market = LEGACY_MARKET) -> Any | None:
+    """This market's stored watchlist, or ``None`` if the owner never set one.
+
+    Crypto reads through to the pre-M10a bare ``watchlist`` key when the per-market
+    one is absent. That fallback is what makes the app safe to deploy *before*
+    migration 0010 runs — the container applies migrations at start-up, so there is
+    a window, and losing the owner's watchlist in it would silently re-screen a
+    different set of symbols on the first cycle.
+    """
+    key = watchlist_key(market)
+    if key in stored:
+        return stored[key]
+    if market is LEGACY_MARKET and WATCHLIST in stored:
+        return stored[WATCHLIST]
+    return None
+
+
 def config_overrides(stored: dict[str, Any]) -> dict[str, Any]:
-    """The ``db_overrides`` mapping for ``load_config`` — config keys only."""
-    overrides: dict[str, Any] = {}
-    if WATCHLIST in stored:
-        overrides[WATCHLIST] = stored[WATCHLIST]
-    return overrides
+    """The ``db_overrides`` mapping for ``load_config`` — config keys only.
+
+    Always emits the **new** shape (``markets.<market>.watchlist``), whatever shape
+    the row was stored in. ``load_config`` normalises the yaml before merging this,
+    so the two shapes never meet.
+    """
+    markets: dict[str, Any] = {}
+    for market in Market:
+        watchlist = stored_watchlist(stored, market)
+        if watchlist is not None:
+            markets[market.value] = {WATCHLIST: watchlist}
+    return {"markets": markets} if markets else {}
 
 
 def effective_config(settings: Settings, stored: dict[str, Any]) -> AppConfig:
@@ -182,6 +224,16 @@ def source_of(key: str, stored: dict[str, Any]) -> str:
     return "db" if key in stored else "yaml"
 
 
+def watchlist_source(stored: dict[str, Any], market: Market = LEGACY_MARKET) -> str:
+    """Where this market's watchlist came from, honouring the legacy-key fallback.
+
+    ``source_of(watchlist_key(m), stored)`` alone would report "yaml" for a crypto
+    watchlist the owner really did set, on any database where migration 0010 has not
+    run yet — telling them their own edit had been ignored when it had not.
+    """
+    return "db" if stored_watchlist(stored, market) is not None else "yaml"
+
+
 __all__ = [
     "CAPITAL_EUR",
     "RISK_PER_TRADE_PCT",
@@ -195,5 +247,8 @@ __all__ = [
     "parse_symbol",
     "risk_pct_of",
     "source_of",
+    "stored_watchlist",
     "verify_symbol",
+    "watchlist_key",
+    "watchlist_source",
 ]

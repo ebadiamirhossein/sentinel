@@ -24,6 +24,12 @@ and a hole here, because an unpriced model would spend invisibly. So the totals
 carry ``unpriced_calls`` and every figure derived from them is reported as a floor
 when that count is non-zero, in the same spirit as ``funding n/a`` on a card.
 
+**M10a makes it two-tier.** Each market has its own daily budget, and a global
+ceiling sits above both. The sub-budgets deliberately sum to *more* than the
+ceiling — 10 + 4 against 11 — so the markets compete for the last dollar instead of
+each reserving one a quiet day would waste. Reaching a sub-budget suspends new deep
+analysis in that market alone; reaching the ceiling suspends it everywhere.
+
 Pure: no clock, no database. The caller supplies both.
 """
 
@@ -35,7 +41,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-from sentinel.core.config import LLMConfig
+from sentinel.core.config import LLMConfig, MarketConfig
 
 
 class SpendState(StrEnum):
@@ -97,4 +103,75 @@ def evaluate_spend(totals: SpendTotals, config: LLMConfig) -> SpendState:
     return SpendState.OK
 
 
-__all__ = ["SpendState", "SpendTotals", "evaluate_spend", "spend_window"]
+class SpendScope(StrEnum):
+    """Which ceiling produced a verdict — this market's, or the deployment's.
+
+    Carried rather than inferred, because the two call for different actions and
+    read almost identically on a status card. "Crypto has spent its budget" is
+    answered by raising that market's number; "the deployment has spent its budget"
+    is answered by deciding which market matters more today.
+    """
+
+    MARKET = "market"
+    GLOBAL = "global"
+
+
+class SpendVerdict(BaseModel):
+    """What today's spend means for the next deep-analysis call in one market."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    state: SpendState
+    scope: SpendScope
+
+    @property
+    def suspends_analysis(self) -> bool:
+        return self.state is SpendState.LIMIT_REACHED
+
+
+def evaluate_market_spend(
+    *,
+    market_totals: SpendTotals,
+    global_totals: SpendTotals,
+    market: MarketConfig,
+    global_limit_usd: Decimal,
+    config: LLMConfig,
+) -> SpendVerdict:
+    """One market's verdict under both ceilings (M10a Step 4).
+
+    Order, and why:
+
+    1. **The global ceiling, first.** A sub-budget configured above it — which the
+       shipped config does, on purpose — must never be able to mask it. Same reason
+       :func:`evaluate_spend` checks its limit before its warn level: a
+       misconfiguration has to fail safe.
+    2. **This market's own limit.** Suspends this market and nothing else. A forex
+       overspend must not stop the crypto book that is being measured, and the
+       reverse must hold the day forex is enabled.
+    3. **This market's warn level**, then the global one. The market's is the more
+       actionable of the two, so it is reported when both are crossed.
+
+    With one market enabled the two totals are the same number and the shipped
+    warn levels are the same figure, so this returns exactly what
+    :func:`evaluate_spend` returned before M10a existed — which is the point.
+    """
+    if global_totals.day_usd >= global_limit_usd:
+        return SpendVerdict(state=SpendState.LIMIT_REACHED, scope=SpendScope.GLOBAL)
+    if market_totals.day_usd >= market.llm_daily_budget_usd:
+        return SpendVerdict(state=SpendState.LIMIT_REACHED, scope=SpendScope.MARKET)
+    if market_totals.day_usd >= market.llm_daily_warn_usd:
+        return SpendVerdict(state=SpendState.WARN, scope=SpendScope.MARKET)
+    if global_totals.day_usd >= config.daily_spend_warn_usd:
+        return SpendVerdict(state=SpendState.WARN, scope=SpendScope.GLOBAL)
+    return SpendVerdict(state=SpendState.OK, scope=SpendScope.MARKET)
+
+
+__all__ = [
+    "SpendScope",
+    "SpendState",
+    "SpendTotals",
+    "SpendVerdict",
+    "evaluate_market_spend",
+    "evaluate_spend",
+    "spend_window",
+]

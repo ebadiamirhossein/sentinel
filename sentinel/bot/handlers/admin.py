@@ -21,7 +21,7 @@ for friends does not require watching them trade.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
@@ -49,6 +49,7 @@ from sentinel.bot.keyboards import (
     acknowledge_keyboard,
     resume_keyboard,
 )
+from sentinel.bot.markets import parse_market, resolve_markets, section_header
 from sentinel.bot.menu import clear_for, publish_for
 from sentinel.bot.models import (
     SignalDecision,
@@ -60,16 +61,18 @@ from sentinel.bot.models import (
 from sentinel.bot.outbound import SupportsBot
 from sentinel.bot.readmodels import spend_view, user_view
 from sentinel.bot.runtime import (
-    WATCHLIST,
     Invalid,
     effective_config,
     parse_symbol,
     risk_pct_of,
-    source_of,
     verify_symbol,
+    watchlist_key,
+    watchlist_source,
 )
 from sentinel.bot.views import DataSourceView, SettingsView, StatusView
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET
+from sentinel.core.pauses import effective_pause
 from sentinel.risk.models import PauseReason, PauseState, TradePlan
 from sentinel.risk.rails import open_risk_pct
 
@@ -294,50 +297,75 @@ async def _tell(bot: SupportsBot, ctx: BotContext, account: UserAccount) -> None
 
 
 @admin_router.message(Command("status"))
-async def status(message: Message, ctx: BotContext, actor: Actor) -> None:
+async def status(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
     """§3 ``/status`` — pipeline health, plus **the caller's own** rails.
 
     The signal counts and the risk figures are the owner's book, not a sum over
     everybody's: they are the numbers the owner's next signal is gated against, and
     a total across users would be a number no rail ever compares anything to.
+
+    **One market at a time** (M10a). Every figure on this card — the watchlist size,
+    the cycle counts, the open risk, the spend — is a per-market number, and a card
+    that summed two markets would produce totals no rail compares anything to, which
+    is the same objection as summing users. ``/status forex`` names one; with no
+    argument it is the first enabled market, which with forex disabled is the only
+    one there is and the card is unchanged.
     """
     account = actor.known()
     now = ctx.clock.now()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    config_for_market = effective_config(ctx.settings, {})
+    resolved = resolve_markets(command.args, config_for_market)
+    if isinstance(resolved, Invalid):
+        await message.answer(f"❌ {resolved.message}")
+        return
+    market = resolved[0] if resolved else LEGACY_MARKET
 
     async with ctx.database.session() as session:
-        system_pause = await ctx.repositories.risk_state(session).load()
+        global_pause = await ctx.repositories.risk_state(session).load()
+        market_pause = await ctx.repositories.market_pause(session, market=market).load()
+        user_market_pause = await ctx.repositories.user_market_pause(session, market=market).load(
+            actor.user_id
+        )
         stored = await ctx.repositories.settings(session).all()
-        signals_repo = ctx.repositories.signals(session)
+        signals_repo = ctx.repositories.signals(session, market=market)
         recent = await signals_repo.recent(user_id=actor.user_id, limit=200)
         undecided = await signals_repo.undecided_count(user_id=actor.user_id)
         taken = await signals_repo.with_decision(
             SignalDecision.TAKEN, user_id=actor.user_id, limit=200
         )
-        snapshots = await ctx.repositories.snapshots(session).latest_per_symbol()
+        snapshots = await ctx.repositories.snapshots(session, market=market).latest_per_symbol()
         stuck = await ctx.repositories.messages(session).stuck()
         open_taken = await signals_repo.open_taken(user_id=actor.user_id)
         open_symbols = await signals_repo.open_symbols(user_id=actor.user_id)
         signals_today = await signals_repo.published_since(day_start, user_id=actor.user_id)
-        cycles_repo = ctx.repositories.cycles(session)
+        cycles_repo = ctx.repositories.cycles(session, market=market)
         last_cycle = await cycles_repo.latest()
         completed, started = await cycles_repo.completion_since(now - timedelta(days=30))
-        totals = await ctx.repositories.llm_calls(session).spend_totals(
+        totals = await ctx.repositories.llm_calls(session, market=market).spend_totals(
             day_start=day_start,
             month_start=day_start.replace(day=1),
             priced_models=tuple(ctx.settings.config.llm.pricing),
         )
 
     config = effective_config(ctx.settings, stored)
-    effective, scope = _effective_pause(system_pause, account, now=now)
+    pause = effective_pause(
+        global_pause=global_pause,
+        market_pause=market_pause,
+        user_pause=account.pause,
+        user_market_pause=user_market_pause,
+        market=market,
+        now=now,
+    )
     view = StatusView(
-        paused=effective.is_active(now),
-        pause_reason=None if effective.reason is None else effective.reason.value,
-        paused_until=effective.until,
-        pause_scope=scope,
+        paused=pause.active,
+        pause_reason=None if pause.state.reason is None else pause.state.reason.value,
+        paused_until=pause.state.until,
+        pause_scope=pause.label(multi_market=config.multi_market),
+        market=section_header(market, config),
         capital_eur=account.capital_eur,
         risk_per_trade_pct=risk_pct_of(account, config),
-        watchlist_size=len(config.watchlist),
+        watchlist_size=len(config.market(market).watchlist),
         signals_total=len(recent),
         signals_undecided=undecided,
         signals_taken=len(taken),
@@ -351,7 +379,7 @@ async def status(message: Message, ctx: BotContext, actor: Actor) -> None:
             )
             for row in snapshots
         ),
-        dry_run=config.dry_run,
+        dry_run=config.market(market).dry_run,
         last_cycle_at=None
         if last_cycle is None
         else (last_cycle.finished_at or last_cycle.started_at),
@@ -367,60 +395,85 @@ async def status(message: Message, ctx: BotContext, actor: Actor) -> None:
         signals_today=signals_today,
         max_signals_per_day=config.risk.max_signals_per_day,
         signals_open=len(open_symbols),
-        spend=spend_view(totals, config.llm),
+        spend=spend_view(totals, config.llm, market=config.market(market)),
     )
     await message.answer(status_card(view, ctx.tz))
 
 
-def _effective_pause(
-    system: PauseState, account: UserAccount, *, now: datetime
-) -> tuple[PauseState, str]:
-    """Which pause is holding this caller, and whose it is.
-
-    The operator's ``/pause`` wins when both are active: it is the wider statement,
-    and reporting the narrower one would understate what is stopped.
-    """
-    if system.is_active(now):
-        return system, "system"
-    if account.pause.is_active(now):
-        return account.pause, "you"
-    return PauseState(), ""
-
-
 @admin_router.message(Command("pause"))
-async def pause(message: Message, ctx: BotContext, actor: Actor) -> None:
+async def pause(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
     """§3 ``/pause`` — manual, no expiry, survives a restart (RISK_ENGINE §7).
 
-    System-wide, and owner-only. Members cannot pause themselves (they have no
-    ``/pause``), so a per-user pause here would leave the operator with no stop
-    button for the system they run.
+    Owner-only. Members cannot pause themselves (they have no ``/pause``), so a
+    per-user pause here would leave the operator with no stop button for the system
+    they run.
+
+    **``/pause`` with no argument is still system-wide** (M10a), and that is not
+    inertia: it is the command somebody reaches for when something is wrong, often
+    on a phone, often in a hurry, and it must not quietly have become narrower than
+    it was. ``/pause forex`` narrows deliberately, by typing a word.
     """
-    async with ctx.database.session() as session:
-        await ctx.repositories.risk_state(session).save(
-            PauseState(paused=True, reason=PauseReason.MANUAL, until=None)
+    named = parse_market(command.args) if command.args else None
+    if command.args and named is None:
+        await message.answer(
+            "❌ Usage: /pause · /pause crypto · /pause forex (no argument pauses every market)"
         )
+        return
+
+    async with ctx.database.session() as session:
+        state = PauseState(paused=True, reason=PauseReason.MANUAL, until=None)
+        if named is None:
+            await ctx.repositories.risk_state(session).save(state)
+        else:
+            await ctx.repositories.market_pause(session, market=named).save(state)
         await session.commit()
-    log.info("bot.paused", reason=PauseReason.MANUAL.value, user_id=actor.user_id)
+    log.info(
+        "bot.paused",
+        reason=PauseReason.MANUAL.value,
+        scope="global" if named is None else named.value,
+        user_id=actor.user_id,
+    )
+    if named is None:
+        await message.answer(
+            "⏸️ <b>Paused.</b> No new signals will be gated through for anyone until "
+            "/resume.\nThe tracker keeps following everything already open."
+        )
+        return
     await message.answer(
-        "⏸️ <b>Paused.</b> No new signals will be gated through for anyone until "
-        "/resume.\nThe tracker keeps following everything already open."
+        f"⏸️ <b>Paused {named.value}.</b> No new {named.value} signals will be gated "
+        f"through for anyone until /resume {named.value}. Other markets are "
+        "unaffected.\nThe tracker keeps following everything already open."
     )
 
 
 @admin_router.message(Command("resume"))
-async def resume(message: Message, ctx: BotContext, actor: Actor) -> None:
+async def resume(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
     """§3 ``/resume`` — a loss-limit pause needs an explicit confirmation button.
 
     The asymmetry is the point, and M8.1 keeps it across the split: a manual pause
     was a deliberate act and lifting it is another one, but a daily-loss pause exists
     precisely because the day has gone badly, and that is when a reflexive tap does
-    the most damage. The loss pause now lives on the caller's own ``users`` row; the
-    manual one is still the single ``risk_state`` row.
+    the most damage. The loss pause lives on the caller's own ``users`` row; the
+    manual one is the ``risk_state`` row, plus M10a's per-market rows.
+
+    ``/resume`` with no argument lifts the **global** pause, mirroring ``/pause``.
+    ``/resume forex`` lifts that market's. A loss-limit pause still intercepts both,
+    because it is the caller's own book that is being overridden either way.
     """
     account = actor.known()
     now = ctx.clock.now()
+    named = parse_market(command.args) if command.args else None
+    if command.args and named is None:
+        await message.answer("❌ Usage: /resume · /resume crypto · /resume forex")
+        return
+
     async with ctx.database.session() as session:
-        system = await ctx.repositories.risk_state(session).load()
+        global_pause = await ctx.repositories.risk_state(session).load()
+        market_pause = (
+            PauseState()
+            if named is None
+            else await ctx.repositories.market_pause(session, market=named).load()
+        )
 
         if account.pause.is_active(now):
             await message.answer(
@@ -430,13 +483,22 @@ async def resume(message: Message, ctx: BotContext, actor: Actor) -> None:
                 reply_markup=resume_keyboard(),
             )
             return
-        if not system.is_active(now):
+        target = global_pause if named is None else market_pause
+        if not target.is_active(now):
             await message.answer("▶️ Not paused — nothing to resume.")
             return
-        await ctx.repositories.risk_state(session).save(PauseState())
+        if named is None:
+            await ctx.repositories.risk_state(session).save(PauseState())
+        else:
+            await ctx.repositories.market_pause(session, market=named).save(PauseState())
         await session.commit()
-    log.info("bot.resumed", user_id=actor.user_id)
-    await message.answer("▶️ <b>Resumed.</b> New signals will be gated normally again.")
+    log.info("bot.resumed", scope="global" if named is None else named.value, user_id=actor.user_id)
+    if named is None:
+        await message.answer("▶️ <b>Resumed.</b> New signals will be gated normally again.")
+        return
+    await message.answer(
+        f"▶️ <b>Resumed {named.value}.</b> New {named.value} signals will be gated normally again."
+    )
 
 
 @admin_router.message(Command("watchlist"))
@@ -452,18 +514,45 @@ async def watchlist(
     A symbol is checked against the exchange's own instrument list before it is
     stored. It is one keyless public call, and the alternative is a typo that
     silently produces a skipped symbol every cycle for as long as nobody notices.
+
+    **Per market from M10a.** ``/watchlist`` with no argument lists every enabled
+    market's list; ``/watchlist crypto`` narrows. An edit names its market
+    (``/watchlist crypto add SOLUSDT``) **only when more than one is enabled** — with
+    one market there is nothing to disambiguate and the old two-word form is what the
+    owner's fingers know.
     """
     async with ctx.database.session() as session:
         settings_repo = ctx.repositories.settings(session)
         stored = await settings_repo.all()
         config = effective_config(ctx.settings, stored)
-        current: tuple[str, ...] = tuple(config.watchlist)
 
-        if not command.args:
-            await message.answer(watchlist_card(current, source_of(WATCHLIST, stored)))
+        parts = (command.args or "").split()
+        named = parse_market(parts[0]) if parts else None
+        if named is not None:
+            parts = parts[1:]
+        market = named or LEGACY_MARKET
+
+        if named is not None and named not in config.enabled_markets:
+            await message.answer(f"❌ <b>{named.value}</b> is not enabled on this deployment.")
             return
 
-        parts = command.args.split()
+        if not parts:
+            markets = config.enabled_markets if named is None else (market,)
+            await message.answer(
+                "\n\n".join(
+                    watchlist_card(
+                        tuple(config.market(each).watchlist),
+                        watchlist_source(stored, each),
+                        header=section_header(each, config),
+                    )
+                    for each in markets
+                )
+            )
+            return
+
+        current: tuple[str, ...] = tuple(config.market(market).watchlist)
+        market_config = config.market(market)
+
         if len(parts) != 2 or parts[0].lower() not in {"add", "remove"}:
             await message.answer(
                 "❌ Usage: /watchlist · /watchlist add SOLUSDT · /watchlist remove SOLUSDT"
@@ -484,10 +573,10 @@ async def watchlist(
             # spend control — every symbol is screened every cycle and may buy a
             # ~$0.28 analyst call — and a cap that applied only to members would not
             # be a cap. It is the owner's own config value to raise.
-            if len(current) >= config.watchlist_max_symbols:
+            if len(current) >= market_config.watchlist_max_symbols:
                 await message.answer(
                     f"❌ The watchlist is full ({len(current)} of "
-                    f"{config.watchlist_max_symbols}). Remove a symbol first, or raise "
+                    f"{market_config.watchlist_max_symbols}). Remove a symbol first, or raise "
                     "<code>watchlist_max_symbols</code> in config.yaml."
                 )
                 return
@@ -509,11 +598,19 @@ async def watchlist(
                 )
                 return
 
-        await settings_repo.set(WATCHLIST, list(updated), at=ctx.clock.now(), user_id=actor.user_id)
+        await settings_repo.set(
+            watchlist_key(market), list(updated), at=ctx.clock.now(), user_id=actor.user_id
+        )
         await session.commit()
 
-    log.info("bot.watchlist_changed", action=action, symbol=parsed, size=len(updated))
-    await message.answer(watchlist_card(updated, "db"))
+    log.info(
+        "bot.watchlist_changed",
+        market=market.value,
+        action=action,
+        symbol=parsed,
+        size=len(updated),
+    )
+    await message.answer(watchlist_card(updated, "db", header=section_header(market, config)))
 
 
 @admin_router.message(Command("settings"))
@@ -584,8 +681,26 @@ async def settings(message: Message, ctx: BotContext, actor: Actor) -> None:
             (
                 "Pipeline",
                 (
-                    ("watchlist", f"{len(config.watchlist)} symbols", source_of(WATCHLIST, stored)),
-                    ("scan_interval_minutes", str(config.schedule.scan_interval_minutes), "yaml"),
+                    *(
+                        (
+                            "watchlist"
+                            if not config.multi_market
+                            else f"watchlist ({market.value})",
+                            f"{len(config.market(market).watchlist)} symbols",
+                            watchlist_source(stored, market),
+                        )
+                        for market in config.enabled_markets
+                    ),
+                    *(
+                        (
+                            "scan_interval_minutes"
+                            if not config.multi_market
+                            else f"scan_interval_minutes ({market.value})",
+                            str(config.market(market).scan_interval_minutes),
+                            "yaml",
+                        )
+                        for market in config.enabled_markets
+                    ),
                     ("screener_model", config.llm.screener_model, "yaml"),
                     ("analyst_model", config.llm.analyst_model, "yaml"),
                     ("owner_timezone", telegram.owner_timezone, "yaml"),
@@ -638,8 +753,13 @@ async def watchlist_request_button(
         settings_repo = ctx.repositories.settings(session)
         stored = await settings_repo.all()
         config = effective_config(ctx.settings, stored)
-        current: tuple[str, ...] = tuple(config.watchlist)
-        cap = config.watchlist_max_symbols
+        # A request is filed against a market (the row carries one), and M10a's
+        # requests repository is bound to it. Only crypto can be requested today —
+        # there is no forex adapter and no forex screener — so this reads the market
+        # the repository is scoped to rather than inventing a second source of truth.
+        market = requests.market
+        current: tuple[str, ...] = tuple(config.market(market).watchlist)
+        cap = config.market(market).watchlist_max_symbols
 
         if approved and symbol not in current and len(current) >= cap:
             await _watchlist_full(bot, ctx, pending, cap=cap)
@@ -655,7 +775,9 @@ async def watchlist_request_button(
         if approved and symbol not in current:
             # The same write ``/watchlist add`` makes, so the ``config_changes`` row
             # is identical whether a symbol arrived by hand or by button.
-            await settings_repo.set(WATCHLIST, [*current, symbol], at=now, user_id=actor.user_id)
+            await settings_repo.set(
+                watchlist_key(market), [*current, symbol], at=now, user_id=actor.user_id
+            )
         await session.commit()
 
     if decided is None:  # pragma: no cover — it was pending a moment ago

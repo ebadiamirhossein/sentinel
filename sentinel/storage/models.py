@@ -7,6 +7,27 @@ stored as JSONB on the snapshot row. A signal stays fully reconstructable from
 the DB alone (PRD F10).
 
 Money-ish columns are ``Numeric`` and map to ``Decimal`` — never float.
+
+**M10a adds a ``market`` column** to every table whose rows belong to exactly one
+market, defaulting to ``crypto`` and backfilled there by migration 0010. Four kinds
+of table deliberately do *not* get one, and the distinction is worth stating once
+rather than defending ten times:
+
+* ``signal_fills``, ``signal_exits``, ``signal_events`` and ``telegram_messages``
+  hang off a ``signal_id``, and that signal already carries the market. A copy would
+  be a second place for the answer to be wrong.
+* ``fx_rates`` holds EUR→USD, which belongs to the *display* layer and is read by
+  every market alike.
+* ``users``, ``runtime_settings`` and ``config_changes`` are about people and
+  settings, not about instruments.
+* ``risk_state`` stays the **global** operator pause; the per-market one is
+  :class:`MarketPauseStateRow`, for the reasons recorded there.
+
+``ohlcv_candles`` keeps its ``(symbol, timeframe, open_time)`` primary key and gains
+``market`` as a plain column. Symbol strings are disjoint across markets today
+(``BTCUSDT`` vs ``EURUSD``), so the key is still sound and the migration stays cheap
+on the largest table in the schema — but it is an assumption, not a guarantee, and
+journal/M10a_REPORT.md flags it for M10b.
 """
 
 from __future__ import annotations
@@ -33,6 +54,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from sentinel.core.markets import LEGACY_MARKET, MARKET_COLUMN_LENGTH
 from sentinel.storage.base import Base
 
 #: Wide enough for any crypto price or notional without losing precision.
@@ -47,6 +69,14 @@ class MarketSnapshotRow(Base):
     id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
     cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     schema_version: Mapped[int] = mapped_column(nullable=False, default=1)
     last_price: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
@@ -78,6 +108,14 @@ class OhlcvCandleRow(Base):
     symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
     timeframe: Mapped[str] = mapped_column(String(8), primary_key=True)
     open_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     open: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
     high: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
     low: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
@@ -95,6 +133,14 @@ class InstrumentMetaRow(Base):
     __tablename__ = "instrument_meta"
 
     symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     tick_size: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
     qty_step: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
     min_notional: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
@@ -133,6 +179,14 @@ class GateDecisionRow(Base):
     cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     gate_status: Mapped[str] = mapped_column(String(32), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -164,6 +218,69 @@ class RiskStateRow(Base):
     )
 
 
+class MarketPauseStateRow(Base):
+    """One market's operator pause (M10a). ``risk_state`` stays the *global* one.
+
+    Deliberately a second table rather than a ``market`` column on ``risk_state``.
+    A pause has a scope, and "all markets" is not a market: giving ``risk_state`` a
+    market column would have forced a sentinel value like ``'global'`` into a column
+    typed as a :class:`~sentinel.core.markets.Market`, and every reader would then
+    have had to remember that one value in that column is not really a market.
+
+    Splitting them also means **the live global pause row is not migrated at all**.
+    ``/pause`` with no argument still writes exactly the row it wrote yesterday, so
+    the one rail the owner reaches for in an emergency has no new code path in it.
+
+    Mirrors ``risk_state`` and ``users`` field for field, so one ``PauseState``
+    helper round-trips all three.
+    """
+
+    __tablename__ = "market_pause_state"
+
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH), primary_key=True, autoincrement=False
+    )
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pause_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    paused_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class UserMarketPauseRow(Base):
+    """One user's daily-loss pause **in one market** (M10a).
+
+    ``users.paused``/``pause_reason``/``paused_until`` keep the meaning they have
+    had since M8.1 and are not migrated: they are now explicitly the user's
+    *combined-across-markets* loss pause, which is the rail that fires when the day
+    is bad everywhere rather than in one place. This table is the per-market half.
+
+    Both exist because they answer different questions. A forex loss must stop forex
+    without stopping a crypto book that is having a fine day (M10a Step 5); a loss
+    that is only bearable because it is spread across two markets must still stop
+    everything. One column could not hold both, and collapsing them would silently
+    pick whichever answer the last writer had.
+
+    No foreign key to ``users``, matching every other table here.
+    """
+
+    __tablename__ = "user_market_pauses"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH), primary_key=True, autoincrement=False
+    )
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pause_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    paused_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_user_market_pauses_user_id", "user_id"),)
+
+
 class WatchlistRequestRow(Base):
     """A member asking for a symbol to join the shared watchlist (M8.3).
 
@@ -191,6 +308,14 @@ class WatchlistRequestRow(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     requested_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     #: PENDING | APPROVED | REJECTED
@@ -199,8 +324,14 @@ class WatchlistRequestRow(Base):
     decided_by_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (
+        # Per market from M10a. Without ``market`` in the key, a pending EURUSD
+        # request would block a pending EURUSD request on the *other* market — and,
+        # worse, the block would be silent, because a duplicate is an ON CONFLICT DO
+        # NOTHING that notifies nobody. Symbols are disjoint across markets today,
+        # which is exactly the kind of accident that stops being true quietly.
         Index(
             "uq_watchlist_requests_one_pending",
+            "market",
             "symbol",
             unique=True,
             postgresql_where=text("status = 'PENDING'"),
@@ -217,6 +348,14 @@ class IngestionFailureRow(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -245,6 +384,14 @@ class LLMCallRow(Base):
     cycle_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     #: Null for the screener — it is one batch call across the whole watchlist.
     symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
 
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -276,7 +423,11 @@ class LLMCallRow(Base):
     )
 
     __table_args__ = (
-        Index("ix_llm_calls_started_at", "started_at"),
+        #: The spend guard's own query, and from M10a it is per market: each market
+        #: has its own daily sub-budget under a shared ceiling (Step 4), so "what has
+        #: this market spent today" has to be an index scan rather than a filter over
+        #: the whole day's calls.
+        Index("ix_llm_calls_market_started_at", "market", "started_at"),
         Index("ix_llm_calls_symbol_started_at", "symbol", "started_at"),
         # M9 groups by (prompt_version, status) to compute JSON validity per
         # prompt version, and by (model, started_at) for the M8 spend guard.
@@ -304,6 +455,14 @@ class AnalystReportRow(Base):
     llm_call_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
 
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     #: "primary" in M5; "shadow" for the M10 second opinion.
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="primary")
@@ -365,6 +524,14 @@ class SignalRow(Base):
     number: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
 
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
     setup_type: Mapped[str] = mapped_column(String(32), nullable=False)
     prompt_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -428,8 +595,12 @@ class SignalRow(Base):
         Index("ix_signals_status_expires_at", "status", "expires_at"),
         #: /stats windows every population by when the signal resolved.
         Index("ix_signals_closed_at", "closed_at"),
-        #: Every per-user query — the rails, /positions, /stats — starts here.
-        Index("ix_signals_user_id_created_at", "user_id", "created_at"),
+        #: Every per-user query — the rails, /positions, /stats — starts here, and
+        #: from M10a every one of them is also scoped to a market. Leading with
+        #: ``market`` rather than adding a second index: the market is always known
+        #: at the call site, and two overlapping indexes on the same hot table would
+        #: cost every insert for a read nothing performs.
+        Index("ix_signals_market_user_id_created_at", "market", "user_id", "created_at"),
     )
 
 
@@ -622,6 +793,14 @@ class CycleRow(Base):
 
     cycle_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Which market this row belongs to (M10a). Backfilled to ``crypto`` by
+    #: migration 0010, and NOT NULL with a server default so app code that predates
+    #: the column can still insert against a migrated database.
+    market: Mapped[str] = mapped_column(
+        String(MARKET_COLUMN_LENGTH),
+        nullable=False,
+        server_default=text(f"'{LEGACY_MARKET.value}'"),
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: RUNNING | OK | FAILED
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
@@ -653,7 +832,10 @@ class CycleRow(Base):
     suspended_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
-    __table_args__ = (Index("ix_cycles_started_at", "started_at"),)
+    #: A cycle is per market from M10a: one scheduled job per enabled market, each
+    #: writing its own rows. ``/pulse`` and the stale-cycle alert both ask "the last
+    #: completed cycle *for this market*", which is this index.
+    __table_args__ = (Index("ix_cycles_market_started_at", "market", "started_at"),)
 
 
 class SignalFillRow(Base):
