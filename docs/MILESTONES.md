@@ -243,6 +243,13 @@ with no AI in it — had never been readable from a phone.
 * `/help` now splits across messages rather than losing prose — M8.5's ruling, applied
   to the one card that had run out of room.
 * New spec sections `TELEGRAM_UX.md` §3c and §3d.
+* **Post-deploy fix, same day.** `/snapshot` was silent for six of ten watchlist
+  symbols: the feature engine's EMA-stack label (`20>50<200`) reached the card
+  unescaped, Telegram read `<200` as an opening tag and refused the whole message.
+  Fixed, plus a `tests/bot/telegram_html.py` validator that encodes Telegram's parsing
+  rule (Python's own `html.parser` treats `<200` as text and would have passed the
+  broken card), plus `answers_on_failure` on every member handler so a future failure
+  replies instead of going quiet — M8.2 §1's lesson, met a second time.
 
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.

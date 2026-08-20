@@ -248,6 +248,92 @@ figures tie back to `/stats`.
    something environmental — a file-size limit, a permission — this is the first
    milestone where that can happen.
 
+## 11. Post-deploy: `/snapshot` was silent for six of ten symbols
+
+**Found by you, within minutes of the deploy.** `/snapshot ADAUSDT` returned nothing
+at all — no card, no error — while bare `/snapshot` correctly returned its usage line,
+which is what proved the handler was wired and the failure was downstream of it.
+
+```
+TelegramBadRequest: Bad Request: can't parse entities:
+  Unsupported start tag "200" at byte offset 414
+  → sentinel/bot/handlers/commands.py:453  await message.answer(snapshot_card(view, ctx.tz))
+```
+
+**The cause.** `TimeframeFeatures.ema_stack` is the feature engine's comparison chain
+— `20>50>200`, `20>50<200`, `20<50` — and it reached the card unescaped. Telegram's
+HTML parser reads `<200` as an opening tag, does not recognise it, and **refuses the
+entire message**. aiogram caught the exception, logged it, and returned nothing.
+
+**Why the tests did not catch it, and it is not "no test for that field".** The
+suite has an escaping test — `test_external_text_on_the_card_is_escaped` — and it
+covers the Fear & Greed classification, because that string comes from outside the
+system. `ema_stack` is produced by our own feature engine, so it read as trusted. That
+was the wrong question. **Escaping is about the characters a field can contain, not
+about who wrote it**, and this one contains `<` by construction, every single time.
+
+**Why a fixture could not have caught it either.** `>` is tolerated by Telegram as
+text; only `<` is fatal. A stack is `<` only when the EMAs are not in descending order,
+so the bug fires on some symbols and not others — the production sweep found **6 of 10
+watchlist symbols unsendable and 4 fine**. Any single fixture had a real chance of
+picking a clean one, and the BTCUSDT cassette the suite uses picks a mixture whose
+card was never sent anywhere.
+
+### The regression test is a rule, not an example
+
+`tests/bot/telegram_html.py` renders the question as a property: *every `<` in a card
+must open a tag Telegram supports*. It sweeps every state `/snapshot` can be in — full,
+each block missing, features unreadable, both "nothing stored" answers, degraded — plus
+`/journal`'s caption and empty card.
+
+**It is written by hand rather than using `html.parser`, and that is the point.**
+Python's parser treats `<200` as literal text, because an HTML tag name cannot begin
+with a digit — so the obvious implementation would have passed the exact card that
+failed in production. A test asserts this: `test_the_sweep_would_catch_the_bug_that_shipped`
+feeds it the literal production line.
+
+Swept over **every card the bot can send**, rendered from the production database
+before the fix: 26 cards, 6 unsendable, all six `/snapshot`. `/pulse`, `/pulse 24h`,
+`/pulse <SYMBOL>` for all ten symbols, `/positions`, `/stats` and both `/help` pages
+are clean — the defect was contained to the one new surface.
+
+### The catch-all, and the trap in adding one
+
+`answers_on_failure` (`sentinel/bot/handlers/guard.py`) wraps every handler on the
+member router: a failure now replies *"something went wrong handling that"* and logs
+the traceback. This is journal/M8_2_REPORT.md §1's lesson reached from the opposite
+direction — there a `TypeError` in a filter made nine owner commands silent for a
+week, here a `TelegramBadRequest` made one member command silent for six symbols, and
+both times the observable symptom was **nothing at all** on a bot where silence is a
+designed response.
+
+Three decisions inside it worth recording:
+
+1. **A decorator on named handlers, not `Router.errors`.** A router-level error
+   handler would also catch anything raised inside `AuthMiddleware`, and replying
+   there would answer a stranger whose entire guarantee is that they hear nothing.
+2. **The apology claims nothing about whether the work was done.** It wraps `/capital`
+   and `/risk`, which write. "Nothing was changed" would be a guess, and on the two
+   settings that decide a position size it is the wrong kind of guess.
+3. **A failure to deliver the apology is not a second exception.** The realistic case
+   is that the *send* is what failed — which is exactly what happened here.
+
+**And the trap.** A catch-all makes the existing reachability sweep weaker: aiogram
+injects a handler's arguments from `inspect.unwrap(callback)`, so a wrapper that lost
+`__wrapped__` would silently stop `ctx`, `actor` and `command` being passed — and the
+guard would then catch the resulting `TypeError` and *answer*, leaving
+`reached_a_handler` green over a completely broken router. That is the M8.2 failure
+reintroduced by its own fix. `test_a_member_command_does_its_own_job_rather_than_apologising`
+asserts on what each handler *said* instead, and was verified to fail — 8 of them —
+by deleting `@wraps`.
+
+### One small thing fixed alongside
+
+`/journal` now opens on the first sheet that **has rows**. A new member's Real sheet is
+empty until they press ✅ Taken, and a workbook that opens on a blank grid reads as a
+broken export. The sheet order is unchanged — Real stays first — and a test asserts
+both halves, since reordering the sheets is the obvious wrong way to fix it.
+
 ## 10. Notes for M9
 
 - **`/journal` is the weekly-review instrument.** M9's exit criteria are "≥25 tracked

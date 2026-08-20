@@ -265,14 +265,25 @@ def journal_workbook(
     workbook.remove(workbook.active)
 
     ordered = sorted(books, key=lambda book: SHEET_ORDER.index(book.population))
+    written: list[JournalBook] = []
     for book in ordered:
         if book.rows or book.population in ALWAYS_WRITTEN:
             _write_sheet(workbook.create_sheet(title=book.title), book, tz=tz)
+            written.append(book)
 
     _write_legend(
         workbook.create_sheet(title="Legend"),
         _legend_lines(ordered, window_label=window_label, generated_at=generated_at, tz=tz),
     )
+
+    # Open on the first sheet that has anything in it. The sheet *order* is fixed —
+    # Real first, because that is the book that matters — but a new member's Real
+    # sheet is empty for as long as they have not pressed ✅ Taken, and a workbook
+    # that opens on a blank grid reads as a broken export. The order is unchanged;
+    # only where the file opens is.
+    populated = next((book for book in written if book.rows), None)
+    if populated is not None:
+        workbook.active = workbook.sheetnames.index(populated.title)
 
     buffer = BytesIO()
     workbook.save(buffer)

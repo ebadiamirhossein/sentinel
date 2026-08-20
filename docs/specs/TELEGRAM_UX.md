@@ -561,6 +561,19 @@ of any kind. Both are on `MEMBER_COMMANDS` and reach the owner through `commands
 — and `tests/bot/test_dispatcher_wiring.py` proves each reaches a handler **for both
 roles** against a real `Dispatcher`, with silence for a caller with no standing.
 
+> **A member command that fails now says so (added 2026-08-20, M8.6).** Every
+> handler on the member router is wrapped in `answers_on_failure`, which replies
+> *"something went wrong handling that"* and logs the traceback rather than letting
+> aiogram swallow the exception. journal/M8_2_REPORT.md §1 found nine owner commands
+> silent for a week for exactly this reason, and M8.6 shipped a `/snapshot` that was
+> silent for six of ten symbols for the same one. On a bot where **silence is the
+> designed response to anyone without standing** (§7), a crash and a command that
+> does not exist are indistinguishable — so the one caller positioned to report it is
+> told. It is a decorator on named handlers rather than a router-level error handler:
+> the latter would also catch anything raised inside the authorization gate, and
+> replying there would answer a stranger whose whole guarantee is that they hear
+> nothing.
+
 > **`/help` splits across messages from M8.6.** It reached 3,859 of Telegram's 4,096
 > characters, and explaining two more commands needed ~470. The choice was to cut
 > carefully-written explanation or to split, and M8.5 §3b already settled that for

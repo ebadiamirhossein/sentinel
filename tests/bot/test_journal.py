@@ -59,6 +59,7 @@ from sentinel.stats.journal import (
 )
 from sentinel.stats.models import population_of
 from sentinel.storage.models import SignalExitRow, SignalFillRow, SignalRow
+from tests.bot.telegram_html import assert_sendable
 from tests.bot_double import (
     FakeBot,
     FakeDatabase,
@@ -830,3 +831,51 @@ def test_the_caption_counts_the_sheets_it_shipped(bot_config: AppConfig) -> None
 
     assert "Real (Taken) 1" in caption and "Hypothetical 0" in caption
     assert "never mixed" in caption
+
+
+def test_the_workbook_opens_on_the_first_sheet_that_has_rows(bot_config: AppConfig) -> None:
+    """A new member's Real sheet is empty until they press ✅ Taken, and a file that
+    opens on a blank grid reads as a broken export.
+
+    The sheet *order* is unchanged — Real stays first, because it is the book that
+    matters — and only the active tab moves. Both halves are asserted, since "fix it
+    by reordering the sheets" is the obvious wrong way to do this.
+    """
+    rows = [signal(bot_config, number=1, decision=SignalDecision.SKIPPED)]
+    workbook = load_workbook(io.BytesIO(workbook_of(books_of(bot_config, rows))))
+
+    assert workbook.sheetnames[0] == "Real (Taken)", "the order must not change"
+    assert workbook.active.title == "Hypothetical"
+
+
+def test_it_opens_on_real_whenever_real_has_anything(bot_config: AppConfig) -> None:
+    rows = [
+        signal(bot_config, number=1, decision=SignalDecision.TAKEN),
+        signal(bot_config, number=2, decision=SignalDecision.SKIPPED),
+    ]
+    workbook = load_workbook(io.BytesIO(workbook_of(books_of(bot_config, rows))))
+
+    assert workbook.active.title == "Real (Taken)"
+
+
+def test_a_journal_of_nothing_but_rehearsals_opens_on_the_rehearsals(
+    bot_config: AppConfig,
+) -> None:
+    """The state the live database is actually in for a brand-new member, and the
+    one the first draft would have opened on an empty Real sheet for."""
+    rows = [signal(bot_config, number=1, decision=None, dry_run=True)]
+    workbook = load_workbook(io.BytesIO(workbook_of(books_of(bot_config, rows))))
+
+    assert workbook.active.title == "Dry run"
+
+
+def test_the_caption_and_the_empty_card_are_something_telegram_will_send(
+    bot_config: AppConfig,
+) -> None:
+    """The same sweep ``test_snapshot.py`` runs, over the two things ``/journal``
+    says in words. The symbol and the window label both reach these unescaped-by-
+    default, and a caption Telegram refuses means the **document** does not arrive."""
+    books = books_of(bot_config, [signal(bot_config, number=1)])
+
+    assert_sendable(journal_caption(books, window_label="all"), what="the journal caption")
+    assert_sendable(journal_empty_card("30d"), what="the empty-journal card")

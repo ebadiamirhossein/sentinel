@@ -51,6 +51,7 @@ from aiogram.types import User as TgUser
 from sentinel.bot.app import build_dispatcher
 from sentinel.bot.auth import AuthMiddleware
 from sentinel.bot.context import BotContext
+from sentinel.bot.handlers.guard import FAILED
 from sentinel.bot.keyboards import AdminAction, AdminCallback, WatchlistCallback
 from sentinel.bot.menu import MEMBER_COMMANDS, OWNER_COMMANDS
 from sentinel.core.clock import FrozenClock
@@ -119,10 +120,17 @@ class FakeBot:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        #: What a handler actually said. Recorded from M8.6, because reachability
+        #: alone stopped being a sufficient assertion once every member handler
+        #: gained a catch-all — see the test at the foot of this file.
+        self.texts: list[str] = []
 
     async def __call__(self, method: Any, *args: Any, **kwargs: Any) -> Any:
         """aiogram's own call path: handlers build a method object and await the bot."""
         self.calls.append(type(method).__name__)
+        text = getattr(method, "text", None)
+        if text is not None:
+            self.texts.append(text)
         return None
 
     def __getattr__(self, name: str) -> Any:
@@ -576,3 +584,34 @@ async def test_journal_is_silent_for_someone_with_no_standing(dispatcher: Dispat
     bot = FakeBot()
     await dispatcher.feed_update(bot, message_update("/journal", user_id=999))  # type: ignore[arg-type]
     assert bot.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# M8.6 — the catch-all must not turn a broken handler into a passing test
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("command", sorted(MEMBER_COMMAND_ARGS))
+async def test_a_member_command_does_its_own_job_rather_than_apologising(
+    dispatcher: Dispatcher, command: str
+) -> None:
+    """Reachability stopped being enough the moment ``answers_on_failure`` existed.
+
+    Every member handler now replies on failure instead of dying quietly, which is
+    the point — and it means ``reached_a_handler`` would go on passing if aiogram
+    stopped injecting ``ctx``, ``actor`` or ``command``: the resulting ``TypeError``
+    would be caught by the guard and answered. The sweep above would be green over a
+    completely broken router, which is precisely the M8.2 failure it exists to
+    prevent, reintroduced by its own fix.
+
+    So the assertion is on what the handler *said*: anything but the apology.
+    """
+    bot = FakeBot()
+    update = message_update(f"/{command}{MEMBER_COMMAND_ARGS[command]}", user_id=MEMBER)
+    await dispatcher.feed_update(bot, update)  # type: ignore[arg-type]
+
+    assert bot.texts, f"/{command} reached a handler and said nothing at all"
+    assert FAILED not in bot.texts, (
+        f"/{command} failed and apologised — the guard is working and the handler is "
+        "not. The traceback is in the captured log."
+    )

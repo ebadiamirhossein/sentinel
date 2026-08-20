@@ -11,6 +11,12 @@ standing does), and ``/status /settings /watchlist /pause /resume /users /approv
 and stays unregistered, because an unregistered command is silent rather than
 answered with a promise.
 
+**Every handler here answers even when it fails** (M8.6). ``answers_on_failure``
+wraps each one, because on a bot where silence is the designed response to anyone
+without standing, a crash and a command that does not exist are indistinguishable —
+which is journal/M8_2_REPORT.md §1's lesson, and how a ``TelegramBadRequest`` in
+``/snapshot`` reached production looking like a dead handler.
+
 ``/pulse`` (M8.4) is the one command here that is **not** scoped to the caller, and
 deliberately so: it reports the pipeline's own reasoning, which is bought once and
 shared, so it is identical for every approved user. It reads no book and prints no
@@ -47,6 +53,7 @@ from sentinel.bot.cards import (
 from sentinel.bot.context import BotContext
 from sentinel.bot.export import journal_filename, journal_workbook
 from sentinel.bot.formatting import escape
+from sentinel.bot.handlers.guard import answers_on_failure
 from sentinel.bot.keyboards import watchlist_request_keyboard
 from sentinel.bot.models import SignalDecision
 from sentinel.bot.outbound import SupportsBot
@@ -74,6 +81,7 @@ commands_router = Router(name="commands")
 
 
 @commands_router.message(Command("capital"))
+@answers_on_failure
 async def capital(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
     """§3 ``/capital 10000`` — validated > 0, confirmed, applies to new signals only.
 
@@ -108,6 +116,7 @@ async def capital(message: Message, command: CommandObject, ctx: BotContext, act
 
 
 @commands_router.message(Command("risk"))
+@answers_on_failure
 async def risk(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
     """§3 ``/risk 0.75`` — bounds come from config, never from a literal here."""
     account = actor.known()
@@ -139,6 +148,7 @@ async def risk(message: Message, command: CommandObject, ctx: BotContext, actor:
 
 
 @commands_router.message(Command("positions"))
+@answers_on_failure
 async def positions(message: Message, ctx: BotContext, actor: Actor) -> None:
     """§3 ``/positions`` — the caller's Taken signals with live uPnL in R and EUR.
 
@@ -174,6 +184,7 @@ async def positions(message: Message, ctx: BotContext, actor: Actor) -> None:
 
 
 @commands_router.message(Command("stats"))
+@answers_on_failure
 async def stats(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
     """§3 ``/stats [30d|90d|all]`` — **the caller's numbers, and nobody else's.**
 
@@ -208,6 +219,7 @@ PULSE_USAGE = (
 
 
 @commands_router.message(Command("pulse"))
+@answers_on_failure
 async def pulse(message: Message, command: CommandObject, ctx: BotContext, actor: Actor) -> None:
     """§3b ``/pulse [24h]`` — what the pipeline did, for everybody (M8.4).
 
@@ -361,6 +373,7 @@ SNAPSHOT_USAGE = (
 
 
 @commands_router.message(Command("journal"))
+@answers_on_failure
 async def journal(
     message: Message,
     command: CommandObject,
@@ -423,6 +436,7 @@ async def journal(
 
 
 @commands_router.message(Command("snapshot"))
+@answers_on_failure
 async def snapshot(message: Message, command: CommandObject, ctx: BotContext) -> None:
     """§3d ``/snapshot SOLUSDT`` — the deterministic view, before the AI (M8.6).
 
@@ -457,6 +471,7 @@ __all__ = ["commands_router"]
 
 
 @commands_router.message(Command("request"))
+@answers_on_failure
 async def request(
     message: Message,
     command: CommandObject,

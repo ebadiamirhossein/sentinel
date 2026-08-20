@@ -758,8 +758,15 @@ def _timeframe_lines(view: SnapshotTimeframeView) -> list[str]:
     """
     partial = " · partial candle dropped" if view.partial_candle_dropped else ""
     return [
+        # ``ema_stack`` is escaped and every other field on this line is not, which
+        # looks inconsistent and is not: it is the only one that can contain a "<".
+        # It is *always* a comparison chain — "20>50>200", "20>50<200" — and Telegram
+        # reads "<200" as an opening tag, refuses the whole message, and the caller
+        # gets silence. It was written unescaped because the feature engine produces
+        # it and nothing external touches it, which is the wrong question: escaping
+        # is about the characters a field can hold, not about who wrote it.
         f"  <b>{view.timeframe}</b> {view.regime} ({view.regime_basis.lower()}) · "
-        f"vol {view.volatility} · stack {view.ema_stack}",
+        f"vol {view.volatility} · stack {escape(view.ema_stack)}",
         f"    EMA20 {view.ema20} · EMA50 {view.ema50} · EMA200 {view.ema200}",
         f"    RSI {view.rsi14} · ATR {view.atr14} ({view.atr_pct}%) · "
         f"rel vol {view.relative_volume} · {view.candles_used} bars{partial}",

@@ -44,6 +44,7 @@ from sentinel.ingestion.models import (
 )
 from sentinel.storage.models import MarketSnapshotRow
 from sentinel.storage.repositories import snapshot_context
+from tests.bot.telegram_html import assert_sendable, unsupported
 from tests.market_double import snapshot_from_cassettes
 
 TZ = ZoneInfo("Europe/Vilnius")
@@ -446,3 +447,88 @@ def test_a_price_off_the_numeric_column_is_not_shown_with_eighteen_trailing_zero
     assert _sig(Decimal("0.000012340000000000")) == "0.00001234"
     assert _sig(Decimal("82.54714285714286")) == "82.5471"
     assert _sig(None) == NA
+
+
+# --------------------------------------------------------------------------- #
+# The production defect: a card Telegram refuses to parse (M8.6, 2026-08-20)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_ema_stack_cannot_break_telegrams_parser(bot_config: AppConfig) -> None:
+    """The regression. ``/snapshot ADAUSDT`` was silent for every symbol in
+    production and the card was perfect locally.
+
+    ``ema_stack`` is the feature engine's comparison chain — ``20>50<200`` — and it
+    reached the card unescaped. Telegram read ``<200`` as an opening tag, refused the
+    **whole message** with "Unsupported start tag", and aiogram logged the exception
+    where nobody was looking. The caller got nothing.
+
+    Both orderings are asserted because only one of them is fatal: ``>`` is tolerated
+    as text and ``<`` is not, so a fixture that happened to produce a
+    strictly-descending stack would have passed.
+    """
+    snapshot = full_snapshot(bot_config)
+    features = compute(snapshot, bot_config.features)
+    hourly = features.timeframes["1h"]
+    rewritten = {
+        "15m": features.timeframes["15m"].model_copy(update={"ema_stack": "20>50>200"}),
+        "1h": hourly.model_copy(update={"ema_stack": "20>50<200"}),
+        "4h": features.timeframes["4h"].model_copy(update={"ema_stack": "20<50<200"}),
+        "1d": features.timeframes["1d"].model_copy(update={"ema_stack": "20<50"}),
+    }
+    row = row_of(attach(snapshot, features.model_copy(update={"timeframes": rewritten})))
+
+    card = snapshot_card(snapshot_view(row, symbol="BTCUSDT", on_watchlist=True), TZ)
+
+    assert_sendable(card, what="the snapshot card")
+    assert "20&gt;50&lt;200" in card, "the stack must still be readable, only escaped"
+    assert "<200" not in card
+
+
+def test_every_shape_this_card_takes_is_something_telegram_will_send(
+    bot_config: AppConfig,
+) -> None:
+    """The class, not the instance.
+
+    One escaped field fixes one bug; this sweeps every state the card has — full,
+    each block missing, features unreadable, both "nothing stored" answers — and
+    asserts each is parseable. Telegram does not sanitize a message it cannot read,
+    it **refuses** it, so an unescaped ``<`` anywhere on any of these is silence for
+    the caller.
+    """
+    cases: dict[str, SnapshotView] = {
+        "full": snapshot_view(
+            row_of(full_snapshot(bot_config)), symbol="BTCUSDT", on_watchlist=True
+        ),
+        "nothing stored, watched": snapshot_view(None, symbol="SOLUSDT", on_watchlist=True),
+        "nothing stored, unwatched": snapshot_view(None, symbol="SOLUSDT", on_watchlist=False),
+    }
+    for block in OPTIONAL_BLOCKS:
+        cases[f"no {block}"] = snapshot_view(
+            row_of(full_snapshot(bot_config, **{block: None})), symbol="BTCUSDT", on_watchlist=True
+        )
+
+    degraded = snapshot_from_cassettes("BTCUSDT", degraded=True)
+    cases["degraded"] = snapshot_view(
+        row_of(attach(degraded, compute(degraded, bot_config.features))),
+        symbol="BTCUSDT",
+        on_watchlist=True,
+    )
+
+    for name, view in cases.items():
+        assert_sendable(snapshot_card(view, TZ), what=f"the snapshot card ({name})")
+
+
+def test_the_sweep_would_catch_the_bug_that_shipped() -> None:
+    """Proof of teeth, against the literal production line.
+
+    Python's own ``html.parser`` treats ``<200`` as text — tag names cannot start
+    with a digit — so reaching for the standard library here would have produced a
+    validator that passed the broken card. This asserts the checker encodes
+    *Telegram's* rule and not HTML's.
+    """
+    shipped = "  <b>1h</b> RANGE (full) · vol HIGH · stack 20>50<200"
+
+    assert unsupported(shipped) == ["<200"]
+    with pytest.raises(AssertionError, match="silence"):
+        assert_sendable(shipped)
