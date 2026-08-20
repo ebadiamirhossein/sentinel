@@ -27,6 +27,7 @@ from sentinel.storage.repositories import (
     GateDecisionRepository,
     InstrumentMetaRepository,
     LLMCallRepository,
+    MarketPauseStateRepository,
     RiskStateRepository,
     RuntimeSettingsRepository,
     SignalEventRepository,
@@ -35,6 +36,7 @@ from sentinel.storage.repositories import (
     SignalRepository,
     SnapshotRepository,
     TelegramMessageRepository,
+    UserMarketPauseRepository,
     UserRepository,
     WatchlistRequestRepository,
 )
@@ -64,6 +66,10 @@ class Repositories:
     # written by the orchestrator and never by a handler.
     reports: type[AnalystReportRepository] = AnalystReportRepository
     gate_decisions: type[GateDecisionRepository] = GateDecisionRepository
+    # M10a: the two per-market pause rails. ``risk_state`` above stays the global
+    # one, so ``/pause`` with no argument writes exactly the row it always has.
+    market_pause: type[MarketPauseStateRepository] = MarketPauseStateRepository
+    user_market_pause: type[UserMarketPauseRepository] = UserMarketPauseRepository
 
 
 @dataclass(frozen=True)

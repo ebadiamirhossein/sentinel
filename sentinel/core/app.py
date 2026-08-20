@@ -18,11 +18,11 @@ timestamp would report "never ran" after every deploy — precisely the moment
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request, Response
@@ -40,6 +40,7 @@ from sentinel.bot.publisher import SignalPublisher
 from sentinel.core.clock import utc_now
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
+from sentinel.core.markets import Market
 from sentinel.core.orchestrator import CycleOrchestrator
 from sentinel.core.wiring import market_adapter
 from sentinel.storage.db import Database, SupportsPing
@@ -105,38 +106,67 @@ async def _last_cycle_at(database: Database) -> datetime | None:
 def _schedule_pipeline(
     scheduler: AsyncIOScheduler, state: AppState, settings: Settings, database: Database
 ) -> None:
-    """The two jobs ARCHITECTURE §3 describes.
+    """The jobs ARCHITECTURE §3 describes — **one scan per enabled market** (M10a).
 
     Each swallows its own exceptions. An APScheduler job that raises is logged and
     then simply not run again on some configurations, and a tracker that stops
     because one tick failed would abandon live positions — the exact opposite of
     what it is for.
+
+    A job per market rather than one job that loops over them, so each market keeps
+    its own ``scan_interval_minutes`` and its own ``max_instances=1``: a forex scan
+    that overran must not delay a crypto scan, and a crypto scan that crashed must
+    not skip forex. With forex disabled exactly one job is registered, on the same
+    60-minute trigger as before this milestone.
     """
     schedule = settings.config.schedule
 
-    async def scan() -> None:
-        factory = None if state.bot is None else _publisher_factory(state, settings, database)
-        notices = None if state.bot is None else _notices_for(state, settings, database)
-        try:
-            result = await CycleOrchestrator(
-                settings, database, publisher_factory=factory, notices=notices
-            ).run()
-        except Exception as exc:  # pragma: no cover — the orchestrator catches its own
-            log.error("scheduler.scan_failed", error=str(exc), error_type=type(exc).__name__)
-        else:
-            # M8: ARCHITECTURE §2's "alert after 3 consecutive cycle failures",
-            # evaluated from the cycles table after every cycle — including the
-            # ones that succeed, which is how the recovery notice gets sent. It
-            # never raises; see sentinel/bot/alerts.py.
-            if state.bot is not None:
-                await _alerter_for(state, settings, database).after_cycle(result)
-        finally:
-            state.last_cycle_at = utc_now()
+    def scan_for(market: Market) -> Callable[[], Coroutine[Any, Any, None]]:
+        async def scan() -> None:
+            factory = (
+                None if state.bot is None else _publisher_factory(state, settings, database, market)
+            )
+            notices = None if state.bot is None else _notices_for(state, settings, database)
+            try:
+                result = await CycleOrchestrator(
+                    settings,
+                    database,
+                    market=market,
+                    publisher_factory=factory,
+                    notices=notices,
+                ).run()
+            except Exception as exc:  # pragma: no cover — the orchestrator catches its own
+                log.error(
+                    "scheduler.scan_failed",
+                    market=market.value,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+            else:
+                # M8: ARCHITECTURE §2's "alert after 3 consecutive cycle failures",
+                # evaluated from the cycles table after every cycle — including the
+                # ones that succeed, which is how the recovery notice gets sent. It
+                # never raises; see sentinel/bot/alerts.py.
+                if state.bot is not None:
+                    await _alerter_for(state, settings, database, market).after_cycle(result)
+            finally:
+                state.last_cycle_at = utc_now()
+
+        return scan
 
     async def track() -> None:
         try:
+            # One adapter, one market (M10a). ``market_adapter`` builds the Binance
+            # client, so this loop can price crypto and nothing else — named here
+            # rather than left to a default, so the day a second market has open
+            # signals it is a visible gap and not a silent one.
             async with market_adapter(settings) as adapter:
-                loop = TrackerLoop(database, PriceFeed(adapter, settings.config.tracker), settings)
+                loop = TrackerLoop(
+                    database,
+                    PriceFeed(adapter, settings.config.tracker),
+                    settings,
+                    market=Market.CRYPTO,
+                )
                 result = await loop.tick()
             if state.bot is not None:
                 eligible = await _eligible_user_ids(database, now=utc_now())
@@ -148,15 +178,16 @@ def _schedule_pipeline(
         except Exception as exc:
             log.error("scheduler.tick_failed", error=str(exc), error_type=type(exc).__name__)
 
-    scheduler.add_job(
-        scan,
-        trigger="interval",
-        minutes=schedule.scan_interval_minutes,
-        id="scan",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    for market in settings.config.enabled_markets:
+        scheduler.add_job(
+            scan_for(market),
+            trigger="interval",
+            minutes=settings.config.market(market).scan_interval_minutes,
+            id=f"scan:{market.value}",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.add_job(
         track,
         trigger="interval",
@@ -168,14 +199,21 @@ def _schedule_pipeline(
     )
     log.info(
         "scheduler.pipeline_scheduled",
-        scan_interval_minutes=schedule.scan_interval_minutes,
+        markets=[market.value for market in settings.config.enabled_markets],
+        scan_interval_minutes={
+            market.value: settings.config.market(market).scan_interval_minutes
+            for market in settings.config.enabled_markets
+        },
         tracker_interval_seconds=schedule.tracker_interval_seconds,
-        dry_run=settings.config.dry_run,
+        dry_run={
+            market.value: settings.config.market(market).dry_run
+            for market in settings.config.enabled_markets
+        },
     )
 
 
 def _publisher_factory(
-    state: AppState, settings: Settings, database: Database
+    state: AppState, settings: Settings, database: Database, market: Market
 ) -> Callable[[int], SignalPublisher]:
     """One publisher per recipient (M8.1).
 
@@ -197,12 +235,16 @@ def _publisher_factory(
             chat_ids=(user_id,),
             telegram=telegram,
             tz=tz,
+            market=market,
+            show_market=settings.config.multi_market,
         )
 
     return build
 
 
-def _alerter_for(state: AppState, settings: Settings, database: Database) -> AdminAlerter:
+def _alerter_for(
+    state: AppState, settings: Settings, database: Database, market: Market
+) -> AdminAlerter:
     """Cycle failures, recovery and spend notices — **to the owner alone** (M8.1).
 
     A member has no lever to pull in response to a failed cycle or an LLM bill, and
@@ -216,6 +258,7 @@ def _alerter_for(state: AppState, settings: Settings, database: Database) -> Adm
         chat_ids=() if owner_id is None else (owner_id,),
         settings=settings,
         tz=zone_info(settings.config.telegram.owner_timezone),
+        market=market,
     )
 
 
@@ -355,8 +398,11 @@ def create_app(
             "app.started",
             version=__version__,
             environment=resolved.secrets.sentinel_env,
-            watchlist_size=len(resolved.config.watchlist),
-            scan_interval_minutes=resolved.config.schedule.scan_interval_minutes,
+            markets=[market.value for market in resolved.config.enabled_markets],
+            watchlist_size={
+                market.value: len(resolved.config.market(market).watchlist)
+                for market in resolved.config.enabled_markets
+            },
         )
 
         try:

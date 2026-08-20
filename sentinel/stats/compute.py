@@ -26,8 +26,15 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from decimal import Decimal
 
+from sentinel.core.markets import Market
 from sentinel.risk.rounding import money, percent, ratio
-from sentinel.stats.models import Breakdown, PerformanceStats, Population, ResolvedSignal
+from sentinel.stats.models import (
+    Book,
+    Breakdown,
+    PerformanceStats,
+    Population,
+    ResolvedSignal,
+)
 
 HUNDRED = Decimal("100")
 
@@ -49,10 +56,26 @@ def max_drawdown_r(resolved: Sequence[ResolvedSignal]) -> Decimal:
 
 
 def summarize(resolved: Iterable[ResolvedSignal]) -> PerformanceStats:
-    """Fold one population into the figures ``/stats`` prints."""
+    """Fold one population into the figures ``/stats`` prints.
+
+    **Raises on rows from more than one market** (M10a Step 6). That is the
+    enforceable half of "populations never merge": markets have no documented
+    exception, unlike REAL+HYPOTHETICAL, which ``by_key`` spans on purpose. An
+    average across a EUR/USD book and a BTC one is a number with no meaning, and
+    nothing downstream could tell that it had been produced.
+    """
     items = list(resolved)
     if not items:
         return PerformanceStats()
+
+    markets = {item.market for item in items}
+    if len(markets) > 1:
+        raise ValueError(
+            "summarize() was given signals from more than one market "
+            f"({', '.join(sorted(market.value for market in markets))}). "
+            "Statistics are computed per market and never merged — see "
+            "sentinel/stats/models.py."
+        )
 
     traded = [item for item in items if item.filled]
     unfilled = len(items) - len(traded)
@@ -112,11 +135,30 @@ def by_key(
     return tuple(sorted(rows, key=lambda row: (-row.stats.count, row.key)))
 
 
-def split(resolved: Iterable[ResolvedSignal]) -> dict[Population, list[ResolvedSignal]]:
-    books: dict[Population, list[ResolvedSignal]] = {group: [] for group in Population}
+def split(resolved: Iterable[ResolvedSignal]) -> dict[Book, list[ResolvedSignal]]:
+    """Every (population, market) book, including the empty ones.
+
+    Keyed by :class:`Book` from M10a rather than by ``Population``: the market is
+    part of a book's identity, and a dictionary that dropped it would let two
+    markets' rows land in one list — which :func:`summarize` would then refuse,
+    loudly, but only after the caller had already lost the distinction.
+
+    All combinations are present. An absent book and an empty one are different
+    facts and ``/stats`` reports them differently.
+    """
+    books: dict[Book, list[ResolvedSignal]] = {
+        Book(population=population, market=market): []
+        for market in Market
+        for population in Population
+    }
     for signal in resolved:
-        books[signal.population].append(signal)
+        books[Book(population=signal.population, market=signal.market)].append(signal)
     return books
+
+
+def in_market(resolved: Iterable[ResolvedSignal], market: Market) -> list[ResolvedSignal]:
+    """One market's rows. The filter every caller applies before summarizing."""
+    return [signal for signal in resolved if signal.market is market]
 
 
 def tracked(resolved: Iterable[ResolvedSignal]) -> list[ResolvedSignal]:
@@ -129,4 +171,4 @@ def tracked(resolved: Iterable[ResolvedSignal]) -> list[ResolvedSignal]:
     return [signal for signal in resolved if signal.population is not Population.DRY_RUN]
 
 
-__all__ = ["by_key", "max_drawdown_r", "split", "summarize", "tracked"]
+__all__ = ["by_key", "in_market", "max_drawdown_r", "split", "summarize", "tracked"]

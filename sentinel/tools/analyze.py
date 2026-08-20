@@ -32,6 +32,7 @@ from sentinel.charts.models import ChartImage, ChartSpec
 from sentinel.charts.renderer import render_album
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
+from sentinel.core.markets import LEGACY_MARKET
 from sentinel.core.wiring import assemble_with_features, snapshot_assembler
 from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import FxRate, MarketSnapshot
@@ -338,7 +339,10 @@ def main() -> None:
     if not symbols:
         if not args.screen:
             parser.error("give at least one symbol, or use --screen")
-        symbols = list(settings.config.watchlist)
+        # Crypto's watchlist: this tool drives the crypto adapter directly, and it
+        # is the only market with one (M10a ships no forex code). ``--symbols`` is
+        # how anything else is analysed.
+        symbols = list(settings.config.market(LEGACY_MARKET).watchlist)
 
     raise SystemExit(
         asyncio.run(

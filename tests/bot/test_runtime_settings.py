@@ -31,8 +31,11 @@ from sentinel.bot.runtime import (
     parse_symbol,
     source_of,
     verify_symbol,
+    watchlist_key,
+    watchlist_source,
 )
 from sentinel.core.config import RiskConfig, Secrets, Settings, load_config
+from sentinel.core.markets import Market
 from sentinel.ingestion.models import InstrumentMeta
 from sentinel.risk.engine import RiskEngine
 from sentinel.risk.models import GateStatus, PortfolioState, RejectionReason
@@ -53,28 +56,61 @@ def settings() -> Settings:
 
 
 def test_a_db_watchlist_beats_the_yaml_one(settings: Settings) -> None:
-    stored = {WATCHLIST: ["SOLUSDT", "INJUSDT"]}
-    assert effective_config(settings, stored).watchlist == ("SOLUSDT", "INJUSDT")
+    stored = {watchlist_key(): ["SOLUSDT", "INJUSDT"]}
+    assert effective_config(settings, stored).market().watchlist == ("SOLUSDT", "INJUSDT")
+
+
+def test_the_pre_m10a_key_is_still_read(settings: Settings) -> None:
+    """A database that migration 0010 has not reached yet still has its watchlist.
+
+    The app applies migrations at container start, so there is a window in which
+    new code meets an old row — and losing the owner's watchlist in it would
+    silently re-screen config.yaml's symbols on the first cycle after a deploy.
+    """
+    assert effective_config(settings, {WATCHLIST: ["SOLUSDT"]}).market().watchlist == ("SOLUSDT",)
+
+
+def test_the_per_market_key_wins_over_the_legacy_one(settings: Settings) -> None:
+    """Both present means the migration ran and something wrote the old key since.
+    The new one is the current value; the fallback is only a fallback."""
+    stored = {WATCHLIST: ["OLDUSDT"], watchlist_key(): ["NEWUSDT"]}
+    assert effective_config(settings, stored).market().watchlist == ("NEWUSDT",)
 
 
 def test_yaml_stands_when_nothing_is_stored(settings: Settings) -> None:
-    assert effective_config(settings, {}).watchlist == settings.config.watchlist
+    assert effective_config(settings, {}).market().watchlist == settings.config.market().watchlist
 
 
 def test_only_config_keys_become_overrides() -> None:
     """``capital_eur`` must never reach ``load_config``: ``AppConfig`` forbids
     unknown keys, so leaking it there would raise on every command."""
-    overrides = config_overrides({CAPITAL_EUR: "10000", WATCHLIST: ["BTCUSDT"]})
-    assert overrides == {WATCHLIST: ["BTCUSDT"]}
+    overrides = config_overrides({CAPITAL_EUR: "10000", watchlist_key(): ["BTCUSDT"]})
+    assert overrides == {"markets": {"crypto": {WATCHLIST: ["BTCUSDT"]}}}
+
+
+def test_a_disabled_market_can_still_carry_a_stored_watchlist() -> None:
+    """The override is built from what is *stored*, not from what is enabled.
+
+    Enabling forex must not need a second write to make its watchlist take effect,
+    and a stored value that silently did nothing would be the worse failure of the
+    two — it looks like it worked.
+    """
+    overrides = config_overrides({watchlist_key(Market.FOREX): ["EURUSD"]})
+    assert overrides == {"markets": {"forex": {WATCHLIST: ["EURUSD"]}}}
 
 
 def test_an_override_does_not_disturb_the_rest_of_the_config(settings: Settings) -> None:
-    merged = effective_config(settings, {WATCHLIST: ["SOLUSDT"]})
+    merged = effective_config(settings, {watchlist_key(): ["SOLUSDT"]})
     assert merged.risk == settings.config.risk
     assert merged.costs == settings.config.costs
 
 
 def test_source_of_labels_where_a_value_came_from() -> None:
+    assert watchlist_source({watchlist_key(): ["BTCUSDT"]}) == "db"
+    assert watchlist_source({}) == "yaml"
+    # The legacy key counts as "db" too: the owner did set it, and reporting "yaml"
+    # would tell them their own edit had been ignored when it had not.
+    assert watchlist_source({WATCHLIST: ["BTCUSDT"]}) == "db"
     assert source_of(WATCHLIST, {WATCHLIST: ["BTCUSDT"]}) == "db"
     assert source_of(WATCHLIST, {}) == "yaml"
 

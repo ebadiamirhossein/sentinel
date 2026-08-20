@@ -1,0 +1,318 @@
+# FROZEN COPY — do not edit, and do not keep in step with ../../config.yaml.
+#
+# This is `config.yaml` exactly as it stood at the commit before M10a, which is the
+# shape the LIVE SERVER loads: docs/DEPLOY.md §6 and §13 edit the deployed file in
+# place (`sed -i 's/^dry_run: true/dry_run: false/'`), so what runs in production is
+# a pre-M10a file with no `markets:` block and `dry_run: false`.
+#
+# tests/test_config.py asserts that this file still synthesises today's crypto
+# market field for field. If somebody ever "tidies" this into the new shape, that
+# test stops testing the only config Sentinel is actually running.
+#
+# Sentinel — non-secret runtime configuration.
+#
+# Precedence (ARCHITECTURE.md §2): DB overrides (set via Telegram) > this file > code defaults.
+# Secrets NEVER live here — they come from .env / environment only.
+# Every value below is transcribed from the specs; see the reference next to each block.
+
+# M7 — first-run safety. true = run the full cycle (ingestion, screener, charts,
+# analyst, risk gate, persistence) and publish NOTHING to Telegram: the would-be
+# card is rendered by the same renderer and logged verbatim, the signal is stored
+# with dry_run=true, and the tracker resolves it silently. /stats reports dry-run
+# outcomes as their own population, never merged into real or hypothetical.
+# Run 24h with this true before letting the system post for real.
+#
+# Turned OFF 2026-08-19 (owner instruction), after the M8.2 shakedown: the pipeline
+# ran end to end all day, the spend rails were verified live ($0.24/cycle against
+# $0.75 before), and the owner wants real cards. Signals now reach Telegram.
+dry_run: false
+
+# PRD.md §7 — default watchlist (configurable at runtime via /watchlist).
+#
+# M8.3: `watchlist_max_symbols` caps the total. Every symbol here is screened
+# every cycle and can buy a ~$0.28 analyst call, so this is the single biggest
+# lever on the bill. It binds /watchlist add and members' /request equally.
+watchlist_max_symbols: 15
+watchlist:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+  - BNBUSDT
+  - XRPUSDT
+  - DOGEUSDT
+  - AVAXUSDT
+  - LINKUSDT
+  - LTCUSDT
+  - ADAUSDT
+
+# PRD.md F1 (15 min cycle), ARCHITECTURE.md §3 (tracker every 60s).
+schedule:
+  # 60, not 15 (M8.2, owner ruling 2026-08-19). The setup timeframe is 1h, so a
+  # 15-minute scan asked the analyst about the same unclosed candle four times and
+  # paid ~$0.76 each time. The M8.2 diagnostic measured 2.63 analyst calls per cycle
+  # — 252/day against M7's ~24/day budget — and the two most-flagged symbols were
+  # re-analysed every cycle on a standing condition. This alone is a 4x reduction.
+  scan_interval_minutes: 60
+  # M8.2 — a symbol whose last deep analysis returned WATCHLIST or NO_SETUP stays
+  # quiet for one setup-timeframe candle. On 2026-08-19 LINKUSDT was escalated in
+  # 8 of 8 cycles and SOLUSDT in 6 of 8, on standing conditions, and 61% of all
+  # escalations came back WATCHLIST. 0 disables the rail.
+  reanalysis_cooldown_minutes: 60
+  tracker_interval_seconds: 60
+  heartbeat_interval_seconds: 60
+  symbol_timeout_seconds: 20      # per-symbol snapshot timeout (ARCHITECTURE.md §3)
+
+# specs/DATA_SOURCES.md §2.1 — tail lengths per timeframe, order book depth.
+market_data:
+  exchange: binance_usdm
+  orderbook_depth: 50
+  # §2.1 specifies 200/200/200/100. We request one extra bar per timeframe
+  # because the last candle Binance returns is still in progress and the feature
+  # engine drops it — without the +1, only 199 closed candles remain and EMA200
+  # could never be computed (PRD F3). The spec's tail lengths are preserved as
+  # *closed* candles, which is what the indicators actually consume.
+  # The chart timeframes request 321 (= 320 closed) rather than 201. An EMA200
+  # is first defined at candle 200, so a 200-closed-candle tail yields exactly
+  # ONE valid EMA200 point — nothing to draw a line between, and M3 requires
+  # EMA200 on the chart. 320 closed gives 121 valid points, enough to span the
+  # 120-candle chart window. Still one API call per timeframe; the extra rows
+  # dedupe away on upsert. 1d keeps its 100-closed tail (see features.ema200).
+  timeframes:
+    - { timeframe: 15m, candles: 321 }
+    - { timeframe: 1h, candles: 321 }
+    - { timeframe: 4h, candles: 321 }
+    - { timeframe: 1d, candles: 101 }
+
+# specs/DATA_SOURCES.md §2–§3 — client behaviour and endpoints. Keys stay in .env.
+ingestion:
+  request_timeout_seconds: 10
+  max_retries: 2                  # §3: retry with backoff, max 2
+  retry_backoff_seconds: 0.5
+  open_interest_history_period: 1h
+  open_interest_history_limit: 24 # "current + 24h series"
+  long_short_period: 1h
+  orderbook_depth: 50
+  news:
+    limit: 20
+    important_only: true
+    cryptopanic_base_url: https://cryptopanic.com/api/v1/posts/
+    # §2.2 fallback, parsed with feedparser when CryptoPanic is down or unkeyed.
+    rss_feeds:
+      - https://www.coindesk.com/arc/outboundfeeds/rss/
+      - https://cointelegraph.com/rss
+  fear_greed_url: https://api.alternative.me/fng/
+  coingecko_global_url: https://api.coingecko.com/api/v3/global
+  # Frankfurter's documented host is now api.frankfurter.dev; api.frankfurter.app
+  # 301-redirects here. ECB rates, no key (§2.4).
+  frankfurter_url: https://api.frankfurter.dev/v1/latest
+
+# specs/DATA_SOURCES.md §4 — staleness budget per field. Core field stale/missing → skip
+# symbol; secondary field stale → snapshot DEGRADED. Never fabricate a value instead.
+data_quality:
+  max_age_seconds:
+    ohlcv_multiplier: 2           # OHLCV: 2× its own timeframe
+    funding: 900                  # 15m
+    open_interest: 1800           # 30m
+    long_short_ratio: 1800
+    orderbook: 300
+    fear_greed: 86400             # 24h
+    btc_dominance: 86400
+    news_window: 21600            # 6h news window
+    eurusd: 3600                  # refetched hourly, last-known-good fallback
+
+# M2 feature engine. PRD F3 names the indicators; the regime and S/R parameters
+# below are owner-approved (2026-08-18) because no spec defines them.
+features:
+  rsi_period: 14
+  atr_period: 14
+  ema_periods: [20, 50, 200]
+  relative_volume_lookback: 20
+  drop_partial_candle: true       # indicators run on CLOSED candles only
+  primary_timeframe: 1h           # setup TF (PRD §7)
+  context_timeframe: 4h           # regime TF
+  # Volatility regime: ATR% ranked against its own trailing distribution, so the
+  # thresholds hold for BTC and a small-cap alt alike.
+  volatility_lookback: 100
+  volatility_min_observations: 20
+  volatility_low_percentile: 33.0
+  volatility_high_percentile: 67.0
+  # Support/resistance: confirmed fractal pivots (k bars each side, no repaint)
+  # clustered into bands of 0.5 × ATR(14).
+  pivot_window: 3
+  level_cluster_atr_multiple: 0.5
+  max_levels_per_side: 3
+  level_timeframes: [1h, 4h]
+
+# M3 chart renderer. Sized for the analyst's vision input, not for a screen:
+# 1600px long edge stays under claude-fable-5's 2576px high-resolution limit, so
+# nothing is downscaled server-side (downscaling is what blurs axis numbers and
+# level labels). ~1.6MP ≈ 2,130 visual tokens per chart, ~6.4k for the album.
+charts:
+  width_px: 1600
+  height_px: 1000
+  dpi: 100                        # figsize inches map 1:1 to pixels
+  volume_panel_ratio: 0.22
+  candle_window: 120              # legibility: 200 candles is ~7px each, 120 is ~12px
+  ema_periods: [20, 50, 200]
+  max_levels: 6
+  timeframes: [15m, 1h, 4h]       # PRD F4 — the analyst's chart album
+  output_dir: charts_out
+
+# specs/RISK_ENGINE.md §1 — risk defaults. capital_eur is intentionally absent:
+# it is required before the first signal and set by the owner via /capital.
+risk:
+  risk_per_trade_pct: 0.75        # allowed range 0.25–1.5
+  risk_per_trade_min_pct: 0.25
+  risk_per_trade_max_pct: 1.5
+  max_open_risk_pct: 2.25         # = 3 trades worth
+  max_leverage: 10
+  margin_budget_pct: 10
+  daily_loss_limit_pct: 3.0
+  max_positions: 4
+  min_rr_tp1: 1.5
+  max_entry_distance_pct: 3.0     # §2 rule 2 — no chasing
+  min_confidence: 60              # §2 rule 6 — below → WATCHLIST
+  stop_atr_min_multiple: 0.6      # §2 rule 3
+  stop_atr_max_multiple: 3.0      # §2 rule 4
+  min_rung_notional_usdt: 20      # §4 min-notional floor
+  liq_buffer_multiple: 2.0        # §4 liq_distance ≥ 2× stop distance
+  signal_cooldown_hours: 4        # ARCHITECTURE.md §3 dedup guard
+  max_signals_per_day: 5          # specs/TELEGRAM_UX.md §6 — anti-spam hard cap
+
+# M7 outcome tracker (ARCHITECTURE.md §3 — "runs every 1 min on taken/active
+# signals"). Fills and stop-outs are detected from 1m candle HIGH/LOW since the
+# last tick rather than from a polled mark price: a 60s poll misses the wick that
+# actually filled the rung or hit the stop, and that error is not symmetric — it
+# under-reports stop-outs, which flatters the win rate. Candles also replay, so a
+# detection bug is reproducible from stored OHLCV.
+#
+# Invalidation is the exception and reads CLOSED 1h candles, because
+# specs/TELEGRAM_UX.md §4 words it as a close ("1h close 81.05 < 81.40") and
+# specs/PROMPTS.md §2 rule e tells the analyst to treat wick-only breaches as
+# noise. A tick is not an invalidation.
+tracker:
+  fill_timeframe: 1m
+  fill_lookback_candles: 5        # ceiling on how far one tick may look back
+  invalidation_timeframe: 1h
+
+# specs/RISK_ENGINE.md §4.2 (correction 2026-08-18) — transaction costs.
+#
+# Binance USDⓈ-M VIP 0, verified against the published schedule on 2026-08-18:
+# https://www.binance.com/en/fee/futureFee  → maker 0.0200%, taker 0.0500%.
+# The BNB discount (-10%) and VIP tiers are deliberately NOT modelled: these are
+# the worst-case rates actually paid today, and a cost estimate should never be
+# optimistic. Entries are the maker leg (the ladder is limit orders); EVERY exit
+# — stop, TP, trail, manual — is priced as taker (owner ruling 2026-08-18).
+costs:
+  maker_fee_pct: 0.02
+  taker_fee_pct: 0.05
+  # Binance settles most USDⓈ-M perps every 8h (00/08/16 UTC); some settle every
+  # 4h, and a contract that hits its funding cap drops to 1h until rates settle.
+  # ccxt's premiumIndex response carries `interval: null` (see
+  # tests/cassettes/binance_funding_SOLUSDT.json), so the real per-symbol
+  # interval is not available without a second API call. 8h is an ESTIMATE —
+  # which is one more reason the funding figure is labelled as one.
+  funding_interval_hours: 8
+  # Funding is a cost for a long when the rate is positive and a CREDIT for a
+  # short. The card always shows the real signed estimate; this switch decides
+  # whether a credit is allowed to *improve* net RR and push a plan over
+  # min_rr_tp1. false = max(0, funding) in the gate — funding is an estimate of
+  # a frequently-flipping input and must never be the reason a trade approves.
+  credit_favourable_funding: false
+
+# specs/RISK_ENGINE.md §3 — ladder construction (deterministic, engine-owned).
+ladder:
+  single_entry_atr_threshold: 0.5 # zone width < 0.5×ATR(1h) → single entry
+  weights_pct: [40, 35, 25]       # rung 1 (nearest price) → rung 3 (best price)
+
+# specs/RISK_ENGINE.md §5 — targets & management plan.
+management:
+  tp1_close_pct: 40
+  tp2_close_pct: 35
+  tp3_trail_atr_multiple: 1.0
+  entry_ttl_hours_intraday: 12
+  entry_ttl_hours_swing: 36
+
+# ARCHITECTURE.md §2 / specs/PROMPTS.md — model tiers. Prompt text itself lives only in
+# sentinel/analyst/prompts/vN.md files (CLAUDE.md).
+llm:
+  screener_model: claude-sonnet-4-6
+  # M8.2 — screener_v2 is stricter about standing conditions. screener_v1.md is kept
+  # and this is the one-line rollback if v2 turns out to under-escalate.
+  screener_prompt_version: screener_v2
+  analyst_model: claude-fable-5
+  analyst_effort: high            # output_config.effort; thinking is always on for fable-5
+  max_json_retries: 1             # schema-invalid CONTENT: retry once, then discard + log
+
+  # Transport failures (429/5xx/connection) are a separate budget from the
+  # content retry above — CLAUDE.md mandates the first, PROMPTS §2 the second.
+  max_transport_retries: 2
+  screener_timeout_seconds: 60
+  # specs/ENSEMBLE.md §3 budgets 90s per provider. Raised to 150s (owner ruling
+  # 2026-08-18, recorded as a dated correction in ENSEMBLE.md §3): M5's live
+  # analyst calls ran 47-85s, so 90s leaves almost no headroom, and M10 runs two
+  # providers in parallel against the same budget.
+  analyst_timeout_seconds: 150
+  screener_max_tokens: 4096
+  analyst_max_tokens: 16000
+  screener_batch_size: 0          # 0 = one call for the whole watchlist
+  history_verdicts: 3             # specs/PROMPTS.md §3 — last N verdicts per symbol
+
+  # M7 spend guard (pulled forward from M8). Unattended scheduling is what makes
+  # this urgent: a bug or a market event that makes every symbol look interesting
+  # can spend real money overnight. Reaching the daily limit suspends NEW DEEP
+  # ANALYSIS ONLY — the screener keeps triaging and the tracker keeps managing
+  # open positions (it makes no LLM calls at all). It self-clears at 00:00 UTC
+  # because it is recomputed from llm_calls each cycle, so there is no pause row
+  # to get stuck and nothing to /resume.
+  #
+  # These gate cost_usd_estimate, which is an ESTIMATE and not billing truth.
+  # Sizing: the screener alone is ~$0.023/cycle ≈ $2.2/day at 96 cycles, so $10
+  # leaves ~$7.8 for deep analysis — about 24 analyst calls at M5's ~$0.32.
+  daily_spend_limit_usd: 10
+  daily_spend_warn_usd: 7
+
+  # USD per 1M tokens. In no spec, so it lives here: a price change is a config
+  # edit, not a code change. Token counts are the ground truth; money is an
+  # estimate (hence cost_usd_estimate everywhere it is stored).
+  pricing:
+    claude-sonnet-4-6:
+      input_per_mtok: 3
+      output_per_mtok: 15
+      cache_read_per_mtok: 0.3
+      cache_write_per_mtok: 3.75
+    claude-fable-5:
+      input_per_mtok: 10
+      output_per_mtok: 50
+      cache_read_per_mtok: 1
+      cache_write_per_mtok: 12.5
+
+# ARCHITECTURE.md §2 and §6 — "Telegram admin alert after 3 consecutive cycle
+# failures". The alert says how many cycles failed, when the run started and what
+# the newest one said, and repeats every `consecutive_cycle_failures` further
+# failures so a continuing outage does not go quiet after one message. One
+# recovery notice is sent when a cycle finally succeeds.
+#
+# A cycle row is written RUNNING before the cycle starts, so a process killed
+# mid-cycle leaves RUNNING behind for ever. A row still RUNNING after
+# stale_cycle_multiplier x scan_interval_minutes is counted as a failure — it is
+# the most serious kind, and nothing else would ever notice it.
+alerts:
+  consecutive_cycle_failures: 3
+  # 1, not 2 (M8.2). This is measured in scan intervals, so widening the scan to 60
+  # minutes silently moved "the process died" detection from 30 minutes to two hours.
+  # One interval holds it near an hour; ops/healthcheck.sh covers process death from
+  # the host every 15 minutes and alerts after ~45, independently of this.
+  stale_cycle_multiplier: 1
+
+# specs/TELEGRAM_UX.md — rendering/display only. Allowlist lives in .env.
+telegram:
+  owner_timezone: Europe/Vilnius  # display only — everything internal stays UTC
+  digest_hour_local: 8
+  quiet_mode_on_no_setup: true
+  # §1: "Charts (1h + 4h PNGs) attached as an album above the card." The analyst
+  # still receives all three timeframes (charts.timeframes above) — this is the
+  # owner's view, and the 15m timing detail is already priced into the entry zone.
+  card_chart_timeframes: [1h, 4h]
+  poll_timeout_seconds: 30
+  parse_mode: HTML

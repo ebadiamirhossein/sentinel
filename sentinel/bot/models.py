@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.risk.models import PauseState, TradePlan
 
 
@@ -235,6 +236,12 @@ class SignalRecord(Frozen):
     """A plan as delivered: the numbers, the decision, and how to find the card."""
 
     signal_id: UUID = Field(default_factory=uuid4)
+    #: Which market this signal belongs to (M10a). It rides here rather than on
+    #: ``TradePlan``, and that is deliberate: ``sentinel/risk/`` is frozen for this
+    #: milestone, the gate has never needed to know which market it is sizing, and a
+    #: field there would have meant touching a package with 100% branch coverage to
+    #: carry a value it does not read. The card gets the tag from this record.
+    market: Market = LEGACY_MARKET
     #: Assigned by Postgres on insert; 0 until then, and only ever shown after.
     number: int = 0
     #: Whose signal this is (M8.1). One shared ``AnalystReport`` produces one row

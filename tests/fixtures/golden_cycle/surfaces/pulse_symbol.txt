@@ -1,0 +1,22 @@
+🔬 <b>SOLUSDT</b> — last analyst verdict
+2026-08-18 14:56 EEST (11:56 UTC)
+
+<b>CANDIDATE</b> · conf 78 · trend_pullback long · intraday
+
+📊 <b>Thesis</b>
+4h uptrend intact; 1h pullback into EMA50 and the prior breakout level 82.4 with volume drying up on the retrace. Funding neutral, OI rising with price.
+
+📌 <b>Evidence</b>
+  · 4h trend is up — <code>features.4h.trend_regime</code>
+
+⚖️ <b>Against</b>
+Fear &amp; Greed at 74 (greed) — crowded-long risk into resistance at 84.6.
+
+❌ <b>Invalidation</b>
+1h close below 81.40
+
+🚦 <b>Gate</b>
+  ✅ a plan was approved and sent
+
+<i>fable_v1 · claude-fable-5</i>
+<i>The analyst's own words, unedited. No entry, stop or targets here — /pulse never sizes anything.</i>

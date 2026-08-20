@@ -122,6 +122,10 @@ class StatusView:
     #: only them. Two rails with the same effect and completely different causes, so
     #: the card says which one it is rather than leaving the owner to guess.
     pause_scope: str = ""
+    #: The market header line, or ``""`` with a single market enabled (M10a). A
+    #: rendered fragment rather than a ``Market``, for the same reason every other
+    #: field here is: ``bot/cards.py`` renders and never decides.
+    market: str = ""
 
 
 @dataclass(frozen=True)
@@ -207,6 +211,8 @@ class StatsView:
 
     window: str
     since: datetime | None
+    #: The market header line, or ``""`` with a single market enabled (M10a).
+    market: str = ""
     groups: tuple[StatsGroupView, ...] = ()
     by_setup: tuple[StatsBreakdownView, ...] = ()
     by_prompt_version: tuple[StatsBreakdownView, ...] = ()

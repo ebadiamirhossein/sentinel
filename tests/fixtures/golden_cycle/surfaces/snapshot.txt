@@ -1,0 +1,41 @@
+🔬 <b>BTCUSDT</b> — measured, not analysed
+2026-08-18 13:00 EEST (10:00 UTC) · last <b>64100</b>
+⚠️ Data quality: <b>DEGRADED</b> — missing or stale: funding, news
+
+📐 <b>Trend</b>
+  <b>15m</b> STRONG_DOWNTREND (reduced) · vol NORMAL · stack 20&lt;50
+    EMA20 64221.9 · EMA50 64266.1 · EMA200 n/a
+    RSI 39.4 · ATR 90.8652 (0.14%) · rel vol 1.53 · 60 bars
+  <b>1h</b> STRONG_UPTREND (reduced) · vol NORMAL · stack 20&gt;50
+    EMA20 64090.6 · EMA50 63644.2 · EMA200 n/a
+    RSI 53.6 · ATR 209.27 (0.33%) · rel vol 0.22 · 60 bars
+  <b>4h</b> UPTREND (reduced) · vol NORMAL · stack 20&lt;50
+    EMA20 63643.6 · EMA50 63829.7 · EMA200 n/a
+    RSI 62.7 · ATR 394.662 (0.62%) · rel vol 1.13 · 59 bars · partial candle dropped
+  <b>1d</b> STRONG_UPTREND (reduced) · vol LOW · stack 20&gt;50
+    EMA20 63820.6 · EMA50 63417.9 · EMA200 n/a
+    RSI 54.1 · ATR 1279.56 (1.98%) · rel vol 1.31 · 59 bars · partial candle dropped
+  4h context <b>UPTREND</b> · 1h aligned: yes
+  Change 1h -0.11% · 4h -0.13% · 24h +1.18%
+
+📊 <b>Support &amp; resistance</b> (nearest first)
+  S 64000 · 1h · 1 touch · -0.16%
+  R 64555.2 · 4h · 4 touches · +0.71%
+  R 64578.1 · 1h · 2 touches · +0.75%
+  S 63255 · 1h · 1 touch · -1.32%
+  S 63212.1 · 4h · 3 touches · -1.39%
+  S 62952.2 · 1h · 2 touches · -1.79%
+  S 62800 · 4h · 1 touch · -2.03%
+  R 65482.7 · 4h · 1 touch · +2.16%
+  <i>+1 further out, not shown.</i>
+  Nearest support 64000 · resistance 64555.2
+
+🔗 <b>Derivatives</b> — not recorded on this snapshot.
+
+📖 <b>Order book</b> — not recorded on this snapshot.
+
+🌡 <b>Market</b>
+  Fear &amp; Greed — not recorded on this snapshot.
+  BTC dominance — not recorded on this snapshot.
+
+<i>Computed by code, before any AI analysis — no model wrote anything above. Use /pulse BTCUSDT for what the analyst made of it.</i>

@@ -19,6 +19,7 @@ from uuid import uuid4
 from sentinel.core import orchestrator as orchestrator_module
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Settings
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import (
     CycleOrchestrator,
     CycleRepositories,
@@ -251,7 +252,7 @@ class _LLMCalls:
     before or after the commit — which is the only thing this is testing.
     """
 
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self._store: CycleStore = session.store
 
     async def record_many(self, calls: Sequence[LLMCall]) -> int:
@@ -260,6 +261,14 @@ class _LLMCalls:
         return len(calls)
 
     async def spend_totals(self, **_: object) -> SpendTotals:
+        return SpendTotals(day_usd=self._store.spend_day, month_usd=self._store.spend_day)
+
+    async def spend_totals_across_markets(self, **_: object) -> SpendTotals:
+        """One market in this fake, so the deployment total is the market total.
+
+        Which is exactly the production situation with forex disabled, and the
+        reason the two-tier guard returns what the single-tier one used to.
+        """
         return SpendTotals(day_usd=self._store.spend_day, month_usd=self._store.spend_day)
 
 

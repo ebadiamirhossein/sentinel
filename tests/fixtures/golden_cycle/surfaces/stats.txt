@@ -1,0 +1,32 @@
+📊 <b>Stats</b> (30d · since 2026-07-19 15:00 EEST (2026-07-19 12:00 UTC))
+
+<b>REAL</b> <i>(✅ Taken — your record)</i>
+  3 trade(s): 1W / 1L / 1 scratch · win rate 33.33%
+  avg 0.20R · total 0.60R (€45.00)
+  profit factor 1.60 · max DD 1.00R
+  reached TP1+: 2/3 (66.67%)
+  costs paid: €9.48
+
+<b>HYPOTHETICAL</b> <i>(👀 Watching + ❌ Skipped — what the pipeline would have done)</i>
+  2 trade(s): 1W / 1L · win rate 50%
+  avg -0.11R · total -0.22R (€-16.50)
+  profit factor 0.78 · max DD 1.00R
+  reached TP1+: 1/2 (50%)
+  never filled: 1 (excluded above)
+  costs paid: €6.32
+
+<b>DRY RUN</b> <i>(rehearsal cycles — never published, never taken)</i>
+  1 trade(s): 1W / 0L · win rate 100%
+  avg 0.40R · total 0.40R (€30.00)
+  profit factor n/a (no losses yet) · max DD 0.00R
+  reached TP1+: 1/1 (100%)
+  costs paid: €3.16
+
+<b>By setup type</b> <i>(taken + watched + skipped)</i>
+  trend_pullback: 5 · 25% · -0.10R
+  breakout_retest: 1 · 100% · 0.78R
+
+<b>By prompt version</b>
+  fable_v1: 6 · 40% · 0.08R
+
+<i>Research tool — not financial advice. Past stats ≠ future results.</i>

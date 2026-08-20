@@ -22,8 +22,10 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from sentinel.core.markets import LEGACY_MARKET, Market
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
@@ -454,36 +456,154 @@ class TelegramConfig(_Strict):
     parse_mode: str = "HTML"
 
 
+#: The adapter name M10a ships. ``forex_saxo`` is a placeholder that no registry
+#: resolves — see ``core/wiring.py``, which refuses it loudly rather than running a
+#: market that would quietly ingest nothing.
+CRYPTO_ADAPTER = "crypto_binance"
+
+
+class MarketConfig(_Strict):
+    """One market's own settings (M10a).
+
+    Everything here used to be a single global value, and every one of them is a
+    thing two markets would disagree about. A watchlist is obviously per market. So
+    is ``dry_run``: the whole point of a second market is that it can rehearse for a
+    fortnight while crypto keeps posting real cards, and one global flag makes that
+    impossible without a deploy in between.
+
+    ``llm_daily_budget_usd`` is this market's own daily ceiling. It sits under
+    :attr:`AppConfig.llm_daily_budget_global_usd`, and the two are deliberately not
+    consistent — the sub-budgets sum to more than the ceiling, so markets compete for
+    the last dollar instead of reserving it (specs: M10a Step 4).
+    """
+
+    #: A disabled market is not scheduled, not screened and not spent on. It exists
+    #: in config so the shape is reviewable before the code that fills it lands.
+    enabled: bool = True
+    #: Run the full cycle and publish **nothing** — M7's flag, now per market.
+    dry_run: bool = False
+    #: Which :mod:`sentinel.core.wiring` adapter ingests it.
+    adapter: str = CRYPTO_ADAPTER
+    watchlist: tuple[str, ...] = ()
+    #: The hard ceiling on watchlist size. Per market because it is a spend control
+    #: and the spend is per market.
+    watchlist_max_symbols: int = Field(default=15, ge=1)
+    scan_interval_minutes: int = Field(default=60, ge=1)
+    #: This market's slice of the day's LLM budget, and the level at which it warns.
+    llm_daily_budget_usd: Dec = Decimal("10")
+    llm_daily_warn_usd: Dec = Decimal("7")
+
+
+#: The keys ``markets:`` replaced. A config file carrying these and no ``markets``
+#: block is a pre-M10a file — which is what the deployed server runs, because
+#: docs/DEPLOY.md §6/§13 edit ``config.yaml`` in place — and is read as crypto-only.
+LEGACY_MARKET_KEYS = ("dry_run", "watchlist", "watchlist_max_symbols")
+
+
+#: The crypto watchlist as it has shipped since M0 (PRD.md §7). Lives here rather
+#: than inline on :class:`MarketConfig` because it is also the value the legacy
+#: synthesis below falls back to when a pre-M10a config names no watchlist at all.
+DEFAULT_CRYPTO_WATCHLIST = (
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "ADAUSDT",
+)
+
+
+def normalise_markets(data: dict[str, Any]) -> dict[str, Any]:
+    """Turn a pre-M10a mapping into a ``markets:``-shaped one. Never mutates.
+
+    Two shapes are valid and one is not:
+
+    * **No ``markets`` key.** Every pre-M10a config, including the one the live
+      server is running right now. ``dry_run``, ``watchlist`` and
+      ``watchlist_max_symbols`` become ``markets.crypto``'s; the scan interval comes
+      from ``schedule`` and the budget from ``llm.daily_spend_limit_usd`` — so the
+      deployed spend rail survives the migration at exactly the number it has today.
+    * **A ``markets`` key and none of those.** The post-M10a shape.
+    * **Both.** Refused. Two places to set ``dry_run`` is one place for it to
+      disagree, and the losing one would be silent — which on that particular flag
+      means publishing real cards during a rehearsal.
+
+    The refusal is about a *file* declaring both shapes. It is not in the way of
+    ``DB > yaml`` precedence: :func:`load_config` normalises the yaml first and
+    merges the database's overrides — which are always new-shaped — on top of the
+    result, so a stored watchlist still wins over a legacy file's.
+    """
+    present = [key for key in LEGACY_MARKET_KEYS if key in data]
+    if "markets" in data:
+        if present:
+            raise ValueError(
+                "config has a 'markets:' block and also the pre-M10a top-level "
+                f"key(s) {', '.join(present)}. Move them under markets.crypto — two "
+                "places to set the same value is one place for it to be wrong."
+            )
+        return data
+    if not present:
+        return data
+
+    data = dict(data)
+    legacy = {key: data.pop(key) for key in present}
+    schedule = data.get("schedule") or {}
+    llm = data.get("llm") or {}
+    data["markets"] = {
+        LEGACY_MARKET.value: {
+            "enabled": True,
+            "adapter": CRYPTO_ADAPTER,
+            "dry_run": legacy.get("dry_run", False),
+            "watchlist": legacy.get("watchlist", DEFAULT_CRYPTO_WATCHLIST),
+            "watchlist_max_symbols": legacy.get(
+                "watchlist_max_symbols", _default_of(MarketConfig, "watchlist_max_symbols")
+            ),
+            "scan_interval_minutes": schedule.get(
+                "scan_interval_minutes", _default_of(ScheduleConfig, "scan_interval_minutes")
+            ),
+            "llm_daily_budget_usd": llm.get(
+                "daily_spend_limit_usd", _default_of(LLMConfig, "daily_spend_limit_usd")
+            ),
+            "llm_daily_warn_usd": llm.get(
+                "daily_spend_warn_usd", _default_of(LLMConfig, "daily_spend_warn_usd")
+            ),
+        }
+    }
+    return data
+
+
+def _default_of(model: type[BaseModel], field: str) -> Any:
+    """A field's declared default, read from the model rather than restated.
+
+    :func:`normalise_markets` needs the defaults of fields it is *not* being given,
+    and a second copy of "60" or "10" here would drift from the real one the first
+    time somebody changed it in the obvious place.
+    """
+    return model.model_fields[field].get_default(call_default_factory=True)
+
+
 class AppConfig(_Strict):
     """The whole non-secret runtime configuration."""
 
-    #: Run the whole cycle — ingestion, screener, charts, analyst, gate,
-    #: persistence — and publish **nothing** to Telegram. The would-be card is
-    #: rendered through the same renderer and logged verbatim, the signal is
-    #: stored with ``dry_run=true``, and the tracker resolves it silently, so a
-    #: day in this mode produces a measured paper record rather than only an
-    #: absence of crashes. The first unattended run is the riskiest moment in the
-    #: project; this is how it is made observable before it can talk.
-    dry_run: bool = False
-
-    watchlist: tuple[str, ...] = (
-        "BTCUSDT",
-        "ETHUSDT",
-        "SOLUSDT",
-        "BNBUSDT",
-        "XRPUSDT",
-        "DOGEUSDT",
-        "AVAXUSDT",
-        "LINKUSDT",
-        "LTCUSDT",
-        "ADAUSDT",
+    #: Every market this deployment knows about (M10a), in the order the config
+    #: names them — which is the order every multi-market surface renders in.
+    #:
+    #: A config with no ``markets:`` block is read as crypto-only and synthesised
+    #: from the pre-M10a top-level keys; see :meth:`_carry_legacy_markets`. That is
+    #: not a nicety, it is the deployed reality: docs/DEPLOY.md §6/§13 edit the
+    #: server's ``config.yaml`` in place, so the file the live system loads is a
+    #: legacy-shaped one until the owner ships this milestone.
+    markets: dict[Market, MarketConfig] = Field(
+        default_factory=lambda: {LEGACY_MARKET: MarketConfig(watchlist=DEFAULT_CRYPTO_WATCHLIST)}
     )
-    #: M8.3 — the hard ceiling on watchlist size, binding on ``/watchlist add`` and
-    #: on approving a member's ``/request`` alike. It is a spend control: every
-    #: symbol is screened every cycle and may buy a ~$0.28 analyst call, so the
-    #: watchlist is the single biggest lever on the bill. A cap that applied only to
-    #: other people would not be a cap.
-    watchlist_max_symbols: int = Field(default=15, ge=1)
+    #: The ceiling above every market's own budget (M10a Step 4). Reaching it stops
+    #: new deep analysis in **all** markets. Deliberately below the sum of the
+    #: sub-budgets, so a quiet market does not reserve money a busy one could use.
+    llm_daily_budget_global_usd: Dec = Decimal("11")
     schedule: ScheduleConfig = ScheduleConfig()
     market_data: MarketDataConfig = MarketDataConfig()
     ingestion: IngestionConfig = IngestionConfig()
@@ -498,6 +618,49 @@ class AppConfig(_Strict):
     llm: LLMConfig = LLMConfig()
     telegram: TelegramConfig = TelegramConfig()
     alerts: AlertsConfig = AlertsConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _carry_legacy_markets(cls, data: Any) -> Any:
+        """Read a pre-M10a mapping as crypto-only. See :func:`normalise_markets`.
+
+        On the model rather than only in :func:`load_config`, so it holds wherever
+        an ``AppConfig`` is built — a test, a tool, a fixture — and not only on the
+        one path that happens to read yaml.
+        """
+        if not isinstance(data, dict):
+            return data
+        return normalise_markets(data)
+
+    def market(self, market: Market = LEGACY_MARKET) -> MarketConfig:
+        """One market's settings.
+
+        Raises rather than returning a default for a market this deployment does not
+        configure: a missing market is a wiring mistake, and inventing an empty
+        watchlist for it would turn that mistake into a silently quiet cycle.
+        """
+        try:
+            return self.markets[market]
+        except KeyError:
+            known = ", ".join(sorted(m.value for m in self.markets)) or "none"
+            raise KeyError(
+                f"no configuration for market {market.value!r} (configured: {known})"
+            ) from None
+
+    @property
+    def enabled_markets(self) -> tuple[Market, ...]:
+        """Every enabled market, in the order the config names them."""
+        return tuple(name for name, cfg in self.markets.items() if cfg.enabled)
+
+    @property
+    def multi_market(self) -> bool:
+        """Whether anything user-facing should say *which* market it is talking about.
+
+        The single condition every market tag in ``sentinel/bot/`` hangs off, so
+        "with forex disabled the cards are byte-identical to today" is one fact to
+        check rather than a habit six renderers have to keep.
+        """
+        return len(self.enabled_markets) > 1
 
 
 def _deep_merge(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
@@ -534,6 +697,13 @@ def load_config(
                 raise ValueError(f"{config_path} must contain a YAML mapping at the top level")
             raw = loaded
 
+    # Normalise BEFORE the merge, not after. The database's overrides are always
+    # new-shaped (``markets.crypto.watchlist``), and merging them onto a legacy file
+    # would produce a mapping carrying both shapes at once — which
+    # ``normalise_markets`` refuses, correctly, for a file. Normalising first means
+    # ARCHITECTURE §2's "DB > yaml > defaults" still holds for a server whose
+    # config.yaml has not been migrated yet, which is every server today.
+    raw = normalise_markets(raw)
     if db_overrides:
         raw = _deep_merge(raw, db_overrides)
 

@@ -19,6 +19,7 @@ import pytest
 from sentinel.bot.models import SignalDecision, SignalRecord, SignalStatus
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Settings
+from sentinel.core.markets import Market
 from sentinel.risk.models import PauseReason, PauseState, TradePlan
 from sentinel.tracker.loop import TrackerLoop
 from sentinel.tracker.prices import PriceFeed
@@ -207,3 +208,66 @@ async def test_a_tick_clears_the_cache_before_it_reads_anything(
     await tracker.tick()
 
     assert len(source.calls) > 1, "the tick must not reuse the previous tick's candles"
+
+
+# --------------------------------------------------------------------------- #
+# M10a — the rail is per market, and there is a combined one above it
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_loss_in_one_market_pauses_only_that_market(
+    store: FakeStore, settings: Settings, plan: TradePlan
+) -> None:
+    """The promise M10a Step 5 makes: a forex loss stops forex, not crypto.
+
+    Asserted through the rows the rail writes rather than through a message,
+    because the row is what the gate reads on the next cycle.
+    """
+    store.users[MEMBER] = member_account(MEMBER, capital_eur=Decimal("2000"))
+    stopped(store, plan, MEMBER, "-300")
+
+    await loop(store, settings).tick()
+
+    assert (MEMBER, Market.CRYPTO) in store.user_market_pauses
+    assert store.user_market_pauses[(MEMBER, Market.CRYPTO)].paused
+    # Forex has no row at all: nothing lost there, so nothing is stopped there.
+    assert (MEMBER, Market.FOREX) not in store.user_market_pauses
+
+
+async def test_the_combined_rail_also_fires_and_the_user_is_told_once(
+    store: FakeStore, settings: Settings, plan: TradePlan
+) -> None:
+    """One bad day trips both rails. The person hears about it **once**.
+
+    Two identical "your daily loss limit is reached" messages a minute apart is
+    exactly the repetition M7's ``already_paused_for_loss`` exists to prevent, and a
+    second rail is a new way to reintroduce it.
+    """
+    store.users[MEMBER] = member_account(MEMBER, capital_eur=Decimal("2000"))
+    stopped(store, plan, MEMBER, "-300")
+
+    result = await loop(store, settings).tick()
+
+    assert result.paused_users == [MEMBER]
+    assert store.users[MEMBER].pause.paused, "the combined rail wrote the users row"
+    assert store.user_market_pauses[(MEMBER, Market.CRYPTO)].paused
+
+
+async def test_a_market_pause_is_not_raised_over_an_active_combined_one(
+    store: FakeStore, settings: Settings, plan: TradePlan
+) -> None:
+    """The wider pause already stops everything; the narrower one adds nothing.
+
+    Without this, a user paused across all markets yesterday would be re-paused per
+    market today and notified again for a day they already knew about.
+    """
+    already = PauseState(
+        paused=True, reason=PauseReason.DAILY_LOSS_LIMIT, until=TICK + timedelta(hours=12)
+    )
+    store.users[MEMBER] = member_account(MEMBER, capital_eur=Decimal("2000"), pause=already)
+    stopped(store, plan, MEMBER, "-300")
+
+    result = await loop(store, settings).tick()
+
+    assert result.paused_users == []
+    assert (MEMBER, Market.CRYPTO) not in store.user_market_pauses

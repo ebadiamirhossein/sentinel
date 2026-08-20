@@ -1,0 +1,163 @@
+{
+  "15m": {
+    "params": {
+      "candles_drawn": 60,
+      "data_quality": "OK",
+      "degraded_fields": [],
+      "emas_drawn": [
+        20,
+        50
+      ],
+      "fetched_at": "2026-08-18T08:00:00Z",
+      "first_candle_at": "2026-08-17T17:15:00Z",
+      "image_sha256": "b6c0ab027a60c7b87d99f7eb83c46c4893157fe4b9bc718d334aed2587b79db5",
+      "last_candle_at": "2026-08-18T08:00:00Z",
+      "last_close": "64099.9",
+      "levels_drawn": [],
+      "renderer_version": 1,
+      "source": "binance_usdm",
+      "spec": {
+        "candle_window": 120,
+        "dpi": 100,
+        "ema_periods": [
+          20,
+          50,
+          200
+        ],
+        "height_px": 1000,
+        "max_levels": 6,
+        "symbol": "BTCUSDT",
+        "timeframe": "15m",
+        "volume_panel_ratio": 0.22,
+        "width_px": 1600
+      }
+    },
+    "sha256": "b6c0ab027a60c7b87d99f7eb83c46c4893157fe4b9bc718d334aed2587b79db5"
+  },
+  "1h": {
+    "params": {
+      "candles_drawn": 60,
+      "data_quality": "OK",
+      "degraded_fields": [],
+      "emas_drawn": [
+        20,
+        50
+      ],
+      "fetched_at": "2026-08-18T08:00:00Z",
+      "first_candle_at": "2026-08-15T21:00:00Z",
+      "image_sha256": "731f63c08e3a7faff0fe75ae2fd60f91810b6b66f62bb4bd13f80fe10ea9547d",
+      "last_candle_at": "2026-08-18T08:00:00Z",
+      "last_close": "64100.0",
+      "levels_drawn": [
+        {
+          "kind": "RESISTANCE",
+          "price": "64578.100000000006",
+          "timeframe": "1h",
+          "touches": 2
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "62952.2",
+          "timeframe": "1h",
+          "touches": 2
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "64000.0",
+          "timeframe": "1h",
+          "touches": 1
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "63255.0",
+          "timeframe": "1h",
+          "touches": 1
+        }
+      ],
+      "renderer_version": 1,
+      "source": "binance_usdm",
+      "spec": {
+        "candle_window": 120,
+        "dpi": 100,
+        "ema_periods": [
+          20,
+          50,
+          200
+        ],
+        "height_px": 1000,
+        "max_levels": 6,
+        "symbol": "BTCUSDT",
+        "timeframe": "1h",
+        "volume_panel_ratio": 0.22,
+        "width_px": 1600
+      }
+    },
+    "sha256": "731f63c08e3a7faff0fe75ae2fd60f91810b6b66f62bb4bd13f80fe10ea9547d"
+  },
+  "4h": {
+    "params": {
+      "candles_drawn": 59,
+      "data_quality": "OK",
+      "degraded_fields": [],
+      "emas_drawn": [
+        20,
+        50
+      ],
+      "fetched_at": "2026-08-18T08:00:00Z",
+      "first_candle_at": "2026-08-08T12:00:00Z",
+      "image_sha256": "9574e29faee800ee8dda1edae6983151f6aaed90cec19fb60fa5c601dd411be0",
+      "last_candle_at": "2026-08-18T04:00:00Z",
+      "last_close": "64170.9",
+      "levels_drawn": [
+        {
+          "kind": "RESISTANCE",
+          "price": "64555.2",
+          "timeframe": "4h",
+          "touches": 4
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "63212.06666666667",
+          "timeframe": "4h",
+          "touches": 3
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "62582.649999999994",
+          "timeframe": "4h",
+          "touches": 2
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "62800.0",
+          "timeframe": "4h",
+          "touches": 1
+        },
+        {
+          "kind": "RESISTANCE",
+          "price": "65482.7",
+          "timeframe": "4h",
+          "touches": 1
+        }
+      ],
+      "renderer_version": 1,
+      "source": "binance_usdm",
+      "spec": {
+        "candle_window": 120,
+        "dpi": 100,
+        "ema_periods": [
+          20,
+          50,
+          200
+        ],
+        "height_px": 1000,
+        "max_levels": 6,
+        "symbol": "BTCUSDT",
+        "timeframe": "4h",
+        "volume_panel_ratio": 0.22,
+        "width_px": 1600
+      }
+    },
+    "sha256": "9574e29faee800ee8dda1edae6983151f6aaed90cec19fb60fa5c601dd411be0"
+  }
+}

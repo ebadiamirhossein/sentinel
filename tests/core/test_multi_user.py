@@ -30,6 +30,7 @@ from sentinel.bot.models import SignalRecord, UserStatus
 from sentinel.core import orchestrator as orchestrator_module
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Settings
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import (
     CycleOrchestrator,
     CycleRepositories,
@@ -42,7 +43,7 @@ from tests.bot_double import member_account, owner_account
 from tests.market_double import snapshot_from_cassettes
 from tests.risk_double import analyst_report, market_context
 
-from .conftest import NOW, CycleDatabase, CycleStore, CycleUsers
+from .conftest import NOW, CycleDatabase, CycleStore, CycleUsers, rehearsing
 
 OWNER = 111
 MEMBER = 222
@@ -55,7 +56,7 @@ SYMBOL = "SOLUSDT"
 
 
 class Signals:
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self._store: CycleStore = session.store
 
     # -- per-user reads, all required-keyword by design ---------------------- #
@@ -93,7 +94,7 @@ class Signals:
 
 
 class Gates:
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self._store: CycleStore = session.store
 
     async def record(self, decision: Any, cycle_id: Any = None, *, user_id: int) -> None:
@@ -101,7 +102,7 @@ class Gates:
 
 
 class RiskState:
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self._store: CycleStore = session.store
 
     async def load(self) -> PauseState:
@@ -109,14 +110,14 @@ class RiskState:
 
 
 class Fx:
-    def __init__(self, session: Any) -> None: ...
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None: ...
 
     async def get(self, pair: str = "EURUSD") -> FxRate:
         return FxRate(pair="EURUSD", rate=Decimal("1.1593"), source="test", fetched_at=NOW)
 
 
 class Settings_:
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self._store: CycleStore = session.store
 
     async def all(self) -> dict[str, Any]:
@@ -472,9 +473,7 @@ async def test_a_dry_run_cycle_rehearses_the_fan_out(
     """Each user gets their own stored row, sized against their own capital, and
     nothing reaches Telegram. A rehearsal that only rehearsed one user would not
     rehearse this milestone at all."""
-    dry = Settings(
-        secrets=settings.secrets, config=settings.config.model_copy(update={"dry_run": True})
-    )
+    dry = rehearsing(settings)
     users = [
         owner_account(OWNER, capital_eur=Decimal("10000")),
         member_account(MEMBER, capital_eur=Decimal("2000")),
@@ -521,7 +520,7 @@ class CountingAnalyst:
 
 
 class Reports:
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
         self._store: CycleStore = session.store
 
     async def save(self, report_: Any, **kwargs: Any) -> UUID:
@@ -590,7 +589,7 @@ async def test_the_history_block_is_the_owners_book(settings: Settings, store: C
     asked: dict[str, Any] = {}
 
     class Reports_:
-        def __init__(self, session: Any) -> None: ...
+        def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None: ...
 
         async def recent_for_symbol(
             self, symbol: str, limit: int = 3, *, owner_id: int, role: str = "primary"

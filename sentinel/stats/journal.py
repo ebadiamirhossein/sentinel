@@ -64,6 +64,7 @@ from pydantic import ValidationError
 
 from sentinel.bot.models import SignalDecision
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.risk.accounting import Exit, Fill, avg_exit_price, avg_fill_price
 from sentinel.risk.models import TradePlan
 from sentinel.risk.rounding import money, percent, ratio
@@ -221,9 +222,16 @@ class JournalRow(Frozen):
 
 
 class JournalBook(Frozen):
-    """One population's sheet: its title, the sentence under it, and its rows."""
+    """One population's sheet: its title, the sentence under it, and its rows.
+
+    From M10a a sheet is one population **in one market**. The title carries the
+    market only when it is not the historical default, so a crypto-only export has
+    exactly the four sheet names M8.6 shipped — the names a reader's saved files and
+    their spreadsheet formulas already refer to.
+    """
 
     population: JournalPopulation
+    market: Market = LEGACY_MARKET
     title: str
     note: str
     rows: tuple[JournalRow, ...] = ()
@@ -360,6 +368,7 @@ def build_journal(
     *,
     fills: Mapping[UUID, Sequence[SignalFillRow]],
     exits: Mapping[UUID, Sequence[SignalExitRow]],
+    market: Market = LEGACY_MARKET,
 ) -> tuple[JournalBook, ...]:
     """One user's signals, split into sheets and walked for the running columns.
 
@@ -378,7 +387,12 @@ def build_journal(
         books.append(
             JournalBook(
                 population=population,
-                title=title,
+                market=market,
+                # A running balance walks within a sheet, so a sheet has to be one
+                # market: a balance that stepped from a EUR/USD trade into a BTC one
+                # would be the same objection M8.6 already makes about stepping from
+                # a trade you took into one you skipped.
+                title=title if market is LEGACY_MARKET else f"{title} · {market.value}",
                 note=note,
                 rows=_with_running(_ordered(grouped[population])),
             )

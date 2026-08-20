@@ -34,6 +34,7 @@ from sentinel.bot.models import (
     WatchlistRequestStatus,
 )
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
 from sentinel.llm.models import LLMCall, LLMCallKind, LLMCallStatus
 from sentinel.llm.spend import SpendTotals
@@ -48,6 +49,7 @@ from sentinel.storage.models import (
     IngestionFailureRow,
     InstrumentMetaRow,
     LLMCallRow,
+    MarketPauseStateRow,
     MarketSnapshotRow,
     OhlcvCandleRow,
     RiskStateRow,
@@ -57,6 +59,7 @@ from sentinel.storage.models import (
     SignalFillRow,
     SignalRow,
     TelegramMessageRow,
+    UserMarketPauseRow,
     UserRow,
     WatchlistRequestRow,
 )
@@ -105,12 +108,15 @@ def snapshot_sources(snapshot: MarketSnapshot) -> dict[str, Any]:
     return sources
 
 
-def candle_rows(snapshot: MarketSnapshot) -> list[dict[str, Any]]:
+def candle_rows(
+    snapshot: MarketSnapshot, *, market: Market = LEGACY_MARKET
+) -> list[dict[str, Any]]:
     """Flatten every timeframe's candles into upsertable row dicts."""
     rows: list[dict[str, Any]] = []
     for timeframe, series in snapshot.ohlcv.items():
         rows.extend(
             {
+                "market": market.value,
                 "symbol": snapshot.symbol,
                 "timeframe": timeframe,
                 "open_time": candle.open_time,
@@ -127,16 +133,41 @@ def candle_rows(snapshot: MarketSnapshot) -> list[dict[str, Any]]:
     return rows
 
 
-class SnapshotRepository:
-    """Persists snapshots: metadata + context row, candles upserted separately."""
+class MarketScopedRepository:
+    """A repository bound to one market (M10a).
 
-    def __init__(self, session: AsyncSession) -> None:
+    The market is a property of the **instance**, not a parameter on thirty methods.
+    That is a deliberate choice and it is what keeps the M10a diff reviewable: a call
+    site decides once which market it is working in, and every write below stamps it
+    and every read filters on it, so there is no method left where somebody can
+    forget. ``mypy --strict`` finds the constructors; it could never have found a
+    missing ``.where(market == ...)``.
+
+    The default is :data:`~sentinel.core.markets.LEGACY_MARKET`, and that is safe
+    rather than sloppy: every row in the database is crypto, forex has no adapter,
+    and a caller that does not name a market is by definition pre-M10a code working
+    on the only market there was. Callers that genuinely choose — the orchestrator,
+    the tracker, the bot's per-market surfaces — pass it explicitly.
+    """
+
+    def __init__(self, session: AsyncSession, *, market: Market = LEGACY_MARKET) -> None:
         self._session = session
+        self._market = market
+
+    @property
+    def market(self) -> Market:
+        """Which market this instance reads and writes. Useful in log lines."""
+        return self._market
+
+
+class SnapshotRepository(MarketScopedRepository):
+    """Persists snapshots: metadata + context row, candles upserted separately."""
 
     async def save(self, snapshot: MarketSnapshot) -> UUID:
         row = MarketSnapshotRow(
             id=snapshot.snapshot_id,
             cycle_id=snapshot.cycle_id,
+            market=self._market.value,
             symbol=snapshot.symbol,
             captured_at=snapshot.captured_at,
             schema_version=snapshot.schema_version,
@@ -153,14 +184,20 @@ class SnapshotRepository:
 
     async def upsert_candles(self, snapshot: MarketSnapshot) -> int:
         """Idempotent per (symbol, timeframe, open_time) — re-fetching costs nothing."""
-        rows = candle_rows(snapshot)
+        rows = candle_rows(snapshot, market=self._market)
         if not rows:
             return 0
 
         statement = insert(OhlcvCandleRow).values(rows)
         statement = statement.on_conflict_do_update(
+            # The conflict target is the primary key, which M10a deliberately did
+            # NOT widen: symbols are disjoint across markets, so the key is still
+            # correct and the biggest table in the schema needed no rebuild. The
+            # market is written on insert and refreshed on conflict, so a row can
+            # never be left claiming a market it is no longer fetched for.
             index_elements=["symbol", "timeframe", "open_time"],
             set_={
+                "market": statement.excluded.market,
                 "open": statement.excluded.open,
                 "high": statement.excluded.high,
                 "low": statement.excluded.low,
@@ -182,6 +219,7 @@ class SnapshotRepository:
         """
         statement = (
             select(MarketSnapshotRow)
+            .where(MarketSnapshotRow.market == self._market.value)
             .distinct(MarketSnapshotRow.symbol)
             .order_by(MarketSnapshotRow.symbol, MarketSnapshotRow.captured_at.desc())
             .limit(limit)
@@ -191,6 +229,7 @@ class SnapshotRepository:
     async def latest_for_symbol(self, symbol: str) -> MarketSnapshotRow | None:
         result = await self._session.execute(
             select(MarketSnapshotRow)
+            .where(MarketSnapshotRow.market == self._market.value)
             .where(MarketSnapshotRow.symbol == symbol)
             .order_by(MarketSnapshotRow.captured_at.desc())
             .limit(1)
@@ -198,14 +237,12 @@ class SnapshotRepository:
         return result.scalar_one_or_none()
 
 
-class InstrumentMetaRepository:
+class InstrumentMetaRepository(MarketScopedRepository):
     """24h cache of exchange trading rules."""
-
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
 
     async def upsert(self, meta: InstrumentMeta) -> None:
         statement = insert(InstrumentMetaRow).values(
+            market=self._market.value,
             symbol=meta.symbol,
             tick_size=meta.tick_size,
             qty_step=meta.qty_step,
@@ -218,6 +255,7 @@ class InstrumentMetaRepository:
             statement.on_conflict_do_update(
                 index_elements=["symbol"],
                 set_={
+                    "market": statement.excluded.market,
                     "tick_size": statement.excluded.tick_size,
                     "qty_step": statement.excluded.qty_step,
                     "min_notional": statement.excluded.min_notional,
@@ -277,25 +315,31 @@ class FxRateRepository:
         )
 
 
-class GateDecisionRepository:
+class GateDecisionRepository(MarketScopedRepository):
     """Audit trail for every risk-gate verdict (PRD F10; M9's rejection stats)."""
-
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
 
     @staticmethod
     def to_row(
-        decision: GateDecision, cycle_id: UUID | None = None, *, user_id: int
+        decision: GateDecision,
+        cycle_id: UUID | None = None,
+        *,
+        user_id: int,
+        market: Market = LEGACY_MARKET,
     ) -> dict[str, Any]:
         """Pure serialization — the reason travels as a code, not just as prose.
 
         ``user_id`` is required rather than defaulted: the same report can approve
         for one user and reject for another, and a row that cannot say whose verdict
         it is makes those two contradict each other (PRD G5).
+
+        ``market`` is a parameter here and an instance attribute on the repository
+        because this stays a **pure** function — the M4 tools serialize a decision
+        without a session at all.
         """
         return {
             "cycle_id": cycle_id,
             "user_id": user_id,
+            "market": market.value,
             "symbol": decision.symbol,
             "evaluated_at": decision.evaluated_at,
             "gate_status": decision.status.value,
@@ -308,11 +352,16 @@ class GateDecisionRepository:
     async def record(
         self, decision: GateDecision, cycle_id: UUID | None = None, *, user_id: int
     ) -> None:
-        self._session.add(GateDecisionRow(**self.to_row(decision, cycle_id, user_id=user_id)))
+        self._session.add(
+            GateDecisionRow(**self.to_row(decision, cycle_id, user_id=user_id, market=self._market))
+        )
 
     async def recent(self, limit: int = 50) -> list[GateDecisionRow]:
         result = await self._session.execute(
-            select(GateDecisionRow).order_by(GateDecisionRow.evaluated_at.desc()).limit(limit)
+            select(GateDecisionRow)
+            .where(GateDecisionRow.market == self._market.value)
+            .order_by(GateDecisionRow.evaluated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -330,6 +379,7 @@ class GateDecisionRepository:
             return []
         statement = (
             select(GateDecisionRow)
+            .where(GateDecisionRow.market == self._market.value)
             .where(GateDecisionRow.cycle_id.in_(list(cycle_ids)))
             .order_by(GateDecisionRow.evaluated_at)
         )
@@ -373,11 +423,129 @@ class RiskStateRepository:
         )
 
 
-class WatchlistRequestRepository:
-    """Member requests for the shared watchlist (M8.3)."""
+class MarketPauseStateRepository(MarketScopedRepository):
+    """One market's operator pause (M10a Step 5). ``risk_state`` stays the global one.
 
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
+    Same shape as :class:`RiskStateRepository` one scope in, and deliberately so: a
+    pause is a pause, and ``PauseState`` round-trips all four of the sources
+    ``core/pauses.py`` composes. What differs is only which rows they read.
+    """
+
+    async def load(self) -> PauseState:
+        row = await self._session.get(MarketPauseStateRow, self._market.value)
+        if row is None:
+            return PauseState()
+        return PauseState(
+            paused=row.paused,
+            reason=None if row.pause_reason is None else PauseReason(row.pause_reason),
+            until=row.paused_until,
+        )
+
+    async def load_all(self) -> dict[Market, PauseState]:
+        """Every market's pause in one read — ``/status`` and the multi-market menu.
+
+        A command that reported one market's pause and stayed silent about the
+        other's would be the same silence-as-success failure the project has already
+        met twice: the reader would have no way to tell "not paused" from "not asked".
+        """
+        rows = (await self._session.execute(select(MarketPauseStateRow))).scalars()
+        found = {
+            Market(row.market): PauseState(
+                paused=row.paused,
+                reason=None if row.pause_reason is None else PauseReason(row.pause_reason),
+                until=row.paused_until,
+            )
+            for row in rows
+        }
+        return {market: found.get(market, PauseState()) for market in Market}
+
+    async def save(self, state: PauseState) -> None:
+        statement = insert(MarketPauseStateRow).values(
+            market=self._market.value,
+            paused=state.paused,
+            pause_reason=None if state.reason is None else state.reason.value,
+            paused_until=state.until,
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["market"],
+                set_={
+                    "paused": statement.excluded.paused,
+                    "pause_reason": statement.excluded.pause_reason,
+                    "paused_until": statement.excluded.paused_until,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+
+
+class UserMarketPauseRepository(MarketScopedRepository):
+    """One user's daily-loss pause **in one market** (M10a Step 5).
+
+    ``users.paused`` keeps its M8.1 meaning and is untouched by this class: it is
+    now explicitly the user's *combined-across-markets* loss pause. Both rails
+    exist because they answer different questions — see
+    :class:`~sentinel.storage.models.UserMarketPauseRow`.
+    """
+
+    async def load(self, user_id: int) -> PauseState:
+        row = await self._session.get(UserMarketPauseRow, (user_id, self._market.value))
+        if row is None:
+            return PauseState()
+        return PauseState(
+            paused=row.paused,
+            reason=None if row.pause_reason is None else PauseReason(row.pause_reason),
+            until=row.paused_until,
+        )
+
+    async def load_many(self, user_ids: Sequence[int]) -> dict[int, PauseState]:
+        """This market's pause for several users at once — the cycle's fan-out.
+
+        Everyone asked for is in the result, unpaused if they have no row. A caller
+        that had to distinguish "absent" from "not paused" would get that wrong
+        eventually, and the wrong way round is the one that delivers signals to
+        somebody the rail had stopped.
+        """
+        if not user_ids:
+            return {}
+        statement = select(UserMarketPauseRow).where(
+            UserMarketPauseRow.market == self._market.value,
+            UserMarketPauseRow.user_id.in_(list(user_ids)),
+        )
+        found = {
+            row.user_id: PauseState(
+                paused=row.paused,
+                reason=None if row.pause_reason is None else PauseReason(row.pause_reason),
+                until=row.paused_until,
+            )
+            for row in (await self._session.execute(statement)).scalars()
+        }
+        return {user_id: found.get(user_id, PauseState()) for user_id in user_ids}
+
+    async def save(self, user_id: int, state: PauseState, *, at: datetime) -> None:
+        statement = insert(UserMarketPauseRow).values(
+            user_id=user_id,
+            market=self._market.value,
+            paused=state.paused,
+            pause_reason=None if state.reason is None else state.reason.value,
+            paused_until=state.until,
+            updated_at=at,
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["user_id", "market"],
+                set_={
+                    "paused": statement.excluded.paused,
+                    "pause_reason": statement.excluded.pause_reason,
+                    "paused_until": statement.excluded.paused_until,
+                    "updated_at": statement.excluded.updated_at,
+                },
+            )
+        )
+
+
+class WatchlistRequestRepository(MarketScopedRepository):
+    """Member requests for the shared watchlist (M8.3)."""
 
     async def request(self, symbol: str, *, user_id: int, at: datetime) -> WatchlistRequest | None:
         """Create a PENDING row. ``None`` means one is already pending for this symbol.
@@ -396,13 +564,18 @@ class WatchlistRequestRepository:
         statement = (
             insert(WatchlistRequestRow)
             .values(
+                market=self._market.value,
                 symbol=symbol,
                 requested_by_user_id=user_id,
                 requested_at=at,
                 status=WatchlistRequestStatus.PENDING.value,
             )
             .on_conflict_do_nothing(
-                index_elements=["symbol"],
+                # ``(market, symbol)`` from M10a, matching the widened partial index.
+                # A stale single-column target here would not merely mis-scope the
+                # no-op — Postgres would refuse the statement outright, which is the
+                # loud failure this repository already prefers.
+                index_elements=["market", "symbol"],
                 index_where=text("status = 'PENDING'"),
             )
             .returning(WatchlistRequestRow)
@@ -412,6 +585,7 @@ class WatchlistRequestRepository:
 
     async def pending_for(self, symbol: str) -> WatchlistRequest | None:
         statement = select(WatchlistRequestRow).where(
+            WatchlistRequestRow.market == self._market.value,
             WatchlistRequestRow.symbol == symbol,
             WatchlistRequestRow.status == WatchlistRequestStatus.PENDING.value,
         )
@@ -421,6 +595,7 @@ class WatchlistRequestRepository:
     async def pending(self) -> list[WatchlistRequest]:
         statement = (
             select(WatchlistRequestRow)
+            .where(WatchlistRequestRow.market == self._market.value)
             .where(WatchlistRequestRow.status == WatchlistRequestStatus.PENDING.value)
             .order_by(WatchlistRequestRow.requested_at)
         )
@@ -442,6 +617,7 @@ class WatchlistRequestRepository:
         posture as the registration buttons.
         """
         statement = select(WatchlistRequestRow).where(
+            WatchlistRequestRow.market == self._market.value,
             WatchlistRequestRow.symbol == symbol,
             WatchlistRequestRow.status == WatchlistRequestStatus.PENDING.value,
         )
@@ -455,11 +631,8 @@ class WatchlistRequestRepository:
         return watchlist_request(row)
 
 
-class IngestionFailureRepository:
+class IngestionFailureRepository(MarketScopedRepository):
     """Audit trail for skipped symbols and degraded sources."""
-
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
 
     async def record(
         self,
@@ -472,6 +645,7 @@ class IngestionFailureRepository:
     ) -> None:
         statement = insert(IngestionFailureRow).values(
             cycle_id=cycle_id,
+            market=self._market.value,
             symbol=symbol,
             source=source,
             reason=reason[:512],
@@ -572,14 +746,11 @@ def screener_verdicts_of(response: dict[str, Any]) -> list[ScreenerVerdict]:
     return verdicts
 
 
-class LLMCallRepository:
+class LLMCallRepository(MarketScopedRepository):
     """Audit trail for every LLM call — successes, refusals and failures alike."""
 
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
     async def record(self, call: LLMCall) -> UUID:
-        self._session.add(LLMCallRow(**llm_call_row(call)))
+        self._session.add(LLMCallRow(**llm_call_row(call), market=self._market.value))
         return call.call_id
 
     async def record_many(self, calls: Sequence[LLMCall]) -> int:
@@ -592,10 +763,48 @@ class LLMCallRepository:
     ) -> SpendTotals:
         """Estimated spend over the current UTC day and month (M7's spend guard).
 
+        **This market's spend only**, from M10a: each market has its own daily
+        sub-budget, so the figure the guard compares against one has to be scoped to
+        it. :meth:`spend_totals_across_markets` is the global ceiling's half.
+
         ``unpriced_calls`` counts calls whose model has no entry in
         ``config.llm.pricing``. ``pricing.estimate_cost`` records those at 0 with a
         warning — right for keeping the audit row, and a hole in a spend guard, so
         they are counted here rather than quietly treated as free.
+        """
+
+        async def total(since: datetime) -> Decimal:
+            statement = select(func.coalesce(func.sum(LLMCallRow.cost_usd_estimate), 0)).where(
+                LLMCallRow.market == self._market.value,
+                LLMCallRow.started_at >= since,
+            )
+            return Decimal((await self._session.execute(statement)).scalar_one())
+
+        counts = select(
+            func.count(),
+            func.count().filter(LLMCallRow.model.not_in(priced_models)),
+        ).where(
+            LLMCallRow.market == self._market.value,
+            LLMCallRow.started_at >= day_start,
+        )
+        calls, unpriced = (await self._session.execute(counts)).one()
+
+        return SpendTotals(
+            day_usd=await total(day_start),
+            month_usd=await total(month_start),
+            calls=int(calls),
+            unpriced_calls=int(unpriced),
+        )
+
+    async def spend_totals_across_markets(
+        self, *, day_start: datetime, month_start: datetime, priced_models: Sequence[str]
+    ) -> SpendTotals:
+        """The same totals over **every** market — the global ceiling's input (M10a).
+
+        Deliberately a separate method rather than an ``market=None`` flag on
+        :meth:`spend_totals`: "what has crypto spent" and "what has this deployment
+        spent" are different questions asked by different rails, and a nullable
+        parameter is how they end up answered by whichever the caller forgot to set.
         """
 
         async def total(since: datetime) -> Decimal:
@@ -619,7 +828,10 @@ class LLMCallRepository:
 
     async def recent(self, limit: int = 50) -> list[LLMCallRow]:
         result = await self._session.execute(
-            select(LLMCallRow).order_by(LLMCallRow.started_at.desc()).limit(limit)
+            select(LLMCallRow)
+            .where(LLMCallRow.market == self._market.value)
+            .order_by(LLMCallRow.started_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -657,6 +869,7 @@ class LLMCallRepository:
         statement = (
             select(LLMCallRow.cycle_id, LLMCallRow.response)
             .where(
+                LLMCallRow.market == self._market.value,
                 LLMCallRow.cycle_id.in_(list(cycle_ids)),
                 LLMCallRow.kind == LLMCallKind.SCREENER.value,
                 LLMCallRow.status == LLMCallStatus.OK.value,
@@ -673,11 +886,8 @@ class LLMCallRepository:
         return {cycle_id: tuple(verdicts) for cycle_id, verdicts in found.items()}
 
 
-class AnalystReportRepository:
+class AnalystReportRepository(MarketScopedRepository):
     """Stored reports, and the query behind specs/PROMPTS.md §3's history block."""
-
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
 
     async def save(
         self,
@@ -699,7 +909,8 @@ class AnalystReportRepository:
                 cycle_id=cycle_id,
                 snapshot_id=snapshot_id,
                 llm_call_id=llm_call_id,
-            )
+            ),
+            market=self._market.value,
         )
         self._session.add(row)
         await self._session.flush()
@@ -721,7 +932,11 @@ class AnalystReportRepository:
                 AnalystReportRow.symbol,
                 func.max(AnalystReportRow.created_at).label("created_at"),
             )
-            .where(AnalystReportRow.created_at >= since, AnalystReportRow.role == "primary")
+            .where(
+                AnalystReportRow.market == self._market.value,
+                AnalystReportRow.created_at >= since,
+                AnalystReportRow.role == "primary",
+            )
             .group_by(AnalystReportRow.symbol)
             .subquery()
         )
@@ -732,7 +947,10 @@ class AnalystReportRepository:
                 (AnalystReportRow.symbol == newest.c.symbol)
                 & (AnalystReportRow.created_at == newest.c.created_at),
             )
-            .where(AnalystReportRow.candidate_status.in_(("WATCHLIST", "NO_SETUP")))
+            .where(
+                AnalystReportRow.market == self._market.value,
+                AnalystReportRow.candidate_status.in_(("WATCHLIST", "NO_SETUP")),
+            )
         )
         rows = (await self._session.execute(statement)).all()
         return {row.symbol: row.created_at for row in rows}
@@ -751,7 +969,11 @@ class AnalystReportRepository:
             return []
         statement = (
             select(AnalystReportRow)
-            .where(AnalystReportRow.cycle_id.in_(list(cycle_ids)), AnalystReportRow.role == role)
+            .where(
+                AnalystReportRow.market == self._market.value,
+                AnalystReportRow.cycle_id.in_(list(cycle_ids)),
+                AnalystReportRow.role == role,
+            )
             .order_by(AnalystReportRow.created_at)
         )
         return list((await self._session.execute(statement)).scalars())
@@ -772,7 +994,11 @@ class AnalystReportRepository:
         """
         statement = (
             select(AnalystReportRow)
-            .where(AnalystReportRow.symbol == symbol, AnalystReportRow.role == role)
+            .where(
+                AnalystReportRow.market == self._market.value,
+                AnalystReportRow.symbol == symbol,
+                AnalystReportRow.role == role,
+            )
             .order_by(AnalystReportRow.created_at.desc())
             .limit(1)
         )
@@ -800,7 +1026,11 @@ class AnalystReportRepository:
         """
         result = await self._session.execute(
             select(AnalystReportRow)
-            .where(AnalystReportRow.symbol == symbol, AnalystReportRow.role == role)
+            .where(
+                AnalystReportRow.market == self._market.value,
+                AnalystReportRow.symbol == symbol,
+                AnalystReportRow.role == role,
+            )
             .order_by(AnalystReportRow.created_at.desc())
             .limit(limit)
         )
@@ -833,6 +1063,7 @@ class AnalystReportRepository:
 
         signals = await self._session.execute(
             select(SignalRow).where(
+                SignalRow.market == self._market.value,
                 SignalRow.cycle_id.in_(cycles),
                 SignalRow.symbol.in_(symbols),
                 SignalRow.user_id == owner_id,
@@ -851,6 +1082,7 @@ class AnalystReportRepository:
 
         gates = await self._session.execute(
             select(GateDecisionRow).where(
+                GateDecisionRow.market == self._market.value,
                 GateDecisionRow.cycle_id.in_(cycles),
                 GateDecisionRow.symbol.in_(symbols),
                 GateDecisionRow.user_id == owner_id,
@@ -913,6 +1145,7 @@ def signal_row(record: SignalRecord, plan: TradePlan) -> dict[str, Any]:
         "plan_id": plan.plan_id,
         "cycle_id": record.cycle_id,
         "user_id": record.user_id,
+        "market": record.market.value,
         "symbol": plan.symbol,
         "direction": plan.direction.value,
         "setup_type": plan.setup_type.value,
@@ -930,7 +1163,7 @@ def signal_row(record: SignalRecord, plan: TradePlan) -> dict[str, Any]:
     }
 
 
-class SignalRepository:
+class SignalRepository(MarketScopedRepository):
     """Signals as delivered to Telegram (ARCHITECTURE.md §3 contract 5).
 
     **Every query that reads a book takes ``user_id`` as a required keyword** (M8.1).
@@ -943,13 +1176,15 @@ class SignalRepository:
     The three ``*_by_user`` methods are the exception, and they exist for the
     pre-analyst guard: it needs every eligible user's state in one pass, because it
     runs before a $0.32 call and once per cycle rather than once per user.
-    ``open_signals`` is the other exception and is deliberately global — the tracker
-    follows everybody's signals, and each row carries the ``user_id`` that decides
-    where its consequences land.
-    """
+    ``open_signals`` is the other exception and is deliberately global **across
+    users** — the tracker follows everybody's signals, and each row carries the
+    ``user_id`` that decides where its consequences land.
 
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
+    From M10a every read here is additionally scoped to the repository's **market**.
+    The tracker prices a signal against a market adapter, so it asks once per market
+    it can actually price; ``/stats``, ``/journal`` and ``/positions`` ask once per
+    market and never sum the answers (M10a Step 6).
+    """
 
     async def claim(self, record: SignalRecord) -> SignalRecord | None:
         """Insert the signal, or return ``None`` if this plan already has one.
@@ -958,6 +1193,15 @@ class SignalRepository:
         or a duplicated cycle — collides here rather than reaching Telegram twice
         (specs/TELEGRAM_UX.md §6). ``None`` means "someone already owns this".
         """
+        if record.market is not self._market:
+            # A mismatch means a plan was routed through the wrong repository, which
+            # would file a signal under a market it was never analysed in — and every
+            # statistic, rail and card downstream reads that column. Louder than a
+            # log line, because nothing later could detect it.
+            raise ValueError(
+                f"signal for market {record.market.value!r} handed to a "
+                f"{self._market.value!r} repository"
+            )
         statement = (
             insert(SignalRow)
             .values(signal_row(record, record.plan))
@@ -1006,7 +1250,11 @@ class SignalRepository:
         """One user's signals marked a given way, newest first (``/positions``)."""
         statement = (
             select(SignalRow)
-            .where(SignalRow.user_id == user_id, SignalRow.decision == decision.value)
+            .where(
+                SignalRow.market == self._market.value,
+                SignalRow.user_id == user_id,
+                SignalRow.decision == decision.value,
+            )
             .order_by(SignalRow.created_at.desc())
             .limit(limit)
         )
@@ -1015,7 +1263,7 @@ class SignalRepository:
     async def recent(self, *, user_id: int, limit: int = 20) -> list[SignalRow]:
         statement = (
             select(SignalRow)
-            .where(SignalRow.user_id == user_id)
+            .where(SignalRow.market == self._market.value, SignalRow.user_id == user_id)
             .order_by(SignalRow.created_at.desc())
             .limit(limit)
         )
@@ -1025,7 +1273,11 @@ class SignalRepository:
         statement = (
             select(func.count())
             .select_from(SignalRow)
-            .where(SignalRow.user_id == user_id, SignalRow.decision.is_(None))
+            .where(
+                SignalRow.market == self._market.value,
+                SignalRow.user_id == user_id,
+                SignalRow.decision.is_(None),
+            )
         )
         return int((await self._session.execute(statement)).scalar_one())
 
@@ -1044,7 +1296,10 @@ class SignalRepository:
         """
         statement = (
             select(SignalRow)
-            .where(SignalRow.status.in_([status.value for status in OPEN_STATUSES]))
+            .where(
+                SignalRow.market == self._market.value,
+                SignalRow.status.in_([status.value for status in OPEN_STATUSES]),
+            )
             .order_by(SignalRow.created_at)
         )
         return list((await self._session.execute(statement)).scalars())
@@ -1056,6 +1311,7 @@ class SignalRepository:
         already holds must not stop this user from being offered it.
         """
         statement = select(SignalRow.symbol).where(
+            SignalRow.market == self._market.value,
             SignalRow.user_id == user_id,
             SignalRow.status.in_([status.value for status in OPEN_STATUSES]),
         )
@@ -1064,7 +1320,8 @@ class SignalRepository:
     async def open_symbols_by_user(self) -> dict[int, set[str]]:
         """``{user_id: open symbols}`` for the pre-analyst guard, in one pass."""
         statement = select(SignalRow.user_id, SignalRow.symbol).where(
-            SignalRow.status.in_([status.value for status in OPEN_STATUSES])
+            SignalRow.market == self._market.value,
+            SignalRow.status.in_([status.value for status in OPEN_STATUSES]),
         )
         grouped: dict[int, set[str]] = {}
         for row in (await self._session.execute(statement)).all():
@@ -1078,6 +1335,7 @@ class SignalRepository:
         they cannot occupy a budget the user never spent.
         """
         statement = select(SignalRow).where(
+            SignalRow.market == self._market.value,
             SignalRow.user_id == user_id,
             SignalRow.status.in_([status.value for status in OPEN_STATUSES]),
             SignalRow.decision == SignalDecision.TAKEN.value,
@@ -1095,7 +1353,11 @@ class SignalRepository:
         statement = (
             select(func.count())
             .select_from(SignalRow)
-            .where(SignalRow.user_id == user_id, SignalRow.created_at >= since)
+            .where(
+                SignalRow.market == self._market.value,
+                SignalRow.user_id == user_id,
+                SignalRow.created_at >= since,
+            )
         )
         return int((await self._session.execute(statement)).scalar_one())
 
@@ -1103,7 +1365,7 @@ class SignalRepository:
         """``{user_id: count}`` since an instant, for the pre-analyst guard."""
         statement = (
             select(SignalRow.user_id, func.count())
-            .where(SignalRow.created_at >= since)
+            .where(SignalRow.market == self._market.value, SignalRow.created_at >= since)
             .group_by(SignalRow.user_id)
         )
         return {row[0]: int(row[1]) for row in (await self._session.execute(statement)).all()}
@@ -1118,6 +1380,7 @@ class SignalRepository:
         its targets is not a reason to stay away from the symbol.
         """
         statement = select(SignalRow.symbol, SignalRow.closed_at).where(
+            SignalRow.market == self._market.value,
             SignalRow.user_id == user_id,
             SignalRow.status.in_(_COOLDOWN_ARMING),
             SignalRow.closed_at.is_not(None),
@@ -1131,6 +1394,7 @@ class SignalRepository:
     ) -> dict[int, list[tuple[str, datetime]]]:
         """``{user_id: [(symbol, closed_at)]}``, for the pre-analyst guard."""
         statement = select(SignalRow.user_id, SignalRow.symbol, SignalRow.closed_at).where(
+            SignalRow.market == self._market.value,
             SignalRow.status.in_(_COOLDOWN_ARMING),
             SignalRow.closed_at.is_not(None),
             SignalRow.closed_at >= since,
@@ -1148,6 +1412,34 @@ class SignalRepository:
         ask the question for everybody on every tick, and it does not otherwise need
         to know who the users are. Dry-run excluded: a paper loss cannot pause a
         real account.
+
+        **This market's P&L only** (M10a Step 5). A forex loss pauses forex; whether
+        the day was bad *everywhere* is the separate question
+        :meth:`realized_eur_by_user_since_across_markets` answers.
+        """
+        statement = select(SignalRow.user_id, SignalRow.realized_eur).where(
+            SignalRow.market == self._market.value,
+            SignalRow.decision == SignalDecision.TAKEN.value,
+            SignalRow.dry_run.is_(False),
+            SignalRow.closed_at.is_not(None),
+            SignalRow.closed_at >= since,
+            SignalRow.realized_eur.is_not(None),
+        )
+        grouped: dict[int, list[Decimal]] = {}
+        for row in (await self._session.execute(statement)).all():
+            if row.realized_eur is not None:
+                grouped.setdefault(row.user_id, []).append(row.realized_eur)
+        return grouped
+
+    async def realized_eur_by_user_since_across_markets(
+        self, since: datetime
+    ) -> dict[int, list[Decimal]]:
+        """The same, over **every** market — the combined daily-loss pause (M10a).
+
+        A separate method rather than a nullable ``market`` argument, for the reason
+        :meth:`LLMCallRepository.spend_totals_across_markets` gives: these are two
+        different rails asking two different questions, and a flag is how they end up
+        answered by whichever one the caller forgot to set.
         """
         statement = select(SignalRow.user_id, SignalRow.realized_eur).where(
             SignalRow.decision == SignalDecision.TAKEN.value,
@@ -1182,7 +1474,9 @@ class SignalRepository:
         have to remember (M8.1 §4's third hole — a read that stopped meaning "mine"
         the moment a second person existed).
         """
-        statement = select(SignalRow).where(SignalRow.user_id == user_id)
+        statement = select(SignalRow).where(
+            SignalRow.market == self._market.value, SignalRow.user_id == user_id
+        )
         if since is not None:
             statement = statement.where(SignalRow.created_at >= since)
         return list(
@@ -1194,7 +1488,9 @@ class SignalRepository:
     ) -> list[SignalRow]:
         """One user's signals with a measured outcome — the /stats population."""
         statement = select(SignalRow).where(
-            SignalRow.user_id == user_id, SignalRow.closed_at.is_not(None)
+            SignalRow.market == self._market.value,
+            SignalRow.user_id == user_id,
+            SignalRow.closed_at.is_not(None),
         )
         if since is not None:
             statement = statement.where(SignalRow.closed_at >= since)
@@ -1642,22 +1938,26 @@ class UserRepository:
         return user_account(row)
 
 
-class CycleRepository:
+class CycleRepository(MarketScopedRepository):
     """One row per scan cycle (ARCHITECTURE.md §3, PRD G4).
 
     ``start`` commits nothing on its own — the caller owns the transaction, as
     everywhere else here — but the orchestrator commits it immediately, because a
     cycle row written only at the end would be missing for exactly the cycles that
     matter: the ones that crashed.
-    """
 
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
+    A cycle belongs to one market from M10a: the scheduler runs one job per enabled
+    market and each writes its own rows. Every read below is scoped accordingly —
+    ``/pulse`` tells one market's story, and the failure-streak alert must not
+    report a forex outage as a crypto one. :meth:`latest_completed_at` is the single
+    deliberate exception; see its docstring.
+    """
 
     async def start(self, cycle_id: UUID, *, at: datetime, dry_run: bool, symbols: int) -> None:
         self._session.add(
             CycleRow(
                 cycle_id=cycle_id,
+                market=self._market.value,
                 started_at=at,
                 status="RUNNING",
                 dry_run=dry_run,
@@ -1681,7 +1981,12 @@ class CycleRepository:
 
     async def latest(self) -> CycleRow | None:
         """The newest cycle — how ``/health`` and ``/status`` survive a restart."""
-        statement = select(CycleRow).order_by(CycleRow.started_at.desc()).limit(1)
+        statement = (
+            select(CycleRow)
+            .where(CycleRow.market == self._market.value)
+            .order_by(CycleRow.started_at.desc())
+            .limit(1)
+        )
         return (await self._session.execute(statement)).scalars().first()
 
     async def recent(self, limit: int = 10) -> list[CycleRow]:
@@ -1691,7 +1996,12 @@ class CycleRepository:
         finished has no ``finished_at`` at all, and those are precisely the rows
         the alert exists to notice.
         """
-        statement = select(CycleRow).order_by(CycleRow.started_at.desc()).limit(limit)
+        statement = (
+            select(CycleRow)
+            .where(CycleRow.market == self._market.value)
+            .order_by(CycleRow.started_at.desc())
+            .limit(limit)
+        )
         return list((await self._session.execute(statement)).scalars())
 
     async def latest_completed(self) -> CycleRow | None:
@@ -1708,7 +2018,7 @@ class CycleRepository:
         """
         statement = (
             select(CycleRow)
-            .where(CycleRow.finished_at.is_not(None))
+            .where(CycleRow.market == self._market.value, CycleRow.finished_at.is_not(None))
             .order_by(CycleRow.finished_at.desc())
             .limit(1)
         )
@@ -1724,13 +2034,24 @@ class CycleRepository:
         """
         statement = (
             select(CycleRow)
-            .where(CycleRow.finished_at.is_not(None), CycleRow.started_at >= since)
+            .where(
+                CycleRow.market == self._market.value,
+                CycleRow.finished_at.is_not(None),
+                CycleRow.started_at >= since,
+            )
             .order_by(CycleRow.started_at)
             .limit(limit)
         )
         return list((await self._session.execute(statement)).scalars())
 
     async def latest_completed_at(self) -> datetime | None:
+        """The newest completed cycle in **any** market — ``/health`` only.
+
+        The one read here that is deliberately not market-scoped.
+        ``last_cycle_age_seconds`` answers "is the scheduler alive", which is a fact
+        about the process rather than about a market; scoping it would make a
+        deployment with a disabled market report itself as degraded for ever.
+        """
         statement = (
             select(CycleRow.finished_at)
             .where(CycleRow.finished_at.is_not(None))
@@ -1741,7 +2062,11 @@ class CycleRepository:
 
     async def completion_since(self, since: datetime) -> tuple[int, int]:
         """``(completed, started)`` — the ratio PRD G4 sets at ≥99%."""
-        started = select(func.count()).select_from(CycleRow).where(CycleRow.started_at >= since)
+        started = (
+            select(func.count())
+            .select_from(CycleRow)
+            .where(CycleRow.market == self._market.value, CycleRow.started_at >= since)
+        )
         completed = started.where(CycleRow.status == "OK")
         return (
             int((await self._session.execute(completed)).scalar_one()),

@@ -50,6 +50,7 @@ from sentinel.charts.models import ChartImage
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import TelegramConfig
 from sentinel.core.logging import get_logger
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.risk.models import TradePlan
 from sentinel.storage.db import Database
 from sentinel.storage.repositories import SignalRepository, TelegramMessageRepository
@@ -61,6 +62,18 @@ class SignalStore(Protocol):
     """The publisher's half of ``SignalRepository``."""
 
     async def claim(self, record: SignalRecord) -> SignalRecord | None: ...
+
+
+class SignalStoreFactory(Protocol):
+    """How the publisher builds its store — market-bound from M10a.
+
+    A protocol rather than ``Callable[[Any], SignalStore]`` because the market is
+    keyword-only on :class:`~sentinel.storage.repositories.MarketScopedRepository`,
+    and a bare callable type would let a double be substituted that silently
+    ignored it — filing crypto signals under a forex cycle with nothing to catch it.
+    """
+
+    def __call__(self, session: Any, *, market: Market) -> SignalStore: ...
 
 
 class MessageStore(Protocol):
@@ -159,8 +172,10 @@ class SignalPublisher:
         chat_ids: tuple[int, ...],
         telegram: TelegramConfig,
         tz: Any,
+        market: Market = LEGACY_MARKET,
+        show_market: bool = False,
         clock: Clock | None = None,
-        signals: Callable[[Any], SignalStore] = SignalRepository,
+        signals: SignalStoreFactory = SignalRepository,
         messages: Callable[[Any], MessageStore] = TelegramMessageRepository,
     ) -> None:
         self._database = database
@@ -169,6 +184,13 @@ class SignalPublisher:
         self._chat_ids = chat_ids
         self._telegram = telegram
         self._tz = tz
+        #: Which market's plan this publisher files and posts (M10a).
+        self._market = market
+        #: Whether the card names its market. Off unless more than one market is
+        #: enabled, so with forex disabled the card is byte-identical to M8.6's —
+        #: the condition lives in ``AppConfig.multi_market`` and is passed in rather
+        #: than re-derived here.
+        self._show_market = show_market
         self._clock = clock or SystemClock()
         self._signals = signals
         self._messages = messages
@@ -183,12 +205,13 @@ class SignalPublisher:
         record = SignalRecord(
             plan=plan,
             user_id=self._user_id,
+            market=self._market,
             cycle_id=cycle_id,
             chart_params=tuple(chart.params.to_json_dict() for chart in charts),
         )
 
         async with self._database.session() as session:
-            claimed = await self._signals(session).claim(record)
+            claimed = await self._signals(session, market=self._market).claim(record)
             if claimed is None:
                 await session.rollback()
                 log.info("bot.signal_already_published", plan_id=str(plan.plan_id))
@@ -250,7 +273,7 @@ class SignalPublisher:
         try:
             sent = await self._bot.send_message(
                 chat_id=chat_id,
-                text=signal_card(record, self._tz),
+                text=signal_card(record, self._tz, show_market=self._show_market),
                 parse_mode=self._telegram.parse_mode,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to,

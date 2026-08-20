@@ -24,7 +24,7 @@ from sentinel.bot.context import BotContext
 from sentinel.bot.handlers import admin, commands
 from sentinel.bot.keyboards import AdminAction, WatchlistCallback
 from sentinel.bot.models import WatchlistRequestStatus
-from sentinel.bot.runtime import WATCHLIST
+from sentinel.bot.runtime import watchlist_key
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
 from tests.bot_double import (
@@ -104,8 +104,8 @@ def owner_actor(store: FakeStore) -> Actor:
 
 
 def watchlist(ctx: BotContext, store: FakeStore) -> tuple[str, ...]:
-    stored = store.settings.get(WATCHLIST)
-    return tuple(stored) if stored is not None else tuple(ctx.settings.config.watchlist)
+    stored = store.settings.get(watchlist_key())
+    return tuple(stored) if stored is not None else tuple(ctx.settings.config.market().watchlist)
 
 
 async def ask(
@@ -213,8 +213,8 @@ async def test_the_owner_is_pointed_at_watchlist_add(ctx: BotContext, store: Fak
 
 
 def fill_to_cap(ctx: BotContext, store: FakeStore) -> None:
-    cap = ctx.settings.config.watchlist_max_symbols
-    store.settings[WATCHLIST] = [f"FILL{index:02d}USDT" for index in range(cap)]
+    cap = ctx.settings.config.market().watchlist_max_symbols
+    store.settings[watchlist_key()] = [f"FILL{index:02d}USDT" for index in range(cap)]
 
 
 async def test_a_request_past_the_cap_is_refused_at_the_door(
@@ -224,7 +224,7 @@ async def test_a_request_past_the_cap_is_refused_at_the_door(
     message, bot = await ask(ctx, store, NEW)
 
     assert "full" in message.last
-    assert str(ctx.settings.config.watchlist_max_symbols) in message.last
+    assert str(ctx.settings.config.market().watchlist_max_symbols) in message.last
     assert store.watchlist_requests == {}
     assert bot.of("send_message") == [], "an ungrantable request does not reach the owner"
 
@@ -273,7 +273,7 @@ async def test_making_room_then_approving_works(ctx: BotContext, store: FakeStor
     fill_to_cap(ctx, store)
     await decide(ctx, store, NEW, approve=True)
 
-    store.settings[WATCHLIST] = store.settings[WATCHLIST][:-1]
+    store.settings[watchlist_key()] = store.settings[watchlist_key()][:-1]
     await decide(ctx, store, NEW, approve=True)
 
     assert NEW in watchlist(ctx, store)
@@ -295,7 +295,7 @@ async def test_approval_adds_the_symbol_and_audits_it_like_a_manual_edit(
     assert NEW in watchlist(ctx, store)
     assert store.changes, "an approval must leave a config_changes row"
     key, _, new_value, by = store.changes[-1]
-    assert key == WATCHLIST
+    assert key == watchlist_key()
     assert NEW in new_value
     assert by == OWNER, "the owner made the change, not the member who asked"
 

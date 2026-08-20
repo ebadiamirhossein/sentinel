@@ -3,6 +3,25 @@
 **Status:** Approved addition. Provider abstraction lands in M5; shadow mode is milestone **M10**; consensus gate is **M11** (enabled only if shadow-mode stats justify it).
 **Models:** Primary analyst = `claude-fable-5` (Anthropic). Second opinion = GPT-5.6 Sol (OpenAI API), chosen for flagship reasoning + strongest vision (chart reading).
 
+> **Correction (2026-08-20, from M10a) — the milestone numbers in this file are off by one.**
+> Shadow mode is **M11** and the consensus gate is **M12**, not M10 and M11. M10 was
+> split when the owner asked for a second *market* before a second *model*: **M10a**
+> (this correction's milestone) added the market dimension — schema, config, budgets,
+> rails, statistics — and **M10b** will add the forex adapter itself. The ensemble
+> work moved down one number each.
+>
+> Nothing else in this document changes. The design, the phase gates, the exit
+> criteria and the §4 table all stand as written; only "M10" and "M11" in the status
+> line and the section headings below should be read as "M11" and "M12". The
+> historical text is left alone deliberately, as this file's other corrections are —
+> a spec that quietly rewrites itself cannot be checked against the decision it
+> recorded. docs/MILESTONES.md carries the renumbered plan.
+>
+> One consequence worth naming here rather than only in the milestone plan: M10a
+> stores `analyst_reports.market`, so when shadow mode does arrive, a shadow verdict
+> is scoped to a market as well as to a `role`. Neither `role='shadow'` nor the
+> comparer needs to change for that — the column is simply there.
+
 ---
 
 ## 1. Design principles
