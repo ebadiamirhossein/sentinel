@@ -327,6 +327,26 @@ reintroduced by its own fix. `test_a_member_command_does_its_own_job_rather_than
 asserts on what each handler *said* instead, and was verified to fail — 8 of them —
 by deleting `@wraps`.
 
+### Verified against Telegram's own parser, without messaging anybody
+
+The validator above encodes Telegram's rule; the deployed fix was checked against
+Telegram *itself*. **`sendMessage` parses entities before it resolves the chat** —
+established by probing with a deliberately broken body and a good one:
+
+```
+broken <b>1h</b> stack 20>50<200    → can't parse entities: Unclosed start tag
+fixed  <b>1h</b> stack 20&gt;50&lt;200 → chat not found
+```
+
+So `chat_id=1` turns the live API into an HTML validator that delivers nothing to
+anyone. **All 26 cards the bot can send, rendered from the production database, came
+back "chat not found"** — every one accepted by the real parser. Before the fix, six
+of them came back with a parse error.
+
+Worth keeping: it is the only way to test rendering against the parser that actually
+matters without sending somebody a message, and this class of bug is invisible to
+every other kind of test.
+
 ### One small thing fixed alongside
 
 `/journal` now opens on the first sheet that **has rows**. A new member's Real sheet is
