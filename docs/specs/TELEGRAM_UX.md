@@ -129,6 +129,8 @@ After entry fills, ACTIVE signals gain a second row: `[🔚 Closed manually] [�
 | `/settings` | Show all runtime config values (see the M6 note below) |
 | `/start` | **M8.1.** Request access (unknown id), or a set-up summary (approved) |
 | `/help` | **M8.1.** What every number on a card means, in plain language |
+| `/journal [30d\|90d\|all]` | **M8.6.** The caller's own book as an XLSX document — see §3c |
+| `/snapshot <SYMBOL>` | **M8.6.** Everything code measured before the AI ran — see §3d |
 | `/leave` | **M8.1.** Remove yourself; one confirmation, effective immediately |
 | `/users` | **M8.1, owner only.** Who has access, who is waiting, who is stuck |
 | `/approve <id>` / `/reject <id>` / `/suspend <id>` | **M8.1, owner only** |
@@ -394,6 +396,176 @@ the same mechanism §7's `UserView` uses for capital.
 take it off every member's menu. `tests/bot/test_dispatcher_wiring.py` proves it
 reaches a handler **for both roles** against a real `Dispatcher`, and that a caller
 with no standing still gets silence.
+
+## 3c. `/journal` — the caller's own book, as a file (added 2026-08-20, M8.6)
+
+**In no earlier version of this spec; recorded as an addition, not a deviation.**
+
+`/stats` gives a member their aggregate and `/positions` gives them what is open
+right now. Neither gives them the *rows* — the per-signal record a person reviews,
+sorts and keeps. PRD F10 says a signal is fully reconstructable from the database,
+and it is, by somebody with an SSH session. Nobody else could get their own history
+out of this system at all.
+
+```
+/journal            → the whole history
+/journal 30d | 90d | all
+```
+
+**The default is `all`, where `/stats` defaults to 30d.** A statistic is a report
+about a recent period; an export is an archive. An argument that is neither a window
+nor absent gets the usage line rather than a silent fall back to the default — M8.4's
+ruling for `/pulse 7d`, because somebody who asked for a week and received two years
+would read the file as a week's worth. The window is applied to `created_at`, not
+`closed_at`: an export is windowed by when a signal was *issued*, or one sent inside
+the window and still running would fall out of its own journal.
+
+**One sheet per population, and they are never mixed.** `Real (Taken)`,
+`Hypothetical` (👀 Watching + ❌ Skipped), and — only when they hold rows —
+`Undecided` (no button was ever pressed) and `Dry run`, plus a `Legend` sheet. Every
+row carries the population as a column as well, beside a separate **`Decided`**
+column showing what was actually pressed: the two differ in exactly two places, since
+Watching and Skipped share a population and a rehearsal has a population and no
+decision at all.
+
+The Real and Hypothetical sheets are written even when empty, so "you have none of
+these" reads as an answer; the Legend counts all four regardless, so an absent tab is
+never something a reader has to notice.
+
+**The running columns are per sheet.** `Running R (net)` and `Win rate % (gross)` are
+cumulative, and a series that walked from a trade somebody placed into one they
+skipped would be a number nothing in this system endorses (§7, and `stats/models.py`'s
+three populations "reported separately and never merged").
+
+Columns: signal number, symbol, direction, setup, confidence, decided, population,
+time in (first fill), time out (resolution), avg entry, avg exit, size EUR, leverage,
+SL %, risk EUR (1R), PnL R gross, costs EUR, PnL R net, PnL EUR gross, PnL EUR net,
+outcome, running R, win rate %.
+
+**Euro figures appear on the Real sheet only.** Elsewhere nobody placed the trade, so
+a euro figure would assert money that was never at risk. The R columns stay on every
+sheet, which is the point of resolving a hypothetical at all.
+
+Three definitions are settled here because each is a place this file could quietly
+disagree with a surface that already exists:
+
+* **1R is `planned_risk_eur`**, and the `Risk EUR (1R)` column is that number rather
+  than `plan.risk_eur`, the step-floored actual. Against the wrong basis the gap
+  between `PnL R x Risk EUR` and `PnL EUR` would be a *bias* growing with the figure
+  rather than the half-a-hundredth-of-R rounding it is. R stays at 2dp, as on every
+  card; the euro columns are the exact ones and the Legend says so.
+* **Net subtracts costs from the numerator only** — deliberately *not*
+  `risk/costs.net_rr_multiples`' convention, which also grows the denominator. That
+  function prices a *prospective* trade where the cost is money additionally at risk;
+  here the trade is over, R is a fixed unit of account and a running balance has to
+  add up.
+* **A win is counted on gross R**, exactly as `/stats` defines it, while the running
+  balance is net. The win rate at the bottom of the Real sheet therefore equals what
+  `/stats` reports for the same window. A trade can win gross and lower the balance
+  after costs; that is true of `/stats` too, and the Legend says it.
+
+**Open signals are rows with the running columns blank** (owner ruling). They sit at
+the bottom of their sheet and join the balance and the rate when they resolve. Had
+they participated, every earlier row's balance would silently renumber on the day an
+open trade closed and landed elsewhere in history — a record that reorders itself is
+not a record. Blank means "not yet part of this"; a zero would claim the trade
+contributed nothing. A signal that never *filled* is a row too, and moves neither
+figure: the price reached no entry rung, so it was not a trade (`stats/compute.py`).
+
+**An empty journal is a sentence, not an empty file.** A workbook of nothing but
+headers is indistinguishable from a broken export, and the reader would open it to
+find out which it was.
+
+### Strictly caller-scoped, and how that is guaranteed
+
+Unlike `/pulse`, this is the most per-user surface in the system, and it is the only
+one whose output leaves the chat as a **document** — forwardable, saveable, and
+outliving its caption. Three mechanisms carry the scoping, none of them a filter
+somebody has to remember:
+
+1. `SignalRepository.journal_since` takes a keyword-only `user_id` with no default.
+2. `stats.journal.JournalRow` has **no field** that could hold a user id, in the
+   manner of §7's `UserView` and M8.4's `PulseGateView`.
+3. The file is sent to the caller's own id rather than to the chat the command
+   arrived in, and the **filename carries no id and no name** — it is the part of a
+   document that travels furthest.
+
+`tests/bot/test_journal.py` proves user A's file cannot contain user B's rows three
+ways: at the view level, by reading the workbook back cell by cell, and by scanning
+the raw XLSX zip's XML. The third is not redundant — a value can reach the artefact
+without reaching a cell a reader would see — and a fourth test deliberately builds a
+leaking file and asserts the same checks catch it.
+
+**XLSX generation uses `openpyxl`** (owner-approved 2026-08-20 under CLAUDE.md's
+dependency rule): 250KB wheel, ~1.3MB unpacked, pure Python with no native
+extension. XLSX numbers are IEEE doubles, so `Decimal` ends at the file boundary
+whatever writes it; every figure is asserted to round-trip through the file
+unchanged, and the money columns carry a 2dp format so what Excel displays is the
+cent figure `risk/rounding` produced.
+
+## 3d. `/snapshot <SYMBOL>` — the deterministic view, before the AI (added 2026-08-20, M8.6)
+
+**In no earlier version of this spec; recorded as an addition, not a deviation.**
+
+§3b's `/pulse` made the pipeline's *reasoning* visible, and every word of it is model
+output. This is the other half, and it has no model in it: the regimes, EMAs, RSI,
+ATR, relative volume, funding, open interest, support and resistance with their touch
+counts, orderbook imbalance, Fear & Greed, BTC dominance and data-quality flags that
+`features/` and `ingestion/` compute and store on every `market_snapshots` row — and
+that the analyst is then handed. It has been in the database since M1 and readable
+only over SSH.
+
+The point is that a reader can now check the analysis against its own inputs: when a
+card claims "1h pullback into EMA50", the EMA50 the model was actually given is nine
+characters away.
+
+**Shared market data, so the same access as `/pulse`** — every approved user. Unlike
+`/pulse` there is not even a spend line to differ on, so the owner and a member get
+byte-identical text, and the handler takes no `Actor` at all: a parameter it does not
+receive is a boundary it cannot cross. `SnapshotView` carries no user id, no capital,
+no sizing and no decision, and a meta-test asserts no such field appears.
+
+Sections: last price and capture time (local + UTC) · per-timeframe block for
+15m/1h/4h/1d — trend regime with its `RegimeBasis`, volatility regime, EMA20/50/200,
+RSI14, ATR14 and ATR%, relative volume, EMA stack, bars used · support and resistance
+zones with touch counts and signed distance, nearest first · funding rate and next
+settlement, open interest and its 24h change · orderbook imbalance, spread and top of
+book · Fear & Greed with yesterday's delta · BTC dominance and total market cap 24h ·
+data quality with the degraded fields **named**.
+
+The card is labelled **"computed by code, before any AI analysis"** and points at
+`/pulse <SYMBOL>` for the model's read of the same data. A wall of indicators that a
+reader might mistake for an opinion would be worse than no card.
+
+**Every absent block is named as absent**, never dropped and never zero-filled: a
+funding rate that was not fetched is not a funding rate of zero, and telling those
+apart is half of why this command exists. A `RegimeBasis` of `REDUCED` is shown
+beside the regime rather than rounded off, because a trend classified without an
+EMA200 is not the same finding as one classified with it. A stored block that no
+longer validates costs that section and not the card.
+
+It reads the **newest stored snapshot whatever its age** and prints when it was
+captured — M8.5 decision 3's reasoning: a window would turn a stale answer into *no*
+answer, which reads as "never ingested" and is a different fact. There is no exchange
+round trip: the question is what the pipeline measured, not what is true this second.
+
+A symbol with nothing stored gets one of the two answers `/pulse <SYMBOL>` already
+distinguishes — on the watchlist and not yet ingested, or not on the watchlist at all.
+
+Levels are capped at 8, nearest first, with the count of what was left out shown
+beneath them (M8.4's no-silent-caps rule).
+
+Both commands are **read-only**: no new table, no new column, no migration, no write
+of any kind. Both are on `MEMBER_COMMANDS` and reach the owner through `commands_for`
+— deliberately not on `OWNER_COMMANDS`, which would take them off every member's menu
+— and `tests/bot/test_dispatcher_wiring.py` proves each reaches a handler **for both
+roles** against a real `Dispatcher`, with silence for a caller with no standing.
+
+> **`/help` splits across messages from M8.6.** It reached 3,859 of Telegram's 4,096
+> characters, and explaining two more commands needed ~470. The choice was to cut
+> carefully-written explanation or to split, and M8.5 §3b already settled that for
+> this codebase: split, never shorten. `help_card()` returns pages through the same
+> `_paginate` `/pulse <SYMBOL>` uses.
 
 ## 4. Tracker notifications (replies to the original card)
 

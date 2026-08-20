@@ -136,6 +136,11 @@ class FakeBot:
     async def send_media_group(self, **kwargs: Any) -> list[_Message]:
         return [self._record("send_media_group", kwargs)]
 
+    async def send_document(self, **kwargs: Any) -> _Message:
+        """M8.6 — ``/journal``'s XLSX. Recorded like everything else, so a test can
+        assert on the bytes that would have left the process."""
+        return self._record("send_document", kwargs)
+
     async def edit_message_reply_markup(self, **kwargs: Any) -> _Message:
         return self._record("edit_message_reply_markup", kwargs)
 
@@ -206,6 +211,9 @@ class _SignalRow:
     setup_type: str = "trend_pullback"
     #: /stats breaks its populations down by this (specs/PROMPTS.md §5 step 3).
     prompt_version: str | None = "fable_v1"
+    #: M8.6 — /journal prints both.
+    confidence: int = 78
+    first_fill_at: datetime | None = None
     plan: dict[str, Any] = field(default_factory=dict)
     expires_at: datetime | None = None
     status: str = "PENDING_ENTRY"
@@ -246,6 +254,10 @@ class _SnapshotRow:
     data_quality: str
     captured_at: datetime
     degraded_fields: list[str] = field(default_factory=list)
+    #: M8.6 — /snapshot reads the row's own price and the JSONB context block the
+    #: feature engine, the derivatives adapter and the global fetchers write into.
+    last_price: Decimal = Decimal("0")
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -703,6 +715,21 @@ class FakeSignalRepository(SignalRepository):
             if row.closed_at is not None and (since is None or row.closed_at >= since)
         ]
 
+    async def journal_since(self, since: datetime | None = None, *, user_id: int) -> list[Any]:
+        """M8.6 — resolved *and* open, windowed on ``created_at``.
+
+        The two differences from ``resolved_since`` above are the whole point of the
+        query existing, so the fake reproduces both rather than aliasing it.
+        """
+        return sorted(
+            (
+                row
+                for row in self._mine(user_id)
+                if since is None or (row.created_at is not None and row.created_at >= since)
+            ),
+            key=lambda row: (row.created_at or ACCOUNT_NOW, row.number),
+        )
+
 
 #: Which statuses arm a cooldown, mirroring ``repositories._COOLDOWN_ARMING``.
 _ARMING_STATUSES = (
@@ -900,6 +927,11 @@ class FakeSnapshotRepository(SnapshotRepository):
 
     async def latest_per_symbol(self, limit: int = 20) -> list[Any]:
         return list(self._store.snapshots[:limit])
+
+    async def latest_for_symbol(self, symbol: str) -> Any:
+        """M8.6 — newest first, unbounded in time (``/snapshot``)."""
+        rows = [row for row in self._store.snapshots if row.symbol == symbol]
+        return max(rows, key=lambda row: row.captured_at) if rows else None
 
 
 class FakeMessageRepository(TelegramMessageRepository):

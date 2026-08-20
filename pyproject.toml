@@ -43,6 +43,19 @@ dependencies = [
   # api.telegram.org and to our own Postgres, and there is no execution path for it
   # to reach (PRD §3). Brings no new transport — aiohttp is already here via ccxt.
   "aiogram>=3.15,<4",
+  # M8.6 — /journal's XLSX export (owner-approved 2026-08-20). 250KB wheel,
+  # ~1.3MB unpacked plus et-xmlfile; pure Python with no native extension, so it
+  # cannot break the image build the way a compiled wheel could.
+  #
+  # It accepts a Decimal without a cast at the call site (its NUMERIC_TYPES
+  # includes Decimal); XlsxWriter's write_number takes a float outright. Neither
+  # can store one exactly — XLSX numbers are IEEE doubles, so Decimal ends at the
+  # file boundary whatever writes it. sentinel/bot/export.py documents exactly what
+  # that costs, and tests that every figure round-trips through the file unchanged.
+  #
+  # Never used through pandas: DataFrame.to_excel puts a Decimal column through a
+  # numpy dtype first. sentinel/bot/export.py writes cells directly.
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -111,7 +124,7 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # Third-party packages that ship no type information.
-module = ["apscheduler.*", "ccxt.*", "feedparser.*", "mplfinance.*"]
+module = ["apscheduler.*", "ccxt.*", "feedparser.*", "mplfinance.*", "openpyxl.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

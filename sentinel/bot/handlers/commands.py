@@ -29,19 +29,23 @@ from datetime import datetime, timedelta
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, Message
 
 from sentinel.bot.auth import Actor
 from sentinel.bot.cards import (
+    journal_caption,
+    journal_empty_card,
     positions_card,
     pulse_card,
     pulse_day_card,
+    snapshot_card,
     stats_card,
     symbol_pulse_card,
     watchlist_request_ack_card,
     watchlist_request_card,
 )
 from sentinel.bot.context import BotContext
+from sentinel.bot.export import journal_filename, journal_workbook
 from sentinel.bot.formatting import escape
 from sentinel.bot.keyboards import watchlist_request_keyboard
 from sentinel.bot.models import SignalDecision
@@ -57,10 +61,12 @@ from sentinel.bot.runtime import (
     risk_pct_of,
     verify_symbol,
 )
+from sentinel.bot.snapshot import snapshot_view
 from sentinel.bot.views import SpendView
 from sentinel.core.logging import get_logger
 from sentinel.risk.models import TradePlan
-from sentinel.stats.queries import build_report, parse_window
+from sentinel.stats.journal import build_journal
+from sentinel.stats.queries import WINDOWS, build_report, parse_window, window_start
 
 log = get_logger(__name__)
 
@@ -333,6 +339,118 @@ async def _pulse_day(ctx: BotContext, *, now: datetime, spend: SpendView | None)
         spend=spend,
     )
     return pulse_day_card(view, ctx.tz)
+
+
+#: ``/journal`` accepts the same windows ``/stats`` does, plus its own default.
+JOURNAL_WINDOWS = frozenset({*WINDOWS, "all"})
+
+#: **"all", where ``/stats`` defaults to 30d.** A statistic is a report about a
+#: recent period; an export is an archive, and the commonest reason to ask for one
+#: is to have the whole thing.
+DEFAULT_JOURNAL_WINDOW = "all"
+
+JOURNAL_USAGE = (
+    "❌ Usage: <code>/journal</code> for your whole history, or "
+    "<code>/journal 30d</code> · <code>/journal 90d</code> · <code>/journal all</code>."
+)
+
+SNAPSHOT_USAGE = (
+    "❌ Usage: <code>/snapshot SOLUSDT</code> — the numbers the code measured for one "
+    "symbol, before any AI analysis."
+)
+
+
+@commands_router.message(Command("journal"))
+async def journal(
+    message: Message,
+    command: CommandObject,
+    ctx: BotContext,
+    actor: Actor,
+    bot: SupportsBot,
+) -> None:
+    """§3c ``/journal [30d|90d|all]`` — **the caller's own book, as a file** (M8.6).
+
+    The most per-user surface in this bot, and the only one whose output leaves the
+    chat as a document. Three things carry the scoping, none of them a filter
+    somebody has to remember:
+
+    * ``SignalRepository.journal_since`` takes a keyword-only ``user_id`` with no
+      default, so a caller cannot fail to supply one;
+    * ``stats.journal.JournalRow`` has no field that could hold a user id, so
+      nothing another user owns can reach a cell;
+    * the file is sent to ``actor.user_id`` — the caller's own private chat — rather
+      than to ``message.chat.id``, which is where every other outbound in this
+      codebase is addressed too. A document is forwardable and this one is somebody's
+      whole trading record; it should leave the process pointed at exactly one place.
+
+    An unrecognised window gets the usage line rather than silently falling back to
+    the default, on M8.4's ruling for ``/pulse 7d``: a person who typed ``/journal
+    7d`` and received their whole history would not notice they had been answered a
+    different question.
+    """
+    raw = (command.args or "").strip().split()[0].lower() if command.args else ""
+    window = raw or DEFAULT_JOURNAL_WINDOW
+    if window not in JOURNAL_WINDOWS:
+        await message.answer(JOURNAL_USAGE)
+        return
+
+    now = ctx.clock.now()
+    async with ctx.database.session() as session:
+        rows = await ctx.repositories.signals(session).journal_since(
+            window_start(window, now=now), user_id=actor.user_id
+        )
+        signal_ids = [row.id for row in rows]
+        fills = await ctx.repositories.fills(session).for_signals(signal_ids)
+        exits = await ctx.repositories.exits(session).for_signals(signal_ids)
+
+    if not rows:
+        # A file with nothing but headers is indistinguishable from a broken export,
+        # and the reader would open it to find out which it was.
+        await message.answer(journal_empty_card(window))
+        return
+
+    books = build_journal(rows, fills=fills, exits=exits)
+    log.info("bot.journal_exported", user_id=actor.user_id, window=window, signals=len(rows))
+    await bot.send_document(
+        chat_id=actor.user_id,
+        document=BufferedInputFile(
+            journal_workbook(books, window_label=window, generated_at=now, tz=ctx.tz),
+            filename=journal_filename(now, ctx.tz),
+        ),
+        caption=journal_caption(books, window_label=window),
+        parse_mode=ctx.settings.config.telegram.parse_mode,
+    )
+
+
+@commands_router.message(Command("snapshot"))
+async def snapshot(message: Message, command: CommandObject, ctx: BotContext) -> None:
+    """§3d ``/snapshot SOLUSDT`` — the deterministic view, before the AI (M8.6).
+
+    Shared market data, so this handler takes no ``actor`` at all: there is nothing
+    on the card that could vary by caller, and a parameter it does not receive is a
+    boundary it cannot cross. The counterpart to ``/pulse SOLUSDT``, which is
+    entirely model output; this one contains none.
+
+    Read-only, one table, and no exchange round trip — the question is "what did the
+    pipeline measure", and for a symbol nobody has ingested the answer is the same
+    whether or not the exchange lists it (M8.5 decision 2).
+    """
+    if not command.args:
+        await message.answer(SNAPSHOT_USAGE)
+        return
+
+    parsed = parse_symbol(command.args.strip().split()[0])
+    if isinstance(parsed, Invalid):
+        await message.answer(SNAPSHOT_USAGE)
+        return
+
+    async with ctx.database.session() as session:
+        row = await ctx.repositories.snapshots(session).latest_for_symbol(parsed)
+        stored = await ctx.repositories.settings(session).all()
+
+    watchlist = effective_config(ctx.settings, stored).watchlist
+    view = snapshot_view(row, symbol=parsed, on_watchlist=parsed in watchlist)
+    await message.answer(snapshot_card(view, ctx.tz))
 
 
 __all__ = ["commands_router"]

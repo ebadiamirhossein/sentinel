@@ -48,6 +48,8 @@ def test_the_member_menu_is_exactly_what_a_member_may_run() -> None:
         "positions",
         "stats",
         "pulse",
+        "snapshot",
+        "journal",
         "request",
         "leave",
     }
@@ -129,3 +131,20 @@ def test_pulse_is_on_both_menus() -> None:
         "/pulse is a member command the owner also gets, not an operator command — "
         "putting it in OWNER_COMMANDS would take it off every member's menu"
     )
+
+
+def test_snapshot_and_journal_are_on_both_menus() -> None:
+    """M8.6. Both are on ``MEMBER_COMMANDS`` and deliberately not on
+    ``OWNER_COMMANDS`` — the owner inherits them through ``commands_for``, and
+    putting either in the owner half would take it off every member's menu.
+
+    ``/snapshot`` because it is shared market data with nothing per-caller on it at
+    all; ``/journal`` because it is scoped to whoever runs it, which makes it exactly
+    as much the owner's command as a member's.
+    """
+    for command in ("snapshot", "journal"):
+        assert command in names(commands_for(owner=False)), f"/{command} left a member's menu"
+        assert command in names(commands_for(owner=True)), f"/{command} left the owner's menu"
+        assert command not in names(OWNER_COMMANDS), (
+            f"/{command} in OWNER_COMMANDS would take it off every member's menu"
+        )

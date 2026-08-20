@@ -12,14 +12,33 @@ only what it uses.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from sentinel.bot.menu import SupportsCommands
 from sentinel.bot.publisher import SupportsSending
 
 
-class SupportsBot(SupportsSending, SupportsCommands, Protocol):
-    """Sends messages and publishes command menus — what aiogram injects as ``bot``."""
+class SupportsDocuments(Protocol):
+    """Sending a file (M8.6). Narrow, and separate, for the reason above.
+
+    ``/journal`` is the only thing in this system that produces a document, and the
+    publisher, the notifier and the alerter — the three components that depend on
+    ``SupportsSending`` — will never send one. Adding ``send_document`` there would
+    make all three declare a capability none of them has any use for.
+
+    ``document`` is ``Any`` for the same reason ``send_media_group``'s ``media`` is:
+    a real ``aiogram.Bot`` takes ``InputFile | str``, and naming the concrete
+    ``BufferedInputFile`` the handler happens to pass would make the real Bot fail
+    the protocol rather than satisfy it.
+    """
+
+    async def send_document(
+        self, *, chat_id: int, document: Any, caption: str, parse_mode: str
+    ) -> Any: ...
 
 
-__all__ = ["SupportsBot"]
+class SupportsBot(SupportsSending, SupportsCommands, SupportsDocuments, Protocol):
+    """Messages, command menus and documents — what aiogram injects as ``bot``."""
+
+
+__all__ = ["SupportsBot", "SupportsDocuments"]

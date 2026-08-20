@@ -45,6 +45,8 @@ MEMBER_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand(command="positions", description="Your open signals, marked to market"),
     BotCommand(command="stats", description="Your win rate, avg R, profit factor"),
     BotCommand(command="pulse", description="What the pipeline did — 24h, or a symbol"),
+    BotCommand(command="snapshot", description="The measured numbers — /snapshot SOLUSDT"),
+    BotCommand(command="journal", description="Your signals as a spreadsheet"),
     BotCommand(command="request", description="Ask for a symbol — /request SOLUSDT"),
     BotCommand(command="leave", description="Stop receiving signals and remove yourself"),
 )

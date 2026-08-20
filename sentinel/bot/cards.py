@@ -34,12 +34,15 @@ from sentinel.bot.models import (
     UserStatus,
     WatchlistRequest,
 )
+from sentinel.bot.snapshot import NA
 from sentinel.bot.views import (
     AlertView,
     PositionView,
     PulseDayView,
     PulseView,
     SettingsView,
+    SnapshotTimeframeView,
+    SnapshotView,
     StatsView,
     StatusView,
     SymbolPulseView,
@@ -47,6 +50,7 @@ from sentinel.bot.views import (
     UserView,
 )
 from sentinel.risk.models import GateDecision, TradePlan
+from sentinel.stats.journal import ALWAYS_WRITTEN, JournalBook
 
 #: specs/TELEGRAM_UX.md §2 — what each button says once it has been pressed.
 DECISION_LABEL = {
@@ -475,6 +479,22 @@ def _paginate(lines: Sequence[str], budget: int) -> list[str]:
     return pages
 
 
+def _pages(lines: Sequence[str]) -> tuple[str, ...]:
+    """Lines as sendable messages, numbered only when there is more than one.
+
+    The marker is added *after* the cut, which is why :data:`PAGE_BUDGET` sits below
+    :data:`MESSAGE_LIMIT`: appending "(1/2)" to a page already fitted to 4096 would
+    push it back over the limit it was just fitted to.
+    """
+    pages = _paginate(lines, PAGE_BUDGET)
+    if len(pages) == 1:
+        return (pages[0],)
+    total = len(pages)
+    return tuple(
+        f"{page}\n\n<i>({number}/{total})</i>" for number, page in enumerate(pages, start=1)
+    )
+
+
 def symbol_pulse_card(view: SymbolPulseView, tz: ZoneInfo) -> tuple[str, ...]:
     """``/pulse SOLUSDT`` — one verdict in full, across as many messages as it takes.
 
@@ -546,13 +566,7 @@ def symbol_pulse_card(view: SymbolPulseView, tz: ZoneInfo) -> tuple[str, ...]:
         "/pulse never sizes anything.</i>"
     )
 
-    pages = _paginate(lines, PAGE_BUDGET)
-    if len(pages) == 1:
-        return (pages[0],)
-    total = len(pages)
-    return tuple(
-        f"{page}\n\n<i>({number}/{total})</i>" for number, page in enumerate(pages, start=1)
-    )
+    return _pages(lines)
 
 
 #: Said under a field the pipeline itself cut. This card's promise is the analyst's
@@ -590,6 +604,244 @@ def _no_verdict_card(view: SymbolPulseView) -> str:
         "Ask for it with <code>/request "
         f"{symbol}</code> — the owner adds it with <code>/watchlist add {symbol}</code>."
     )
+
+
+# --------------------------------------------------------------------------- #
+# /snapshot (M8.6) — the deterministic view, before any model was called
+# --------------------------------------------------------------------------- #
+
+#: Said at the foot of every ``/snapshot``, and it is the reason the command exists.
+#: The card has to be impossible to mistake for an opinion: nothing on it was
+#: written by a model, and the place the model's version lives is named.
+SNAPSHOT_FOOTER = (
+    "<i>Computed by code, before any AI analysis — no model wrote anything above. "
+    "Use /pulse {symbol} for what the analyst made of it.</i>"
+)
+
+#: Said where a figure exists but was not determined, as opposed to not applying.
+NOT_MEASURED = "not measured"
+
+
+def snapshot_card(view: SnapshotView, tz: ZoneInfo) -> str:
+    """``/snapshot SOLUSDT`` — every deterministic figure the analyst was handed.
+
+    Shared market data, so this text is identical for every approved reader: there
+    is no per-user field on :class:`~sentinel.bot.views.SnapshotView` and no role
+    check anywhere below.
+
+    A block the snapshot did not carry is **named as missing**, never dropped and
+    never shown as zero — a funding rate that was not fetched is not a funding rate
+    of zero, and telling those apart is half of what this card is for.
+    """
+    if view.at is None:
+        return _no_snapshot_card(view)
+
+    symbol = escape(view.symbol)
+    lines = [
+        f"🔬 <b>{symbol}</b> — measured, not analysed",
+        f"{local_and_utc(view.at, tz)} · last <b>{view.last_price}</b>",
+        _quality_line(view),
+    ]
+
+    if view.features_unreadable:
+        lines.append("")
+        lines.append(
+            "⚠️ The stored indicator block does not match this build and cannot be "
+            "read. Price, capture time and data quality above are the row's own "
+            "columns and are unaffected."
+        )
+
+    if view.timeframes:
+        lines.append("")
+        lines.append("📐 <b>Trend</b>")
+        for tf in view.timeframes:
+            lines.extend(_timeframe_lines(tf))
+        aligned = {True: "yes", False: "no", None: NOT_MEASURED}[view.regime_aligned]
+        lines.append(f"  4h context <b>{view.htf_regime}</b> · 1h aligned: {aligned}")
+        lines.append(f"  Change 1h {view.change_1h} · 4h {view.change_4h} · 24h {view.change_24h}")
+
+    lines.append("")
+    if view.levels:
+        lines.append("📊 <b>Support &amp; resistance</b> (nearest first)")
+        for level in view.levels:
+            # A comparison, not arithmetic — "1 touch(es)" is the kind of small
+            # wrongness that makes a reader trust the rest of a card less.
+            touches = "touch" if level.touches == 1 else "touches"
+            lines.append(
+                f"  {level.kind} {level.price} · {level.timeframe} · "
+                f"{level.touches} {touches} · {level.distance_pct}"
+            )
+        if view.levels_dropped:
+            lines.append(f"  <i>+{view.levels_dropped} further out, not shown.</i>")
+        lines.append(
+            f"  Nearest support {view.nearest_support} · resistance {view.nearest_resistance}"
+        )
+    else:
+        lines.append("📊 <b>Support &amp; resistance</b> — no zones clustered from the candles.")
+
+    lines.append("")
+    if view.derivatives is not None:
+        deriv = view.derivatives
+        lines.append("🔗 <b>Derivatives</b>")
+        next_at = (
+            ""
+            if deriv.next_funding_at is None
+            else f" · next {local_and_utc(deriv.next_funding_at, tz)}"
+        )
+        lines.append(f"  Funding {deriv.funding_pct} per settlement{next_at}")
+        # Binance does not always publish the notional, and "(≈ n/a USDT)" is a
+        # worse line than no parenthetical — found on a live ADAUSDT/AVAXUSDT row,
+        # never on a fixture.
+        notional = (
+            "" if deriv.open_interest_value == NA else f" (≈ {deriv.open_interest_value} USDT)"
+        )
+        lines.append(f"  Open interest {deriv.open_interest_base} in base units{notional}")
+        lines.append(f"  24h change {deriv.change_24h_pct} over {deriv.points} point(s)")
+        lines.append(f"  Long/short ratio {deriv.long_short_ratio}")
+    else:
+        lines.append("🔗 <b>Derivatives</b> — not recorded on this snapshot.")
+
+    lines.append("")
+    if view.book is not None:
+        book = view.book
+        lines.append("📖 <b>Order book</b>")
+        lines.append(
+            f"  Imbalance {book.imbalance} · spread {book.spread_pct}% · "
+            f"top {book.depth_levels} levels"
+        )
+        lines.append(f"  Best bid {book.best_bid} · best ask {book.best_ask}")
+    else:
+        lines.append("📖 <b>Order book</b> — not recorded on this snapshot.")
+
+    lines.append("")
+    lines.append("🌡 <b>Market</b>")
+    if view.sentiment is not None:
+        lines.append(
+            f"  Fear &amp; Greed {view.sentiment.value} "
+            f"({escape(view.sentiment.classification)}) · {view.sentiment.delta} vs yesterday"
+        )
+    else:
+        lines.append("  Fear &amp; Greed — not recorded on this snapshot.")
+    if view.macro is not None:
+        lines.append(
+            f"  BTC dominance {view.macro.btc_dominance_pct}% · "
+            f"total market cap 24h {view.macro.mcap_change_24h_pct}"
+        )
+    else:
+        lines.append("  BTC dominance — not recorded on this snapshot.")
+
+    lines.append("")
+    lines.append(SNAPSHOT_FOOTER.format(symbol=symbol))
+    return "\n".join(lines)
+
+
+def _quality_line(view: SnapshotView) -> str:
+    """specs/DATA_SOURCES.md §4's flag, with the fields that degraded named.
+
+    "DEGRADED" alone tells a reader something is wrong and not what, and the whole
+    list is on the row — so it is printed. This is the line that says whether the
+    analyst was working with everything.
+    """
+    if not view.degraded_fields:
+        return f"Data quality: <b>{view.quality}</b>"
+    fields = ", ".join(escape(field) for field in view.degraded_fields)
+    return f"⚠️ Data quality: <b>{view.quality}</b> — missing or stale: {fields}"
+
+
+def _timeframe_lines(view: SnapshotTimeframeView) -> list[str]:
+    """One timeframe, on three lines: the classification, then the numbers behind it.
+
+    ``regime_basis`` rides beside the regime rather than being dropped when it is
+    ``FULL``: a 1d series of 100 candles has no EMA200 and is classified ``REDUCED``,
+    and a card that showed only the verdict would let a reduced read pass for a full
+    one — which is the distinction ``RegimeBasis`` was added to preserve.
+    """
+    partial = " · partial candle dropped" if view.partial_candle_dropped else ""
+    return [
+        f"  <b>{view.timeframe}</b> {view.regime} ({view.regime_basis.lower()}) · "
+        f"vol {view.volatility} · stack {view.ema_stack}",
+        f"    EMA20 {view.ema20} · EMA50 {view.ema50} · EMA200 {view.ema200}",
+        f"    RSI {view.rsi14} · ATR {view.atr14} ({view.atr_pct}%) · "
+        f"rel vol {view.relative_volume} · {view.candles_used} bars{partial}",
+    ]
+
+
+def _no_snapshot_card(view: SnapshotView) -> str:
+    """Nothing ingested — and *which* nothing, exactly as ``/pulse SOLUSDT`` does.
+
+    On the watchlist and not yet ingested is a young or a degraded cycle; off the
+    watchlist means nothing is looking at the symbol at all, and the fix is a
+    different command for each role.
+    """
+    symbol = escape(view.symbol)
+    if view.on_watchlist:
+        return (
+            f"🔬 <b>{symbol}</b>\n\n"
+            "On the watchlist, but no snapshot has been stored for it yet. Every "
+            "cycle ingests the whole watchlist, so this clears itself within one "
+            "scan interval unless ingestion is failing for this symbol.\n"
+            "/pulse shows what the last cycle managed to do."
+        )
+    return (
+        f"🔬 <b>{symbol}</b>\n\n"
+        "Not on the watchlist, so nothing ingests it and there is no snapshot to "
+        "show.\n"
+        f"Ask for it with <code>/request {symbol}</code> — the owner adds it with "
+        f"<code>/watchlist add {symbol}</code>."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# /journal (M8.6) — the two things the command says in words; the rest is a file
+# --------------------------------------------------------------------------- #
+
+
+def journal_empty_card(window_label: str) -> str:
+    """No rows at all — a sentence, deliberately not an empty spreadsheet.
+
+    A file with nothing but headers is indistinguishable from a broken export, and
+    the reader would open it to find out. It also says *which* nothing: a fresh
+    account and a window with nothing in it are different, and only one of them is
+    fixed by asking for a wider window.
+    """
+    return (
+        "📓 <b>Trade journal</b>\n\n"
+        f"No signals of yours fall in this window ({escape(window_label)}), so there "
+        "is nothing to export — an empty spreadsheet would only look like a broken "
+        "one.\n\n"
+        "Try <code>/journal all</code> for your whole history. If that is empty too, "
+        "nothing has been sent to you yet: <code>/pulse</code> shows what the "
+        "pipeline has been doing, and <code>/capital</code> is what a signal needs "
+        "before it can be sized for you."
+    )
+
+
+def journal_caption(books: Sequence[JournalBook], *, window_label: str) -> str:
+    """The document's caption: what is in the file, and whose it is.
+
+    Every population is counted, **including the empty ones that got a sheet**, so
+    the counts explain the sheets rather than leaving a reader to wonder whether an
+    empty tab means "none" or "not exported".
+    """
+    counted = " · ".join(
+        f"{escape(book.title)} {len(book.rows)}"
+        for book in books
+        if book.rows or book.population in ALWAYS_WRITTEN
+    )
+    lines = [
+        "📓 <b>Your trade journal</b>",
+        f"Window: {escape(window_label)} · {counted}",
+        "",
+        "One row per signal, one sheet per population — they are never mixed, "
+        "because a running balance that walked from a trade you took into one you "
+        "skipped would not mean anything. The Legend sheet defines every column.",
+        "",
+        "<b>This file is yours alone.</b> It contains no other user's signals, "
+        "sizing or decisions.",
+        "",
+        f"<i>{DISCLAIMER}</i>",
+    ]
+    return "\n".join(lines)
 
 
 def alert_card(view: AlertView, tz: ZoneInfo) -> str:
@@ -887,6 +1139,22 @@ HELP_LINES = (
     "<code>/pulse SOLUSDT</code> for one symbol's full verdict — the whole thesis, "
     "the evidence behind it and the argument against it, nothing shortened.",
     "",
+    "<b>Your own record</b> — <code>/journal</code>",
+    "Every signal of yours as a spreadsheet: entry, exit, size, risk, R, costs, "
+    "running balance and rolling win rate, one row each. Taken trades and "
+    "Watching/Skipped ones sit on separate sheets and are never mixed — a running "
+    "balance that walked from a trade you placed into one you did not would not "
+    "mean anything. <code>/journal 30d</code> narrows the window. The file is "
+    "yours alone: nobody else's rows are ever in it.",
+    "",
+    "<b>The numbers before the AI</b> — <code>/snapshot SOLUSDT</code>",
+    "What the code measured on the last cycle, with no model involved at all: "
+    "price, trend and volatility per timeframe, EMA20/50/200, RSI, ATR, relative "
+    "volume, funding, open interest, support and resistance with how many times "
+    "each was touched, order-book imbalance, Fear &amp; Greed, BTC dominance, and "
+    "which data sources were degraded. It is the analyst's own input, so you can "
+    "hold a thesis up against it.",
+    "",
     "This is experimental software and its win rate is not yet measured. You can lose money.",
     "",
     f"<i>{DISCLAIMER}</i>",
@@ -909,9 +1177,16 @@ ACKNOWLEDGEMENT_LINES = (
 )
 
 
-def help_card() -> str:
-    """§3 ``/help`` — plain language, no jargon left undefined."""
-    return "\n".join(HELP_LINES)
+def help_card() -> tuple[str, ...]:
+    """§3 ``/help`` — plain language, no jargon left undefined.
+
+    **Returns pages, like** :func:`symbol_pulse_card`, and for M8.5's reason: it
+    outgrew one Telegram message at M8.6 and the choice was to cut carefully-written
+    explanation or to split. Splitting is what this codebase already decided to do
+    when a card cannot fit — every term a signal card uses has to stay defined, and
+    /help is the only place they are defined.
+    """
+    return _pages(HELP_LINES)
 
 
 def acknowledgement_card() -> str:
@@ -1161,6 +1436,8 @@ __all__ = [
     "acknowledgement_card",
     "decision_ack_card",
     "help_card",
+    "journal_caption",
+    "journal_empty_card",
     "leave_confirm_card",
     "left_card",
     "loss_pause_card",
@@ -1173,6 +1450,7 @@ __all__ = [
     "rejection_card",
     "settings_card",
     "signal_card",
+    "snapshot_card",
     "standing_card",
     "stats_card",
     "status_card",

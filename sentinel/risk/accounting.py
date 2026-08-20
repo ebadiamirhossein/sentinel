@@ -39,6 +39,21 @@ def avg_fill_price(fills: tuple[Fill, ...]) -> Decimal:
     return sum((fill.price * fill.qty for fill in fills), Decimal(0)) / total
 
 
+def avg_exit_price(exits: tuple[Exit, ...]) -> Decimal:
+    """Quantity-weighted average of what actually closed. Nothing closed → 0.
+
+    The mirror of :func:`avg_fill_price`, and it lives here for the same reason: a
+    position closed across TP1, TP2 and a stop has one honest exit price and it is
+    the weighted one. M8.6's ``/journal`` prints it as a column, and a renderer that
+    averaged the legs itself would be a second, untested implementation of the
+    basis every R figure on that row already uses.
+    """
+    total = sum((exit_.qty for exit_ in exits), Decimal(0))
+    if total <= 0:
+        return Decimal(0)
+    return sum((exit_.price * exit_.qty for exit_ in exits), Decimal(0)) / total
+
+
 def open_qty(fills: tuple[Fill, ...], exits: tuple[Exit, ...]) -> Decimal:
     return filled_qty(fills) - sum((exit_.qty for exit_ in exits), Decimal(0))
 

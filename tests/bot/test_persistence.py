@@ -43,6 +43,8 @@ from sentinel.storage.models import (
     CycleRow,
     GateDecisionRow,
     LLMCallRow,
+    MarketSnapshotRow,
+    OhlcvCandleRow,
     RuntimeSettingRow,
     SignalRow,
     TelegramMessageRow,
@@ -56,6 +58,7 @@ from sentinel.storage.repositories import (
     LLMCallRepository,
     RuntimeSettingsRepository,
     SignalRepository,
+    SnapshotRepository,
     TelegramMessageRepository,
     UserRepository,
     WatchlistRequestRepository,
@@ -80,6 +83,9 @@ async def _clean(session: AsyncSession) -> None:
         AnalystReportRow,
         GateDecisionRow,
         CycleRow,
+        # M8.6 — what /snapshot reads, and the candle table `save` upserts into.
+        MarketSnapshotRow,
+        OhlcvCandleRow,
     ):
         await session.execute(delete(table))
     await session.commit()
@@ -891,3 +897,176 @@ async def test_the_stored_report_round_trips_back_through_the_analyst_model(
     assert restored.counter_thesis == "crowded long into resistance"
     assert restored.evidence[0].claim == "RSI 4h at 92.6"
     assert restored.data_quality_note == "the orderbook snapshot is stale"
+
+
+# --------------------------------------------------------------------------- #
+# M8.6 — /journal's one new query, and /snapshot's whole read path
+# --------------------------------------------------------------------------- #
+
+#: A distinct instant for the M8.6 tests. Nothing here reads a clock either.
+JOURNAL_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+
+
+def journal_signal(
+    plan: TradePlan,
+    *,
+    user_id: int,
+    symbol: str,
+    created_at: datetime,
+    closed_at: datetime | None,
+) -> SignalRow:
+    return SignalRow(
+        id=uuid4(),
+        plan_id=uuid4(),
+        user_id=user_id,
+        symbol=symbol,
+        direction=plan.direction.value,
+        setup_type=plan.setup_type.value,
+        confidence=plan.confidence,
+        created_at=created_at,
+        expires_at=plan.expires_at,
+        status="CLOSED" if closed_at else "PENDING_ENTRY",
+        decision=SignalDecision.TAKEN.value,
+        plan=plan.model_dump(mode="json"),
+        closed_at=closed_at,
+    )
+
+
+@requires_db
+async def test_the_journal_query_returns_only_the_caller_and_only_the_window(
+    session: AsyncSession, plan: TradePlan
+) -> None:
+    """The scoping and the window, proven against the database rather than a fake.
+
+    M8.3 §4's lesson: the hermetic fake *describes* this query — it reimplements the
+    filter in Python — so a wrong column name or a bad comparison in the real
+    statement would be a ``ProgrammingError`` on the first ``/journal`` in
+    production, which is the day every approved user is invited to run it.
+    """
+    session.add_all(
+        [
+            journal_signal(
+                plan,
+                user_id=OWNER_ID,
+                symbol="SOLUSDT",
+                created_at=JOURNAL_NOW,
+                closed_at=JOURNAL_NOW + timedelta(hours=2),
+            ),
+            journal_signal(
+                plan,
+                user_id=OWNER_ID,
+                symbol="ADAUSDT",
+                created_at=JOURNAL_NOW - timedelta(days=200),
+                closed_at=JOURNAL_NOW - timedelta(days=199),
+            ),
+            journal_signal(
+                plan,
+                user_id=999,
+                symbol="LINKUSDT",
+                created_at=JOURNAL_NOW,
+                closed_at=JOURNAL_NOW + timedelta(hours=2),
+            ),
+        ]
+    )
+    await session.commit()
+    repo = SignalRepository(session)
+
+    everything = await repo.journal_since(None, user_id=OWNER_ID)
+    assert [row.symbol for row in everything] == ["ADAUSDT", "SOLUSDT"], (
+        "another user's row must never appear, and the order is by created_at"
+    )
+
+    windowed = await repo.journal_since(JOURNAL_NOW - timedelta(days=30), user_id=OWNER_ID)
+    assert [row.symbol for row in windowed] == ["SOLUSDT"]
+
+
+@requires_db
+async def test_the_journal_query_keeps_open_signals_that_stats_would_drop(
+    session: AsyncSession, plan: TradePlan
+) -> None:
+    """The difference from ``resolved_since`` that makes this a separate query.
+
+    ``/stats`` counts what can be counted; a journal is a record, and an open
+    position is part of what happened even though it contributes to no statistic yet.
+    """
+    session.add(
+        journal_signal(
+            plan,
+            user_id=OWNER_ID,
+            symbol="SOLUSDT",
+            created_at=JOURNAL_NOW,
+            closed_at=None,
+        )
+    )
+    await session.commit()
+    repo = SignalRepository(session)
+
+    assert [row.symbol for row in await repo.journal_since(None, user_id=OWNER_ID)] == ["SOLUSDT"]
+    assert await repo.resolved_since(None, user_id=OWNER_ID) == []
+
+
+@requires_db
+async def test_a_real_snapshot_round_trips_into_the_card_it_will_be_rendered_from(
+    session: AsyncSession,
+) -> None:
+    """The write path and the read path proven against each other (M8.5 §7).
+
+    A snapshot with real features goes in through ``SnapshotRepository.save`` — the
+    same call the ingestion stage makes — comes back out through
+    ``latest_for_symbol``, and is fed to the view builder. The JSONB shape is
+    therefore never asserted against a fixture dict somebody wrote by hand, which is
+    the only way this could pass while production failed.
+    """
+    from sentinel.bot.snapshot import snapshot_view
+    from sentinel.core.config import load_config
+    from sentinel.features.engine import attach, compute
+    from tests.market_double import snapshot_from_cassettes
+
+    config = load_config()
+    snapshot = snapshot_from_cassettes("BTCUSDT")
+    snapshot = attach(snapshot, compute(snapshot, config.features))
+    await SnapshotRepository(session).save(snapshot)
+    await session.commit()
+
+    row = await SnapshotRepository(session).latest_for_symbol("BTCUSDT")
+    assert row is not None
+    view = snapshot_view(row, symbol="BTCUSDT", on_watchlist=True)
+
+    assert view.features_unreadable is False, "the stored features must validate on the way back"
+    assert [tf.timeframe for tf in view.timeframes] == ["15m", "1h", "4h", "1d"]
+    assert view.levels, "the clustered levels have to survive the JSONB round trip"
+    # Not "64100.000": the column is Numeric(38, 18) and the value arrives with
+    # eighteen trailing zeros. Only a real database produces that shape, and the
+    # first draft of this card rendered it verbatim.
+    assert view.last_price == "64100"
+
+
+@requires_db
+async def test_latest_for_symbol_takes_the_newest_snapshot_and_ignores_other_symbols(
+    session: AsyncSession,
+) -> None:
+    """``/snapshot`` is unbounded in time (M8.5 decision 3) — a window would turn a
+    stale answer into "never ingested", which is a different fact — so "newest" is
+    the whole of the selection and is worth proving."""
+    for symbol, captured in (
+        ("BTCUSDT", JOURNAL_NOW - timedelta(hours=3)),
+        ("BTCUSDT", JOURNAL_NOW),
+        ("ETHUSDT", JOURNAL_NOW + timedelta(hours=1)),
+    ):
+        session.add(
+            MarketSnapshotRow(
+                symbol=symbol,
+                captured_at=captured,
+                last_price=Decimal("100"),
+                data_quality="OK",
+                degraded_fields=[],
+                context={},
+                sources={},
+            )
+        )
+    await session.commit()
+
+    row = await SnapshotRepository(session).latest_for_symbol("BTCUSDT")
+    assert row is not None
+    assert row.captured_at == JOURNAL_NOW
+    assert await SnapshotRepository(session).latest_for_symbol("XRPUSDT") is None

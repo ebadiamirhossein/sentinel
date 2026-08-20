@@ -211,6 +211,39 @@ reading one ("why did it say *that* about ETHUSDT?") was the question they could
 * Read-only, no migration. One new query, `AnalystReportRepository.latest_for_symbol`.
 * Same access as `/pulse` (all approved users), reachability proven for both roles.
 
+## M8.6 — `/journal` and `/snapshot` (0.5 day)
+Added 2026-08-20. Two gaps either side of what M8.1–M8.5 built: nobody could get their
+own history *out* of the system, and the deterministic half of the pipeline — the half
+with no AI in it — had never been readable from a phone.
+
+* `/journal [30d|90d|all]` — the caller's own book as an **XLSX document**: one row per
+  signal, one sheet per population (Real / Hypothetical / Undecided / Dry run) plus a
+  Legend, never mixed. Running balance in net R and rolling win rate on gross R,
+  computed within a sheet, so the Real sheet's last row equals what `/stats` reports.
+* **Strictly caller-scoped, three ways**: a keyword-only `user_id` on the query, a
+  `JournalRow` type with no field that could hold an id, and a filename carrying
+  neither. `tests/bot/test_journal.py` proves A's file cannot contain B's rows at the
+  view level, cell by cell through openpyxl, and by scanning the raw zip's XML — plus
+  a deliberately leaking file to prove those checks can fail.
+* **Open signals are rows with the running columns blank** (owner ruling): a record
+  whose earlier balances renumber when an open trade resolves is not a record.
+* `/snapshot SOLUSDT` — everything code computed for the last cycle and **no LLM
+  content at all**: last price, per-timeframe regime with its `RegimeBasis`,
+  EMA20/50/200, RSI, ATR and ATR%, relative volume, funding, OI and its 24h change,
+  S/R with touch counts, orderbook imbalance, Fear & Greed, BTC dominance, data-quality
+  flags. Labelled "computed by code, before any AI analysis"; every absent block named
+  rather than dropped or zero-filled.
+* Shared market data, so `/snapshot` is byte-identical for owner and member — the
+  handler takes no `Actor` at all.
+* **Read-only. No migration, no new table, no new column.** One new query
+  (`SignalRepository.journal_since`) and one existing one (`latest_for_symbol`).
+* One new dependency, **openpyxl** (owner-approved): 250KB wheel, pure Python, no
+  native extension. XLSX numbers are IEEE doubles, so every figure is asserted to
+  round-trip through the file unchanged.
+* `/help` now splits across messages rather than losing prose — M8.5's ruling, applied
+  to the one card that had run out of room.
+* New spec sections `TELEGRAM_UX.md` §3c and §3d.
+
 ## M9 — Shakedown (2 weeks, calendar time, no coding pressure)
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.

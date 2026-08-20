@@ -389,6 +389,147 @@ class SymbolPulseView:
     gate_note: str = ""
 
 
+# --------------------------------------------------------------------------- #
+# /snapshot (M8.6) — the deterministic view, before any model is called
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SnapshotTimeframeView:
+    """One timeframe's block of :class:`SnapshotView`.
+
+    Every field is a **string**, and every absent one is already the word ``n/a``
+    rather than ``None``: half of what this card is for is showing which indicators
+    could not be computed, so "missing" has to render as a value and not as a gap.
+    ``regime_basis`` is carried beside the regime for exactly that reason — a 1d
+    tail of 100 candles has no EMA200, and a trend classified without one is a
+    *reduced* read, which ``RegimeBasis`` exists to record and this card refuses to
+    round off into looking like a full one.
+    """
+
+    timeframe: str
+    regime: str
+    regime_basis: str
+    volatility: str
+    ema20: str
+    ema50: str
+    ema200: str
+    rsi14: str
+    atr14: str
+    atr_pct: str
+    relative_volume: str
+    ema_stack: str
+    candles_used: int
+    partial_candle_dropped: bool
+
+
+@dataclass(frozen=True)
+class SnapshotLevelView:
+    """One clustered support or resistance zone, with the touches behind it.
+
+    The touch count is the whole point: a level touched five times is structure and
+    a level touched once is a coincidence, and the analyst is given both. Showing
+    the number is what lets a reader judge the AI's use of it.
+    """
+
+    kind: str
+    price: str
+    timeframe: str
+    touches: int
+    distance_pct: str
+    strength: str
+
+
+@dataclass(frozen=True)
+class SnapshotDerivativesView:
+    """Funding and open interest — ``None`` on :class:`SnapshotView` when the
+    snapshot carried no derivatives block at all."""
+
+    funding_pct: str
+    next_funding_at: datetime | None
+    open_interest_base: str
+    open_interest_value: str
+    #: ``n/a`` when the 24h series holds fewer than two points — a change needs two.
+    change_24h_pct: str
+    points: int
+    long_short_ratio: str
+
+
+@dataclass(frozen=True)
+class SnapshotBookView:
+    imbalance: str
+    spread_pct: str
+    best_bid: str
+    best_ask: str
+    depth_levels: int
+
+
+@dataclass(frozen=True)
+class SnapshotSentimentView:
+    value: int
+    classification: str
+    #: Signed change against yesterday, or ``n/a`` when there is no previous value.
+    delta: str
+
+
+@dataclass(frozen=True)
+class SnapshotMacroView:
+    btc_dominance_pct: str
+    mcap_change_24h_pct: str
+
+
+@dataclass(frozen=True)
+class SnapshotView:
+    """``/snapshot SOLUSDT`` — everything the code measured, before the AI (M8.6).
+
+    The deliberate counterpart to :class:`SymbolPulseView`. That one is entirely
+    model output — thesis, evidence, counter-thesis. This one contains **no model
+    output at all**: it is the deterministic half of the pipeline, read back off the
+    ``market_snapshots`` row the analyst was handed, so a sceptical reader can check
+    the analysis against its own inputs.
+
+    **Shared market data, and no privacy boundary to keep** — unlike every other
+    per-caller surface in this bot, and unlike :class:`PulseView`, which at least
+    has a spend line that differs by role. There is nothing here that varies between
+    two readers, so the owner and a member get byte-identical text. The type carries
+    no user id, no capital, no sizing and no decision, and a meta-test says so: the
+    absence is structural rather than a renderer's restraint, in the manner of
+    :class:`UserView`.
+
+    A missing block is ``None`` and is **named on the card** rather than omitted —
+    CLAUDE.md's degrade-explicitly rule. Nothing here is ever zero-filled: a funding
+    rate that was not fetched is not a funding rate of zero.
+    """
+
+    symbol: str
+    #: ``None`` when nothing has ever been ingested for this symbol.
+    at: datetime | None
+    #: Which of the two "nothing stored" answers applies. See ``cards.py``.
+    on_watchlist: bool
+    last_price: str = ""
+    quality: str = ""
+    degraded_fields: tuple[str, ...] = ()
+    timeframes: tuple[SnapshotTimeframeView, ...] = ()
+    htf_regime: str = ""
+    regime_aligned: bool | None = None
+    change_1h: str = ""
+    change_4h: str = ""
+    change_24h: str = ""
+    levels: tuple[SnapshotLevelView, ...] = ()
+    #: How many levels the card did not list. Never a silent cut (M8.4 decision 6).
+    levels_dropped: int = 0
+    nearest_support: str = ""
+    nearest_resistance: str = ""
+    derivatives: SnapshotDerivativesView | None = None
+    book: SnapshotBookView | None = None
+    sentiment: SnapshotSentimentView | None = None
+    macro: SnapshotMacroView | None = None
+    #: True when the stored feature block would not validate against the current
+    #: model. The verdict columns of a snapshot survive that; the indicators do not,
+    #: and the card says which rather than showing an empty table.
+    features_unreadable: bool = False
+
+
 __all__ = [
     "AlertView",
     "DataSourceView",
@@ -400,6 +541,13 @@ __all__ = [
     "PulseVerdictView",
     "PulseView",
     "SettingsView",
+    "SnapshotBookView",
+    "SnapshotDerivativesView",
+    "SnapshotLevelView",
+    "SnapshotMacroView",
+    "SnapshotSentimentView",
+    "SnapshotTimeframeView",
+    "SnapshotView",
     "SpendView",
     "StatsBreakdownView",
     "StatsGroupView",

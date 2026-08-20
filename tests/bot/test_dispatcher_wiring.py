@@ -94,6 +94,8 @@ MEMBER_COMMAND_ARGS: dict[str, str] = {
     "positions": "",
     "stats": "",
     "pulse": "",
+    "snapshot": " SOLUSDT",
+    "journal": "",
     "request": " SOLUSDT",
     "leave": "",
 }
@@ -499,3 +501,78 @@ async def test_an_unparseable_pulse_argument_gets_the_usage_line(
     silently treated as the bare form."""
     response = await feed(dispatcher, message_update("/pulse !!", user_id=MEMBER))
     assert reached_a_handler(response)
+
+
+# --------------------------------------------------------------------------- #
+# M8.6 — /snapshot and /journal, and the roles that may reach them
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_snapshot_is_reachable_by_both_roles(dispatcher: Dispatcher, user_id: int) -> None:
+    """Shared market data, so both halves of the menu must reach it.
+
+    The member half also rides on ``MEMBER_COMMAND_ARGS``' sweep; the owner half does
+    not exist anywhere else, because ``/snapshot`` is deliberately not on
+    ``OWNER_COMMANDS`` — putting it there would take it off every member's menu
+    (M8.4 decision 5). ``commands_router`` is registered before ``admin_router``, so
+    an ``OwnerOnly`` filter added to the wrong router would silence this for a
+    member and nothing in the owner sweep would notice.
+    """
+    assert reached_a_handler(
+        await feed(dispatcher, message_update("/snapshot SOLUSDT", user_id=user_id))
+    )
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_snapshot_with_no_symbol_is_answered_rather_than_ignored(
+    dispatcher: Dispatcher, user_id: int
+) -> None:
+    """A bare ``/snapshot`` gets the usage line. Silence would be indistinguishable
+    from the command not existing — which is what silence *means* everywhere else in
+    this bot, and must not mean here."""
+    assert reached_a_handler(await feed(dispatcher, message_update("/snapshot", user_id=user_id)))
+
+
+async def test_snapshot_is_silent_for_someone_with_no_standing(dispatcher: Dispatcher) -> None:
+    """Asserted on outbound calls rather than on ``UNHANDLED``: the gate is an outer
+    middleware and a ``DROP`` returns ``None``, which ``feed_update`` hands back
+    verbatim — indistinguishable from a handler that ran and returned nothing. What
+    is observable, and what matters, is that the stranger's phone stayed quiet."""
+    bot = FakeBot()
+    await dispatcher.feed_update(bot, message_update("/snapshot SOLUSDT", user_id=999))  # type: ignore[arg-type]
+    assert bot.calls == []
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_journal_is_reachable_by_both_roles(dispatcher: Dispatcher, user_id: int) -> None:
+    assert reached_a_handler(await feed(dispatcher, message_update("/journal", user_id=user_id)))
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_journal_with_a_window_is_reachable_by_both_roles(
+    dispatcher: Dispatcher, user_id: int
+) -> None:
+    """The windowed form takes a different path through the handler — it resolves a
+    cutoff where the bare form does not — so it is exercised separately."""
+    assert reached_a_handler(
+        await feed(dispatcher, message_update("/journal 30d", user_id=user_id))
+    )
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER], ids=["owner", "member"])
+async def test_an_unrecognised_journal_window_is_answered_rather_than_ignored(
+    dispatcher: Dispatcher, user_id: int
+) -> None:
+    """``/journal 7d`` gets usage, not a silent fall back to the whole history.
+
+    The regression this guards is quiet in the worst way: somebody asking for a week
+    and receiving two years would read the file as a week's worth.
+    """
+    assert reached_a_handler(await feed(dispatcher, message_update("/journal 7d", user_id=user_id)))
+
+
+async def test_journal_is_silent_for_someone_with_no_standing(dispatcher: Dispatcher) -> None:
+    bot = FakeBot()
+    await dispatcher.feed_update(bot, message_update("/journal", user_id=999))  # type: ignore[arg-type]
+    assert bot.calls == []

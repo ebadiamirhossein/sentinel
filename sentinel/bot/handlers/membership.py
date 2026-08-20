@@ -71,7 +71,8 @@ async def help_command(message: Message, ctx: BotContext) -> None:
     accept that this is experimental and unmeasured, and they should be able to read
     what the numbers mean before deciding.
     """
-    await message.answer(help_card())
+    for page in help_card():
+        await message.answer(page)
 
 
 @membership_router.message(Command("start"))

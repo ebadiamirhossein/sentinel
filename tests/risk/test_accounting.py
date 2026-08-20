@@ -15,6 +15,7 @@ from sentinel.analyst.models import Direction
 from sentinel.risk.accounting import (
     Exit,
     Fill,
+    avg_exit_price,
     avg_fill_price,
     open_qty,
     realized_r,
@@ -176,3 +177,41 @@ def test_open_r_without_a_risk_budget_is_zero_rather_than_a_division() -> None:
         mark_price=Decimal("84.00"),
         planned_risk_usdt=Decimal("0"),
     ) == Decimal("0")
+
+
+# --------------------------------------------------------------------------- #
+# avg_exit_price (M8.6) — the mirror of avg_fill_price, for /journal's exit column
+# --------------------------------------------------------------------------- #
+
+
+def test_the_average_exit_is_weighted_by_quantity_not_by_leg_count() -> None:
+    """A 40/60 split at two prices is not the midpoint, and the difference is money.
+
+    The naive mean of 85.20 and 81.20 is 83.20. Weighted by what actually closed at
+    each, it is 82.80 — and on the ``/journal`` row that is the number the realized
+    R was actually made of.
+    """
+    exits = (
+        Exit(price=Decimal("85.20"), qty=Decimal("10")),
+        Exit(price=Decimal("81.20"), qty=Decimal("15")),
+    )
+    assert avg_exit_price(exits) == Decimal("82.80")
+
+
+def test_a_single_exit_is_its_own_price() -> None:
+    assert avg_exit_price((Exit(price=STOP, qty=Decimal("18.30")),)) == STOP
+
+
+def test_nothing_closed_is_zero_rather_than_a_division() -> None:
+    """An open or never-filled signal is a /journal row too — it must not raise."""
+    assert avg_exit_price(()) == Decimal(0)
+
+
+def test_a_zero_quantity_exit_does_not_divide_by_zero() -> None:
+    """``signal_exits`` can carry a 0-qty leg; the tracker filters them, this guards.
+
+    Reaching the ``total <= 0`` branch with a row present rather than with an empty
+    tuple, because the two are different states and only one of them is covered by
+    the test above.
+    """
+    assert avg_exit_price((Exit(price=STOP, qty=Decimal("0")),)) == Decimal(0)

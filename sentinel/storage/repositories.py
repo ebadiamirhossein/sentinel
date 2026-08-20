@@ -1162,6 +1162,33 @@ class SignalRepository:
                 grouped.setdefault(row.user_id, []).append(row.realized_eur)
         return grouped
 
+    async def journal_since(
+        self, since: datetime | None = None, *, user_id: int
+    ) -> list[SignalRow]:
+        """One user's whole book — resolved *and* still open — for ``/journal`` (M8.6).
+
+        Deliberately not ``resolved_since`` with the ``closed_at`` filter relaxed.
+        That query answers "what can be counted"; this one answers "what happened to
+        me", and an open position is part of that answer even though it contributes
+        nothing to a statistic yet.
+
+        **The window is on ``created_at``**, where ``resolved_since`` windows on
+        ``closed_at``. A statistic is windowed by when a result landed; an export is
+        windowed by when the signal was *issued*, or a signal sent inside the window
+        and still running would fall out of its own journal.
+
+        ``user_id`` is keyword-only with no default, exactly as on ``resolved_since``:
+        the scoping is a signature the caller cannot forget rather than a filter they
+        have to remember (M8.1 §4's third hole — a read that stopped meaning "mine"
+        the moment a second person existed).
+        """
+        statement = select(SignalRow).where(SignalRow.user_id == user_id)
+        if since is not None:
+            statement = statement.where(SignalRow.created_at >= since)
+        return list(
+            (await self._session.execute(statement.order_by(SignalRow.created_at))).scalars()
+        )
+
     async def resolved_since(
         self, since: datetime | None = None, *, user_id: int
     ) -> list[SignalRow]:
