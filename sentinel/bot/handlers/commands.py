@@ -63,6 +63,7 @@ from sentinel.bot.markets import (
 )
 from sentinel.bot.models import SignalDecision
 from sentinel.bot.outbound import SupportsBot
+from sentinel.bot.plans import plan_of
 from sentinel.bot.pulse import pulse_day_view, pulse_view, symbol_pulse_view
 from sentinel.bot.readmodels import position_view, spend_view, stats_view
 from sentinel.bot.runtime import (
@@ -78,7 +79,6 @@ from sentinel.bot.snapshot import snapshot_view
 from sentinel.bot.views import SpendView
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
-from sentinel.risk.models import TradePlan
 from sentinel.stats.journal import JournalBook, build_journal
 from sentinel.stats.queries import WINDOWS, build_report, parse_window, window_start
 
@@ -188,7 +188,8 @@ async def positions(message: Message, ctx: BotContext, actor: Actor) -> None:
             views = [
                 position_view(
                     row,
-                    TradePlan.model_validate(row.plan),
+                    # On the market being iterated, never on the payload (§16.7).
+                    plan_of(row.plan, market),
                     fills.get(row.id, []),
                     exits.get(row.id, []),
                     mark_price=marks.get(row.symbol),

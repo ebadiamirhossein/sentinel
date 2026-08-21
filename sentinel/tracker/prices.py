@@ -35,6 +35,13 @@ log = get_logger(__name__)
 #: than silently half-covered.
 MAX_CANDLES = 1000
 
+#: Saxo's is 1200 (``ForexConfig.max_count``), and over-requesting **clamps silently**
+#: to it rather than erroring — spike defect D-e. So the ceiling is a constructor
+#: argument from M10c rather than a module constant: a forex feed that kept Binance's
+#: 1000 would under-request by 200 bars, which is not wrong so much as arbitrary, and a
+#: forex feed that guessed higher would get a short read that looks like a quiet market.
+DEFAULT_MAX_CANDLES = MAX_CANDLES
+
 MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "1h": 60, "4h": 240}
 
 
@@ -86,9 +93,17 @@ class PriceFeed:
     polled-mark-price bug M7 removed, reintroduced through a cache.
     """
 
-    def __init__(self, source: CandleSource, config: TrackerConfig) -> None:
+    def __init__(
+        self,
+        source: CandleSource,
+        config: TrackerConfig,
+        *,
+        max_candles: int = DEFAULT_MAX_CANDLES,
+    ) -> None:
         self._source = source
         self._config = config
+        #: This venue's per-request ceiling — Binance 1000, Saxo 1200.
+        self._max_candles = max_candles
         self._cache: dict[tuple[str, str, int], tuple[Candle, ...]] = {}
 
     def reset(self) -> None:
@@ -113,8 +128,9 @@ class PriceFeed:
             now=now,
             minimum=self._config.fill_lookback_candles,
             timeframe_minutes=minutes,
+            maximum=self._max_candles,
         )
-        if since is not None and limit >= MAX_CANDLES:
+        if since is not None and limit >= self._max_candles:
             log.warning(
                 "tracker.lookback_capped",
                 symbol=symbol,
@@ -135,4 +151,4 @@ class PriceFeed:
         return candles[:-1]
 
 
-__all__ = ["MAX_CANDLES", "CandleSource", "PriceFeed", "lookback"]
+__all__ = ["DEFAULT_MAX_CANDLES", "MAX_CANDLES", "CandleSource", "PriceFeed", "lookback"]

@@ -18,7 +18,7 @@ timestamp would report "never ran" after every deploy — precisely the moment
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -40,13 +40,13 @@ from sentinel.bot.publisher import SignalPublisher
 from sentinel.core.clock import utc_now
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
-from sentinel.core.markets import Market
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import CycleOrchestrator
 from sentinel.core.wiring import market_adapter
 from sentinel.storage.db import Database, SupportsPing
 from sentinel.storage.repositories import CycleRepository, UserRepository
 from sentinel.tracker.loop import TrackerLoop
-from sentinel.tracker.prices import PriceFeed
+from sentinel.tracker.prices import DEFAULT_MAX_CANDLES, PriceFeed
 
 log = get_logger(__name__)
 
@@ -154,31 +154,51 @@ def _schedule_pipeline(
 
         return scan
 
-    async def track() -> None:
-        try:
-            # One adapter, one market (M10a). ``market_adapter`` resolves through
-            # M10b-2's registry now, so passing CRYPTO here is what keeps this loop
-            # pricing crypto and nothing else — named rather than left to a default,
-            # so the day a second market has open signals it is a visible gap and not
-            # a silent one. **That day is M10c**: forex cannot produce a signal until
-            # the card and the tracker land, so there is nothing here to price yet.
-            async with market_adapter(settings, Market.CRYPTO) as adapter:
-                loop = TrackerLoop(
-                    database,
-                    PriceFeed(adapter, settings.config.tracker),
-                    settings,
-                    market=Market.CRYPTO,
+    def track_for(market: Market) -> Callable[[], Awaitable[None]]:
+        """One tracker loop per enabled market (M10c).
+
+        Until M10c this was a single job hard-wired to crypto, with a comment naming
+        the day it would have to change. This is that day, and the reason the job is
+        **per market** rather than one loop over markets is the same reason
+        ``TrackerLoop`` takes a market at all: a ``PriceFeed`` wraps exactly one
+        venue's adapter, so a loop can only follow signals it can price. One job that
+        tried to do both would hold two adapters open on a 60-second timer and would
+        fail both markets whenever either venue did.
+
+        With forex disabled this registers exactly one job, and it is the one that has
+        been running for 54 cycles.
+        """
+
+        async def track() -> None:
+            try:
+                async with market_adapter(settings, market) as adapter:
+                    loop = TrackerLoop(
+                        database,
+                        PriceFeed(
+                            adapter,
+                            settings.config.tracker,
+                            max_candles=_candle_ceiling(settings, market),
+                        ),
+                        settings,
+                        market=market,
+                    )
+                    result = await loop.tick()
+                if state.bot is not None:
+                    eligible = await _eligible_user_ids(database, now=utc_now())
+                    await _notifier_for(state, settings, database, eligible).deliver()
+                    # specs/TELEGRAM_UX.md §4's daily-loss notice. It goes to the user
+                    # whose book hit the limit, not to the owner: the pause holds back
+                    # that person's cards, and they have no /status to find out why.
+                    await _announce_pauses(state, settings, database, result.paused_users)
+            except Exception as exc:
+                log.error(
+                    "scheduler.tick_failed",
+                    market=market.value,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
                 )
-                result = await loop.tick()
-            if state.bot is not None:
-                eligible = await _eligible_user_ids(database, now=utc_now())
-                await _notifier_for(state, settings, database, eligible).deliver()
-                # specs/TELEGRAM_UX.md §4's daily-loss notice. It goes to the user
-                # whose book hit the limit, not to the owner: the pause holds back
-                # that person's cards, and they have no /status to find out why.
-                await _announce_pauses(state, settings, database, result.paused_users)
-        except Exception as exc:
-            log.error("scheduler.tick_failed", error=str(exc), error_type=type(exc).__name__)
+
+        return track
 
     for market in settings.config.enabled_markets:
         scheduler.add_job(
@@ -190,15 +210,20 @@ def _schedule_pipeline(
             max_instances=1,
             coalesce=True,
         )
-    scheduler.add_job(
-        track,
-        trigger="interval",
-        seconds=schedule.tracker_interval_seconds,
-        id="tracker",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    for market in settings.config.enabled_markets:
+        # The crypto job keeps the bare id ``tracker`` it has had since M7. Renaming it
+        # would be a live-system change for tidiness: APScheduler keys on the id, and
+        # this deployment's running job is that one.
+        job_id = "tracker" if market is LEGACY_MARKET else f"tracker:{market.value}"
+        scheduler.add_job(
+            track_for(market),
+            trigger="interval",
+            seconds=schedule.tracker_interval_seconds,
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     log.info(
         "scheduler.pipeline_scheduled",
         markets=[market.value for market in settings.config.enabled_markets],
@@ -212,6 +237,19 @@ def _schedule_pipeline(
             for market in settings.config.enabled_markets
         },
     )
+
+
+def _candle_ceiling(settings: Settings, market: Market) -> int:
+    """This venue's per-request candle ceiling.
+
+    Binance's is 1000 and Saxo's is 1200, and Saxo **clamps silently** above it rather
+    than erroring (spike defect D-e). A forex feed left on Binance's number would
+    under-request by 200 bars — not wrong so much as arbitrary — and one that guessed
+    higher would take a short read for a quiet market.
+    """
+    if market is Market.FOREX:
+        return settings.config.forex.max_count
+    return DEFAULT_MAX_CANDLES
 
 
 def _publisher_factory(

@@ -333,8 +333,11 @@ def _expired(tracking: SignalTracking, event: MarketEvent) -> Transition:
             to_status=SignalStatus.EXPIRED,
             realized_r=Decimal(0),
             realized_eur=Decimal(0),
-            detail="Expired unfilled",
-            payload={"expires_at": tracking.plan.expires_at.isoformat()},
+            detail=f"Expired unfilled — {event.cause}" if event.cause else "Expired unfilled",
+            payload={
+                "expires_at": tracking.plan.expires_at.isoformat(),
+                **({"cause": event.cause} if event.cause else {}),
+            },
         ),
     )
 

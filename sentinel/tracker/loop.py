@@ -42,7 +42,9 @@ from sentinel.core.config import Settings
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.fx.accounting import realized_costs_eur as forex_realized_costs_eur
+from sentinel.fx.calendar import EconomicCalendar, load_calendar
 from sentinel.fx.costs import rollover_nights
+from sentinel.fx.hours import state_at
 from sentinel.fx.plan import ForexPlan
 from sentinel.risk.accounting import avg_fill_price, realized_r
 from sentinel.risk.costs import funding_settlements, realized_costs_eur
@@ -66,7 +68,9 @@ from sentinel.tracker.machine import advance
 from sentinel.tracker.models import (
     EXIT_MANUAL,
     EXIT_STOP,
+    EventKind,
     LegExit,
+    MarketEvent,
     RungFill,
     SignalTracking,
     TrackerEvent,
@@ -120,6 +124,9 @@ class TickResult:
     #: just stop hearing from the system.
     paused_users: list[int] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    #: The market was shut, so this tick did nothing — and that is a **normal state**
+    #: with its own flag rather than a zero that looks like a quiet market (§5.1).
+    closed: bool = False
 
     @property
     def paused(self) -> bool:
@@ -163,10 +170,16 @@ class TrackerLoop:
         market: Market = LEGACY_MARKET,
         clock: Clock | None = None,
         repositories: TrackerRepositories | None = None,
+        calendar: EconomicCalendar | None = None,
     ) -> None:
         self._database = database
         self._feed = feed
         self._settings = settings
+        #: The economic calendar, read once at construction rather than per tick: it
+        #: is a shipped YAML file and re-reading it 1,440 times a day would be work
+        #: for an answer that cannot change without a redeploy. Injectable so a test
+        #: can put an event in front of a signal (§8).
+        self._calendar = calendar if calendar is not None else load_calendar()
         #: Which market this loop can price, and therefore the only one whose
         #: signals it reads. Every repository below is bound to it.
         self._market = market
@@ -176,6 +189,24 @@ class TrackerLoop:
     async def tick(self) -> TickResult:
         now = self._clock.now()
         result = TickResult()
+
+        if self._market_is_shut(now):
+            # §5.1, §16.10 — **a closed market is not a stall.** Forex is shut about 49
+            # hours a week. Ticking through it would ask a shut venue the same question
+            # 2,940 times, log a capped lookback every minute because the window since
+            # the last tick spans a weekend, and re-walk bars that closed on Friday as
+            # though they were news. None of that is an error, which is exactly why it
+            # would never be found: it would just quietly be the majority of what the
+            # tracker did.
+            #
+            # Nothing is missed by skipping. A pending ladder cannot fill while the
+            # market is shut, and it cannot survive the weekend either — the gate caps
+            # every forex expiry at the Friday close (§5.4). A filled position simply
+            # waits, and its next tick is the one that matters.
+            result.closed = True
+            log.info("tracker.market_closed", market=self._market.value, detail="tick skipped")
+            return result
+
         # One tick, one set of candles. Several users' signals on the same symbol are
         # asking the exchange the identical question (M8.1).
         self._feed.reset()
@@ -183,9 +214,11 @@ class TrackerLoop:
         async with self._database.session() as session:
             rows = await self._repos.signals(session, market=self._market).open_signals()
 
+        blacked_out = self._blackout_symbols(rows, now=now)
+
         for row in rows:
             try:
-                await self._advance_signal(row, now=now, result=result)
+                await self._advance_signal(row, now=now, result=result, blacked_out=blacked_out)
             except Exception as exc:
                 # PRD F1's rule, applied per signal: one symbol's problem never
                 # stops the others. A signal that could not be checked is left
@@ -213,7 +246,45 @@ class TrackerLoop:
 
     # ---- one signal --------------------------------------------------------
 
-    async def _advance_signal(self, row: SignalRow, *, now: datetime, result: TickResult) -> None:
+    def _market_is_shut(self, now: datetime) -> bool:
+        """Is this market closed right now? Only forex has a closed state at all."""
+        if self._market is not Market.FOREX:
+            return False
+        return not state_at(now, self._settings.config.forex).is_open
+
+    def _blackout_symbols(self, rows: Sequence[SignalRow], *, now: datetime) -> frozenset[str]:
+        """Which pending ladders a currency-matched high-impact event cancels (§8).
+
+        Owner decision, 2026-08-21: a blackout **cancels** pending ladders rather than
+        pausing them, because a ladder resting through a rate decision is an order
+        placed on the assumption that nothing has changed. Open positions are annotated
+        and never closed — Sentinel informs, it does not instruct — which falls out of
+        the state machine on its own: expiry refuses a signal that has filled.
+
+        Computed once per tick over the symbols that actually have open signals, so a
+        quiet tick costs one calendar read and no calendar reads at all for crypto.
+        """
+        if self._market is not Market.FOREX or not rows:
+            return frozenset()
+        forex = self._settings.config.forex
+        return frozenset(
+            self._calendar.affected_symbols(
+                sorted({row.symbol for row in rows}),
+                now,
+                before_minutes=forex.blackout_before_minutes,
+                after_minutes=forex.blackout_after_minutes,
+                warn_within_days=forex.calendar_warn_within_days,
+            )
+        )
+
+    async def _advance_signal(
+        self,
+        row: SignalRow,
+        *,
+        now: datetime,
+        result: TickResult,
+        blacked_out: frozenset[str] = frozenset(),
+    ) -> None:
         # Dispatched on the row's market, never guessed and never tried-then-fallen-
         # back (FOREX.md §16.7). ForexPlan mirrors TradePlan's vocabulary, so a
         # fallback would turn a mis-stamped row into a plausible plan rather than
@@ -253,6 +324,18 @@ class TrackerLoop:
         )
         closed_1h = await self._feed.invalidation_candles(row.symbol) if not tracking.fills else ()
         events = observe(tracking, candles=candles, closed_1h=closed_1h, now=now)
+        if row.symbol in blacked_out and not tracking.fills:
+            # §8: cancel the pending ladder, with a reason the owner sees. Appended
+            # rather than detected, because a blackout is not something the market did
+            # — ``observe`` reads candles and stays a pure function of them.
+            events = (
+                *events,
+                MarketEvent(
+                    kind=EventKind.EXPIRED,
+                    at=now,
+                    cause="a high-impact event for this pair is imminent",
+                ),
+            )
         result.checked += 1
 
         journal: list[TrackerEvent] = []

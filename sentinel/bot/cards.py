@@ -996,7 +996,15 @@ def tracker_update_card(view: TrackerEventView) -> str:
         )
 
     if kind == "EXPIRED":
-        return f"⌛ {tag} Expired unfilled"
+        # ``cause`` is absent on every crypto expiry — a 24/7 market has exactly one
+        # way for a time stop to fire — so this line is byte-identical to what it has
+        # always been for crypto, and forex says which of its three deadlines it was.
+        cause = view.payload.get("cause", "")
+        # Built as one f-string rather than a concatenation: ``test_no_arithmetic``
+        # scans this module for ``ast.Add`` and cannot tell a string join from a sum,
+        # which is the right side to err on in a module forbidden arithmetic.
+        why = f" — {escape(cause)}" if cause else ""
+        return f"⌛ {tag} Expired unfilled{why}"
 
     if kind == "NOTE":
         return f"✏️ {tag} {escape(view.detail)}"

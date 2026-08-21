@@ -68,6 +68,10 @@ class CycleStore:
     #: M8.1 — who the cycle fans out to. Empty means nobody is set up, and the
     #: orchestrator must then skip the deep analyst entirely.
     users: list[UserAccount] = field(default_factory=list)
+    #: ``fx_rates``, keyed by pair (M10c). Keyed rather than a single figure because
+    #: forex sizes in EUR against the **quote** currency, which is EURJPY on the yen
+    #: cross (§7.1) — a table with one row could not express that.
+    fx_rates: dict[str, Any] = field(default_factory=dict)
     #: The same three guard inputs as above, partitioned by user — which is what the
     #: union guard and the per-user dedup check actually read from M8.1.
     open_by_user: dict[int, set[str]] = field(default_factory=dict)

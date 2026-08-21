@@ -31,9 +31,9 @@ from sentinel.bot.context import BotContext
 from sentinel.bot.formatting import escape
 from sentinel.bot.keyboards import ManageAction, ManageCallback
 from sentinel.bot.models import MessageKind, SignalStatus
+from sentinel.bot.plans import eur_quote_rate_of, market_of, plan_of
 from sentinel.core.logging import get_logger
 from sentinel.risk.accounting import Exit, Fill, realized_r
-from sentinel.risk.models import TradePlan
 from sentinel.risk.rounding import money, ratio
 from sentinel.tracker.models import EXIT_MANUAL, EventKind
 
@@ -189,7 +189,8 @@ async def _record_manual_close(message: Message, ctx: BotContext, signal_id: UUI
             await message.reply("❌ That signal is no longer in the database.")
             return
 
-        plan = TradePlan.model_validate(row.plan)
+        # On the row's own market column, never on the payload's shape (§16.7).
+        plan = plan_of(row.plan, market_of(row))
         fills = await ctx.repositories.fills(session).for_signal(signal_id)
         exits = await ctx.repositories.exits(session).for_signal(signal_id)
         open_qty = row.filled_qty - sum((exit_.qty for exit_ in exits), Decimal(0))
@@ -205,7 +206,8 @@ async def _record_manual_close(message: Message, ctx: BotContext, signal_id: UUI
             direction=plan.direction,
             fills=tuple(Fill(price=fill.price, qty=fill.qty) for fill in fills),
             exits=closed,
-            planned_risk_usdt=plan.planned_risk_eur * plan.eurusd_rate,
+            # ``eur_quote_rate_of``, because on USDJPY that rate is EURJPY (§7.1).
+            planned_risk_usdt=plan.planned_risk_eur * eur_quote_rate_of(plan),
         )
         now = ctx.clock.now()
 

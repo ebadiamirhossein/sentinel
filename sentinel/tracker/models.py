@@ -70,6 +70,13 @@ class MarketEvent(Frozen):
     price: Decimal = Decimal("0")
     #: The 1h close that broke the invalidation level, when that is what happened.
     reference_price: Decimal | None = None
+    #: Why this happened, in words, when the kind alone does not say (M10c). An
+    #: expiry has one meaning in a 24/7 market and three in forex: the TTL ran out,
+    #: the Friday close arrived first (§5.4), or a currency-matched high-impact event
+    #: cancelled the pending ladder (§8). "Expired unfilled" is true of all three and
+    #: useful for none of them — a reader who cannot tell a time stop from a central
+    #: bank decision cannot learn anything from a run of them.
+    cause: str = ""
 
 
 class RungFill(Frozen):

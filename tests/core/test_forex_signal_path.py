@@ -27,8 +27,12 @@ instrument.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
+from unittest.mock import patch
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -46,10 +50,12 @@ from sentinel.bot.forex_cards import forex_signal_card
 from sentinel.bot.models import SignalRecord
 from sentinel.charts.models import ChartSpec
 from sentinel.charts.renderer import render_album
+from sentinel.core import orchestrator as orchestrator_module
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import AppConfig, Secrets, Settings, load_config
 from sentinel.core.forex_cycle import ForexAssembly, assemble_forex
 from sentinel.core.markets import Market
+from sentinel.core.orchestrator import CycleOrchestrator, CycleRepositories
 from sentinel.fx.calendar import EconomicCalendar
 from sentinel.fx.gate import (
     ForexAccountState,
@@ -59,8 +65,13 @@ from sentinel.fx.gate import (
 )
 from sentinel.fx.models import ForexGateStatus
 from sentinel.fx.plan import ForexPlan
+from sentinel.ingestion.models import FxRate, MarketSnapshot
+from sentinel.llm.spend import SpendTotals
+from sentinel.risk.models import PauseState
 from sentinel.tracker.loop import TrackerLoop
 from sentinel.tracker.prices import PriceFeed
+from tests.bot_double import owner_account
+from tests.core.conftest import CycleDatabase, CycleStore, CycleUsers
 from tests.core.saxo_double import SyntheticSaxo, build
 from tests.tracker_double import FakeDatabase, FakeStore, ScriptedFeed, fake_repositories
 
@@ -314,3 +325,313 @@ async def test_at_two_hundred_euro_the_ladder_collapses_or_the_ticket_is_refused
         assert decision.reason is not None and decision.reason.value == "BELOW_MIN_TICKET"
     else:
         assert len(decision.plan.entries) == 1, "no three-rung forex ladder fits €200"
+
+
+# --------------------------------------------------------------------------- #
+# The whole cycle, through the real orchestrator
+# --------------------------------------------------------------------------- #
+#
+# The four tests above compose the pieces by hand. This one runs the code that will
+# actually run: ``CycleOrchestrator._run_forex_cycle``, over the real Saxo adapter, the
+# real feature engine, the real renderer, the real gate and the real publisher seam.
+#
+# The doubles are local to this file rather than borrowed from
+# ``test_forex_degrades_only.py``. That file's subject is isolation and this one's is
+# composition, and a composition test that reached into another suite for its plumbing
+# would be proving something about the test suite instead.
+
+
+class _Repo:
+    """Base for the repository doubles — every one of them is market-scoped."""
+
+    def __init__(self, session: Any, *, market: Market = Market.CRYPTO) -> None:
+        self.store: CycleStore = session.store
+        self.market = market
+
+
+class _Signals(_Repo):
+    async def open_symbols_by_user(self) -> dict[int, set[str]]:
+        return {}
+
+    async def open_symbols(self, *, user_id: int) -> set[str]:
+        return set()
+
+    async def resolutions_since(self, since: datetime, *, user_id: int) -> list[Any]:
+        return []
+
+    async def published_since(self, since: datetime, *, user_id: int) -> int:
+        return 0
+
+    async def open_taken(self, *, user_id: int) -> list[Any]:
+        return []
+
+    async def claim(self, record: Any) -> Any:
+        self.store.signals[record.signal_id] = record
+        return record.model_copy(update={"number": len(self.store.signals)})
+
+
+class _Cycles(_Repo):
+    async def start(self, cycle_id: UUID, **kwargs: Any) -> None:
+        self.store.cycles[cycle_id] = {"status": "RUNNING", **kwargs}
+
+    async def finish(self, cycle_id: UUID, **kwargs: Any) -> None:
+        self.store.cycles[cycle_id] = kwargs
+
+
+class _Gates(_Repo):
+    async def record(self, decision: Any, cycle_id: Any = None, *, user_id: int) -> None:
+        self.store.gate_decisions.append(decision)
+
+
+class _Reports(_Repo):
+    async def save(self, report: Any, **kwargs: Any) -> UUID:
+        self.store.reports.append(report)
+        return UUID(int=len(self.store.reports))
+
+    async def latest_non_candidates(self, *, since: datetime) -> dict[str, datetime]:
+        return {}
+
+    async def recent_for_symbol(self, symbol: str, **kwargs: Any) -> list[Any]:
+        return []
+
+
+class _Snapshots(_Repo):
+    async def save(self, snapshot: MarketSnapshot) -> UUID:
+        self.store.snapshots.append(snapshot)
+        return snapshot.snapshot_id
+
+
+class _LLMCalls(_Repo):
+    async def record_many(self, calls: Any) -> int:
+        self.store.llm_calls.extend(calls)
+        return len(calls)
+
+    async def spend_totals(self, **_: object) -> SpendTotals:
+        return SpendTotals(day_usd=Decimal("0"), month_usd=Decimal("0"))
+
+    async def spend_totals_across_markets(self, **_: object) -> SpendTotals:
+        return SpendTotals(day_usd=Decimal("0"), month_usd=Decimal("0"))
+
+    async def day_spend_by_market(self, **_: object) -> dict[Market, Decimal]:
+        return {}
+
+
+class _Pause(_Repo):
+    async def load(self, user_id: int | None = None) -> PauseState:
+        return PauseState()
+
+
+class _SettingsRepo(_Repo):
+    async def all(self) -> dict[str, Any]:
+        return {}
+
+
+class _FxRates(_Repo):
+    """``fx_rates``, keyed by pair — which is what makes EURJPY expressible."""
+
+    def __init__(self, session: Any, *, market: Market = Market.CRYPTO) -> None:
+        super().__init__(session, market=market)
+        self.rates: dict[str, FxRate] = session.store.fx_rates
+
+    async def get(self, pair: str = "EURUSD") -> FxRate | None:
+        return self.rates.get(pair)
+
+    async def upsert(self, rate: FxRate) -> None:
+        self.rates[rate.pair] = rate
+
+
+class _FxClient:
+    """Frankfurter, scripted. One EUR-based request, several currencies back."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, ...]] = []
+
+    async def fetch_quotes(self, currencies: tuple[str, ...]) -> dict[str, FxRate]:
+        self.asked.append(currencies)
+        table = {"USD": Decimal("1.169"), "JPY": Decimal("170.5"), "GBP": Decimal("0.845")}
+        return {
+            f"EUR{currency}": FxRate(
+                pair=f"EUR{currency}",
+                rate=table[currency],
+                source="test",
+                fetched_at=datetime(2026, 8, 12, 12, 0, tzinfo=UTC),
+            )
+            for currency in currencies
+            if currency in table
+        }
+
+
+class _ForexAnalyst:
+    """Returns a CANDIDATE whose levels are derived from the snapshot it was given.
+
+    This is join 3 again, one level up: the levels are not written down here, so they
+    survive whatever the feature engine actually computed for the bars the adapter
+    actually fetched.
+    """
+
+    name = "test-forex-analyst"
+
+    def __init__(
+        self, client: Any, config: Any, *, cycle_id: Any = None, prompt_version: str = ""
+    ) -> None:
+        self.calls: list[Any] = []
+        self.prompt_version = prompt_version
+
+    async def analyze(self, snapshot: Any, charts: Any, history: str) -> AnalystReport:
+        # ``snapshot.features`` carries the forex block merged in beside the per-
+        # timeframe ones (M10b-2), so it is deliberately NOT a ``SymbolFeatures``
+        # payload. Reading the ATR out of the raw dict is what a consumer of this
+        # snapshot actually has to do.
+        atr = Decimal(str(snapshot.features["timeframes"]["1h"]["atr14"]))
+        market = ForexMarketContext(
+            symbol=snapshot.symbol, last_price=snapshot.last_price, atr_1h=atr
+        )
+        return report_for(market)
+
+
+class _Publisher:
+    def __init__(self, user_id: int, log: list[Any], tz: Any) -> None:
+        self._user_id = user_id
+        self._log = log
+        self._tz = tz
+
+    async def publish(self, plan: Any, charts: Any = (), *, cycle_id: Any = None) -> Any:
+        record = SignalRecord(plan=plan, user_id=self._user_id, number=1, market=Market.FOREX)
+        # The publisher's own renderer is dispatched on market; calling the forex one
+        # here is the same dispatch, and it is what makes this assert on a real card.
+        self._log.append((self._user_id, plan.symbol, forex_signal_card(record, self._tz)))
+        return type("Result", (), {"published": True, "record": record, "reason": ""})()
+
+
+def _forex_settings(config: AppConfig) -> Settings:
+    """Forex enabled, live, three pairs — the switch-on shape, in memory only."""
+    markets = dict(config.markets)
+    markets[Market.FOREX] = markets[Market.FOREX].model_copy(
+        update={"enabled": True, "dry_run": False}
+    )
+    return Settings(
+        secrets=Secrets(_env_file=None, ANTHROPIC_API_KEY="test-key"),
+        config=config.model_copy(update={"markets": markets}),
+    )
+
+
+async def run_forex_cycle(
+    config: AppConfig, *, calendar: EconomicCalendar, store: CycleStore | None = None
+) -> tuple[Any, list[Any], CycleStore, _FxClient]:
+    store = store or CycleStore()
+    store.users = [owner_account(7222549221, capital_eur=CAPITAL_EUR)]
+    published: list[Any] = []
+    transport = SyntheticSaxo()
+    fx_client = _FxClient()
+    tz = ZoneInfo("Europe/Vilnius")
+
+    @asynccontextmanager
+    async def _adapter(*args: Any, **kwargs: Any) -> Any:
+        adapter, client = build(transport)
+        async with client:
+            yield adapter
+
+    engine = CycleOrchestrator(
+        _forex_settings(config),
+        CycleDatabase(store),  # type: ignore[arg-type]
+        market=Market.FOREX,
+        publisher_factory=lambda uid: _Publisher(uid, published, tz),  # type: ignore[arg-type,return-value]
+        clock=FrozenClock(transport.now),
+        calendar=calendar,
+        fx_client=fx_client,  # type: ignore[arg-type]
+        repositories=CycleRepositories(
+            signals=_Signals,  # type: ignore[arg-type]
+            cycles=_Cycles,  # type: ignore[arg-type]
+            gate_decisions=_Gates,  # type: ignore[arg-type]
+            reports=_Reports,  # type: ignore[arg-type]
+            llm_calls=_LLMCalls,  # type: ignore[arg-type]
+            snapshots=_Snapshots,  # type: ignore[arg-type]
+            risk_state=_Pause,  # type: ignore[arg-type]
+            settings=_SettingsRepo,  # type: ignore[arg-type]
+            fx=_FxRates,  # type: ignore[arg-type]
+            users=CycleUsers,  # type: ignore[arg-type]
+            market_pause=_Pause,  # type: ignore[arg-type]
+            user_market_pause=_Pause,  # type: ignore[arg-type]
+        ),
+    )
+    with (
+        patch.object(orchestrator_module, "forex_adapter", _adapter),
+        patch.object(orchestrator_module, "AnthropicFableAnalyst", _ForexAnalyst),
+    ):
+        result = await engine.run()
+    return result, published, store, fx_client
+
+
+async def test_a_full_forex_cycle_reaches_a_published_card() -> None:
+    """The whole path, through the code that will actually run it.
+
+    M10b's ``cycle.forex_stops_at_report`` is gone, and this is what replaced it: three
+    symbols ingested from a synthetic venue, features computed, charts rendered, an
+    analyst asked, a gate run per user, and a card produced.
+    """
+    config = load_config()
+    now = SyntheticSaxo().now
+    result, published, _store, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
+
+    assert result.error is None
+    assert result.market is Market.FOREX
+    assert result.symbols_scanned == 3
+    assert result.analyzed == 3
+    assert result.candidates == 3
+    assert result.approved >= 1
+    assert published, "a forex cycle that approves a plan must publish it"
+
+    _, symbol, card = published[0]
+    assert symbol in SYMBOLS
+    assert "pips" in card
+    assert "USDT" not in card
+
+
+async def test_the_cycle_fetches_the_euro_rate_for_every_quote_currency() -> None:
+    """§7.1: USDJPY sizes through EURJPY, so one request must cover USD **and** JPY."""
+    config = load_config()
+    now = SyntheticSaxo().now
+    _, _, store, fx_client = await run_forex_cycle(config, calendar=calendar_covering(now))
+
+    assert fx_client.asked == [("JPY", "USD")]
+    assert set(store.fx_rates) == {"EURUSD", "EURJPY"}
+
+
+async def test_the_usdjpy_plan_is_sized_at_the_yen_rate_not_the_dollar_one() -> None:
+    """The ~145x error §7.1 names, asserted absent on a plan the real cycle produced."""
+    config = load_config()
+    now = SyntheticSaxo().now
+    _, _, store, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
+
+    plans = [d.plan for d in store.gate_decisions if d.plan is not None]
+    yen = next((plan for plan in plans if plan.symbol == "USDJPY"), None)
+    if yen is None:
+        pytest.skip("USDJPY did not clear the gate on this synthetic data")
+    assert yen.eur_quote_rate == Decimal("170.5")
+    assert yen.quote_currency == "JPY"
+    assert yen.pip == Decimal("0.01")
+
+
+async def test_a_stale_calendar_stops_the_whole_cycle_short_of_a_signal() -> None:
+    """§8, at cycle scale: with one source, silence is not "nothing is scheduled".
+
+    And this is the state the repository **ships** in, so it is also the answer to
+    "what happens on the day forex is switched on before the calendar is populated".
+    """
+    config = load_config()
+    result, published, store, _ = await run_forex_cycle(config, calendar=OPEN_CALENDAR)
+
+    assert result.analyzed == 3
+    assert published == []
+    assert store.gate_decisions
+    assert all(d.reason.value == "CALENDAR_STALE" for d in store.gate_decisions)
+
+
+async def test_every_gate_verdict_is_recorded_whether_or_not_it_approved() -> None:
+    """PRD F10: a rejection is data. M9 cannot compare what was never written down."""
+    config = load_config()
+    now = SyntheticSaxo().now
+    _, _, store, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
+
+    assert len(store.gate_decisions) == 3
+    assert all(d.prompt_version == "fable_forex_v1" for d in store.gate_decisions)

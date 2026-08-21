@@ -29,7 +29,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sentinel.core.markets import Market
+from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.fx.plan import ForexPlan
 from sentinel.risk.models import TradePlan
 
@@ -54,6 +54,21 @@ def plan_model_for(market: Market) -> type[AnyPlan]:
             f"name its plan model here; guessing one would be FOREX.md §16.7's "
             f"forbidden fallback with extra steps."
         ) from None
+
+
+def market_of(row: Any) -> Market:
+    """The market a stored row belongs to, read from its own column.
+
+    ``signals.market`` is ``NOT NULL`` with a ``'crypto'`` server default (migration
+    ``0010``), so a ``None`` here is never a database row — it is one built in memory
+    that never went through an insert. ``LEGACY_MARKET`` is both the value the migration
+    backfilled and the value the column would default to, so reading it that way agrees
+    with what Postgres would have stored rather than guessing something else.
+    """
+    value = getattr(row, "market", None)
+    if value is None:
+        return LEGACY_MARKET
+    return value if isinstance(value, Market) else Market(value)
 
 
 def plan_of(payload: Any, market: Market) -> AnyPlan:
@@ -115,6 +130,25 @@ def eur_quote_rate_of(plan: AnyPlan) -> Decimal:
     return plan.eurusd_rate
 
 
+def leverage_of(plan: AnyPlan) -> str:
+    """The leverage figure a surface shows, as text, with its meaning attached.
+
+    The two markets' numbers are **not** the same kind of thing and must not read as
+    though they were. Crypto's ``suggested_leverage`` is *derived* — solved for so the
+    liquidation price stays clear of the stop by the configured multiple. Forex has no
+    per-position liquidation price to derive one from (§7.6), so ``max_leverage`` is a
+    configured **cap** resting on an ESMA assumption, and calling it a suggestion would
+    turn a documented assumption into a recommendation.
+
+    Returned as a string because it is a display value and the difference between the
+    two is a word, not a number. ``PositionView`` was already all-``str`` for that
+    reason.
+    """
+    if isinstance(plan, ForexPlan):
+        return f"{plan.max_leverage}x max"
+    return str(plan.suggested_leverage)
+
+
 def qty_step_of(plan: AnyPlan) -> Decimal:
     """The smallest quantity increment this venue accepts.
 
@@ -133,6 +167,8 @@ __all__ = [
     "AnyPlan",
     "Rung",
     "eur_quote_rate_of",
+    "leverage_of",
+    "market_of",
     "plan_model_for",
     "plan_of",
     "qty_step_of",

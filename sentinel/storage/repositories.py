@@ -38,6 +38,7 @@ from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.fx.instruments import ForexInstrument
 from sentinel.fx.models import SaxoTokenBundle
+from sentinel.fx.plan import ForexGateDecision
 from sentinel.ingestion.models import (
     FxRate,
     InstrumentMeta,
@@ -459,12 +460,19 @@ class FxRateRepository:
         )
 
 
+#: Either market's gate verdict. A union rather than a protocol because the two are
+#: genuinely parallel types and the storage layer reads them by name — see
+#: ``sentinel/bot/plans.py`` for the same decision one level down, and for the rule
+#: that keeps the two from being confused on the way back out.
+AnyGateDecision = GateDecision | ForexGateDecision
+
+
 class GateDecisionRepository(MarketScopedRepository):
     """Audit trail for every risk-gate verdict (PRD F10; M9's rejection stats)."""
 
     @staticmethod
     def to_row(
-        decision: GateDecision,
+        decision: AnyGateDecision,
         cycle_id: UUID | None = None,
         *,
         user_id: int,
@@ -479,6 +487,12 @@ class GateDecisionRepository(MarketScopedRepository):
         ``market`` is a parameter here and an instance attribute on the repository
         because this stays a **pure** function — the M4 tools serialize a decision
         without a session at all.
+
+        ``decision`` is ``GateDecision | ForexGateDecision`` from M10c, and **the body
+        did not change**. Every field read below is a name the two share, and the two
+        ``gate_status`` vocabularies are asserted to agree on the wire (FOREX.md §16.4)
+        precisely so ``/pulse`` and ``/stats`` can group this column across markets
+        without knowing which gate wrote a row.
         """
         return {
             "cycle_id": cycle_id,
@@ -494,7 +508,7 @@ class GateDecisionRepository(MarketScopedRepository):
         }
 
     async def record(
-        self, decision: GateDecision, cycle_id: UUID | None = None, *, user_id: int
+        self, decision: AnyGateDecision, cycle_id: UUID | None = None, *, user_id: int
     ) -> None:
         self._session.add(
             GateDecisionRow(**self.to_row(decision, cycle_id, user_id=user_id, market=self._market))

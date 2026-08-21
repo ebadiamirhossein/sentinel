@@ -63,10 +63,10 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from sentinel.bot.models import SignalDecision
+from sentinel.bot.plans import AnyPlan, leverage_of, market_of, plan_of
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.risk.accounting import Exit, Fill, avg_exit_price, avg_fill_price
-from sentinel.risk.models import TradePlan
 from sentinel.risk.rounding import money, percent, ratio
 from sentinel.stats.models import Frozen, Population
 from sentinel.storage.models import SignalExitRow, SignalFillRow, SignalRow
@@ -243,9 +243,17 @@ class JournalBook(Frozen):
         return self.population is JournalPopulation.REAL
 
 
-def _plan_of(row: SignalRow) -> TradePlan | None:
+def _plan_of(row: SignalRow) -> AnyPlan | None:
+    """The stored plan, dispatched on the row's market (§16.7).
+
+    The ``except`` below is a **version** guard, not a model guard: it exists so a plan
+    stored under an older schema blanks its sizing columns rather than failing an export
+    the owner asked for. Before M10c it was also, accidentally, the thing that would
+    have blanked every forex row in the workbook — silently, on a path whose whole
+    purpose is a record of what happened.
+    """
     try:
-        return TradePlan.model_validate(row.plan)
+        return plan_of(row.plan, market_of(row))
     except ValidationError:
         log.warning(
             "stats.journal_plan_unreadable",
@@ -300,7 +308,9 @@ def journal_row_of(
         avg_entry=avg_fill_price(filled) if filled else None,
         avg_exit=avg_exit_price(closed) if closed else None,
         size_eur=None if plan is None else plan.notional_eur,
-        leverage=None if plan is None else plan.suggested_leverage,
+        # Crypto's is derived, forex's is a configured cap (§7.6) — the accessor is
+        # where that difference is stated, so the column reads honestly for both.
+        leverage=None if plan is None else leverage_of(plan),
         sl_pct=None if plan is None else plan.stop_distance_pct,
         risk_eur=risk_eur,
         pnl_r_gross=row.realized_r,

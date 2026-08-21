@@ -203,6 +203,34 @@ async def snapshot_assembler(
             await adapter.close()
 
 
+@asynccontextmanager
+async def forex_fx_client(settings: Settings) -> AsyncIterator[FxClient]:
+    """A Frankfurter client for the forex path's EUR->quote rates (§7.1).
+
+    Its own entry point rather than a field on the snapshot assembler, for the reason
+    :func:`forex_adapter` is: forex does not go through the assembler at all (defect
+    #14), and reaching into one to borrow a client would put a forex dependency inside
+    the object a crypto cycle builds.
+
+    **No last-known-good loader.** The crypto client has one because a display rate that
+    is an hour stale is better than no card. A *sizing* rate is different: §12 says an
+    unavailable rate means no sizing and therefore no signal, and a fallback here would
+    quietly size a position at a rate from before whatever moved the market.
+    """
+    async with httpx.AsyncClient(
+        timeout=settings.config.ingestion.request_timeout_seconds
+    ) as client:
+        yield FxClient(
+            HttpFetcher(
+                client,
+                timeout_seconds=settings.config.ingestion.request_timeout_seconds,
+                max_retries=settings.config.ingestion.max_retries,
+                backoff_seconds=settings.config.ingestion.retry_backoff_seconds,
+            ),
+            settings.config.ingestion,
+        )
+
+
 class DatabaseTokenStore:
     """The Saxo credential, in Postgres, one session per operation (§3 requirement 6).
 
