@@ -9,53 +9,163 @@
 # Sentinel's knowledge of scheduled events, and keeping it current is real recurring
 # manual work that the spec should not pretend away.
 #
-# WHILE `events` IS EMPTY OR `coverage_until` HAS PASSED, FOREX EMITS NO SIGNALS.
-# That is deliberate (§8's staleness rail): an expired calendar must never silently
-# become "no events today", and with no second source to disagree with it, the only
-# safe reading of "I don't know" is "don't trade". Sentinel will alert rather than
-# trade blind.
+# WHILE `coverage_until` HAS PASSED (or is null), FOREX EMITS NO SIGNALS. That is
+# deliberate (§8's staleness rail): an expired calendar must never silently become
+# "no events today", and with no second source to disagree with it, the only safe
+# reading of "I don't know" is "don't trade". Sentinel alerts rather than trade blind.
 #
 # ---------------------------------------------------------------------------
 # SCHEMA
 #
 #   version:        1
 #   coverage_until: an ISO date. Events are believed complete UP TO AND INCLUDING
-#                   this date. `null` means no coverage is claimed, which is what
-#                   this file ships as — no dates are invented here, because a
-#                   plausible-looking wrong date is worse than an empty file.
-#   events:         a list of, at minimum, the high-impact scheduled releases:
-#                   central bank rate decisions, CPI, NFP, GDP, PMI.
+#                   this date, EXCEPT for anything named in `known_gaps`.
+#   known_gaps:     free text, one line per thing this file knowingly does not
+#                   contain. `coverage_until` on its own is a claim of completeness
+#                   and this file cannot honestly make one (see PCE below), so the
+#                   claim is "complete except these" and the staleness alert repeats
+#                   them until somebody fills them in.
+#   events:         at minimum the high-impact scheduled releases: central bank rate
+#                   decisions, CPI, NFP, GDP, PMI.
 #
-#     - at:       ISO 8601 instant, UTC, with the trailing Z. Note that US releases
-#                 move with US daylight saving and EU ones with EU daylight saving,
-#                 and the two change on different dates — so a fixed local time is
-#                 NOT a fixed UTC time. Write the UTC instant, not a rule.
-#       currency: EUR | USD | GBP | JPY. Matched against BOTH sides of a pair, so a
-#                 USD event blacks out EURUSD, GBPUSD and USDJPY alike.
-#       impact:   HIGH | MEDIUM | LOW. Only HIGH suppresses anything (owner
-#                 decision, 2026-08-21). The others are carried for context.
-#       name:     free text, treated as UNTRUSTED — it is sanitised on load and, if
-#                 it ever reaches a prompt, it goes inside M5's untrusted-data
-#                 delimiters like any other external text.
-#
-# Example, commented out on purpose so that no date in this file can be mistaken for
-# one somebody verified:
-#
-#   coverage_until: 2026-12-31
-#   events:
-#     - at: 2026-09-10T12:15:00Z
-#       currency: EUR
-#       impact: HIGH
-#       name: ECB monetary policy decision
-#     - at: 2026-09-04T12:30:00Z
-#       currency: USD
-#       impact: HIGH
-#       name: US non-farm payrolls
+#     - at:         ISO 8601 instant, UTC, with the trailing Z. US releases move with
+#                   US daylight saving and EU ones with EU daylight saving, and the
+#                   two change on DIFFERENT dates — so a fixed local time is NOT a
+#                   fixed UTC time. Write the UTC instant, not a rule.
+#       currency:   EUR | USD | GBP | JPY. Matched against BOTH sides of a pair, so a
+#                   USD event blacks out EURUSD, GBPUSD and USDJPY alike.
+#       impact:     HIGH | MEDIUM | LOW. Only HIGH suppresses anything (owner
+#                   decision, 2026-08-21). The others are carried for context.
+#       name:       free text, treated as UNTRUSTED — sanitised on load and, if it
+#                   ever reaches a prompt, wrapped in M5's untrusted-data delimiters.
+#       source:     REQUIRED. The issuing institution's own page. A wrong date is a
+#                   blackout that does not fire, and silence is the one failure this
+#                   system cannot see; the URL is what makes a date re-checkable in
+#                   ten seconds instead of re-researchable in an hour.
+#       time_confidence:  exact (default) | approximate. `approximate` MUST also set
+#                   before_minutes and after_minutes — the loader refuses it
+#                   otherwise, so the marker cannot become decoration.
+#       before_minutes / after_minutes:  per-event window override, in minutes.
+#                   Omitted means the configured default, which is -60/+30 (§8).
+#       needs_verification:  true while the date rests on secondary sources rather
+#                   than on the institution's own calendar. It changes nothing about
+#                   behaviour; it changes what the staleness alert asks for.
 #
 # Central bank meeting dates are published about a year ahead, so most of the
 # recurring burden is the monthly data releases rather than the rate decisions.
+#
+# ---------------------------------------------------------------------------
+# THE WINDOW THIS FILE COVERS: 2026-09-01 to 2026-10-30.
+#
+# September and October 2026 sit entirely inside EDT / BST / CEST, so no daylight
+# saving boundary falls inside this window and every instant below is a plain
+# conversion. The next boundary (US 2026-11-01, EU 2026-10-25) is OUTSIDE it — which
+# is another reason coverage stops on the 30th rather than being stretched.
+#
+# NOTE ON THE BANK OF ENGLAND: there is NO October MPC meeting. The one after
+# 17 September is 5 November 2026. That is correct and is not a missing entry.
 # ---------------------------------------------------------------------------
 
 version: 1
-coverage_until: null
-events: []
+coverage_until: 2026-10-30
+
+known_gaps:
+  - >-
+    US PCE (the Fed's preferred inflation gauge, monthly, ~12:30Z) is ABSENT. The
+    BEA release schedule at https://www.bea.gov/news/schedule could not be reached
+    when this file was written and no date was guessed: an absent event is safer than
+    a wrong one, because a blackout on the wrong day is visible and one that never
+    fires is not. TODO — add the September and October PCE dates from bea.gov.
+
+events:
+  # ── USD ────────────────────────────────────────────────────────────────────
+  - at: 2026-09-04T12:30:00Z
+    currency: USD
+    impact: HIGH
+    name: US nonfarm payrolls (August)
+    source: https://www.bls.gov/schedule/2026/09_sched_list.htm
+
+  - at: 2026-09-11T12:30:00Z
+    currency: USD
+    impact: HIGH
+    name: US CPI (August)
+    source: https://www.bls.gov/news.release/cpi.nr0.htm
+
+  - at: 2026-09-16T18:00:00Z
+    currency: USD
+    impact: HIGH
+    name: FOMC decision and Summary of Economic Projections
+    source: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - at: 2026-10-02T12:30:00Z
+    currency: USD
+    impact: HIGH
+    name: US nonfarm payrolls (September)
+    source: https://www.bls.gov/schedule/2026/10_sched_list.htm
+
+  - at: 2026-10-14T12:30:00Z
+    currency: USD
+    impact: HIGH
+    name: US CPI (September)
+    source: https://www.bls.gov/schedule/2026/10_sched_list.htm
+
+  - at: 2026-10-28T18:00:00Z
+    currency: USD
+    impact: HIGH
+    name: FOMC decision
+    source: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  # ── EUR ────────────────────────────────────────────────────────────────────
+  #
+  # Both ECB dates come from several agreeing SECONDARY sources rather than from the
+  # ECB's own Governing Council calendar page, so both carry needs_verification and
+  # the staleness alert will keep asking until somebody confirms them against
+  # ecb.europa.eu and drops the flag.
+  - at: 2026-09-10T12:15:00Z
+    currency: EUR
+    impact: HIGH
+    name: ECB monetary policy decision and staff projections
+    source: https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html
+    needs_verification: true
+
+  - at: 2026-10-29T12:15:00Z
+    currency: EUR
+    impact: HIGH
+    name: ECB monetary policy decision
+    source: https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html
+    needs_verification: true
+
+  # ── GBP ────────────────────────────────────────────────────────────────────
+  #
+  # One meeting only. The next Bank Rate decision after this is 5 November 2026,
+  # outside this file's coverage. October is not a gap.
+  - at: 2026-09-17T11:00:00Z
+    currency: GBP
+    impact: HIGH
+    name: Bank of England Bank Rate decision
+    source: https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes
+
+  # ── JPY ────────────────────────────────────────────────────────────────────
+  #
+  # THE BoJ PUBLISHES NO FIXED ANNOUNCEMENT TIME. Its statement lands "in the
+  # afternoon of the second day" of the meeting, observed roughly 02:30-06:00 UTC.
+  # 03:00Z below is an ESTIMATE, marked as one, and carries -180/+60 instead of the
+  # default -60/+30 so the window actually contains the range the release falls in.
+  # A -60/+30 blackout around an estimated instant can miss its own event.
+  - at: 2026-09-18T03:00:00Z
+    currency: JPY
+    impact: HIGH
+    name: Bank of Japan policy decision
+    source: https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm
+    time_confidence: approximate
+    before_minutes: 180
+    after_minutes: 60
+
+  - at: 2026-10-30T03:00:00Z
+    currency: JPY
+    impact: HIGH
+    name: Bank of Japan policy decision and Outlook Report
+    source: https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm
+    time_confidence: approximate
+    before_minutes: 180
+    after_minutes: 60

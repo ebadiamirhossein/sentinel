@@ -30,7 +30,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -473,7 +473,7 @@ class _ForexAnalyst:
 
     #: Every history block this analyst was handed, so the cycle test can assert on
     #: what the model would actually have received (M10d, join 4).
-    histories: list[str] = []
+    histories: ClassVar[list[str]] = []
 
     def __init__(
         self, client: Any, config: Any, *, cycle_id: Any = None, prompt_version: str = ""

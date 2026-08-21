@@ -174,11 +174,23 @@ def test_a_calendar_with_no_coverage_suppresses_rather_than_degrades() -> None:
     assert reason(events=calendar(covered=False)) is ForexRejection.CALENDAR_STALE
 
 
-def test_the_shipped_calendar_is_the_unusable_one() -> None:
-    """Named here rather than left as a surprise on switch-on day."""
+def test_the_shipped_calendar_is_usable_and_dated() -> None:
+    """The inverse of what this asserted until M10d, and that inversion IS switch-on.
+
+    It read ``coverage_until is None`` — the shipped file claimed no coverage, so the
+    staleness rail suppressed every forex signal there was. Populating it is the
+    change that lets forex emit anything at all, which is why the assertion is here in
+    the gate's own tests rather than only in the calendar's.
+
+    The date is asserted as *in the future relative to the events it carries* rather
+    than as a literal, so extending the file is an edit to the file and not to a test.
+    """
     from sentinel.fx.calendar import load_calendar
 
-    assert load_calendar().coverage_until is None
+    calendar = load_calendar()
+    assert calendar.coverage_until is not None
+    assert calendar.events
+    assert calendar.coverage_until >= max(event.at.date() for event in calendar.events)
 
 
 # --------------------------------------------------------------------------- #
