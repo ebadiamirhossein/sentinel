@@ -60,6 +60,11 @@ TZ = ZoneInfo("Europe/Vilnius")
 
 SYMBOL = "BTCUSDT"
 
+#: The **second** golden symbol (M10b-2, owner requirement H1). Chosen because it is
+#: on the live watchlist and its price sits between 1 and 1000, where BTCUSDT's does
+#: not — see :func:`golden_symbol_charts` for what that buys.
+SECOND_SYMBOL = "SOLUSDT"
+
 #: Recorded live in M1 — see ``tests/cassettes/binance_market_BTCUSDT.json``.
 #: BTCUSDT's exchange minimum is 50 USDT, above the engine's 20 USDT floor, which
 #: is precisely why this symbol is the one worth pinning.
@@ -113,26 +118,32 @@ REJECTED_REPORT: dict[str, Any] = {
 }
 
 
-def golden_snapshot() -> MarketSnapshot:
+def golden_snapshot(symbol: str = SYMBOL) -> MarketSnapshot:
     """The recorded cycle's input, with the exchange rules the gate needs.
 
     ``snapshot_from_cassettes`` carries OHLCV and nothing else; the gate rejects
     with ``INSTRUMENT_META_MISSING`` without trading rules, so they are attached
     from the recorded market cassette rather than invented.
+
+    The instrument rules are BTCUSDT's and are only used by the gate, which the
+    second symbol does not run — see :func:`golden_symbol_charts`.
     """
-    return snapshot_from_cassettes(SYMBOL).model_copy(update={"instrument": INSTRUMENT})
+    snapshot = snapshot_from_cassettes(symbol)
+    if symbol != SYMBOL:
+        return snapshot
+    return snapshot.model_copy(update={"instrument": INSTRUMENT})
 
 
 def golden_features(snapshot: MarketSnapshot, config: AppConfig) -> SymbolFeatures:
     return compute_features(snapshot, config.features)
 
 
-def chart_specs(config: AppConfig) -> tuple[ChartSpec, ...]:
+def chart_specs(config: AppConfig, symbol: str = SYMBOL) -> tuple[ChartSpec, ...]:
     """The same specs the orchestrator builds — see ``_chart_specs`` there."""
     charts = config.charts
     return tuple(
         ChartSpec(
-            symbol=SYMBOL,
+            symbol=symbol,
             timeframe=timeframe,
             candle_window=charts.candle_window,
             width_px=charts.width_px,
@@ -154,7 +165,7 @@ def golden_charts(
     A stand-in would make the chart assertions vacuous, and the chart parameters
     are one of the four things this milestone is forbidden to change.
     """
-    return render_album(snapshot, features, chart_specs(config))
+    return render_album(snapshot, features, chart_specs(config, snapshot.symbol))
 
 
 def golden_report(payload: dict[str, Any], config: AppConfig) -> AnalystReport:
@@ -268,6 +279,38 @@ def run_golden_cycle(config: AppConfig) -> GoldenCycle:
     )
 
 
+def golden_symbol_charts(config: AppConfig, symbol: str) -> dict[str, Any]:
+    """Features and chart digests for one symbol, without the gate or the card.
+
+    **Why a second symbol exists at all (owner requirement H1, 2026-08-21).**
+    ``charts.json`` pins BTCUSDT and nothing else, and BTCUSDT trades above 1000.
+    ``charts/renderer._format_price`` — which labels every S/R line — takes a
+    different branch below 1000, so the golden pinned **one** of its two branches.
+    A change to the other would have moved the stored bytes of every crypto chart
+    priced between 1 and 1000 — LINK, AVAX and LTC are all on the live watchlist —
+    and this suite would have stayed green. M10b-2 found that hole by needing the
+    formatter to behave differently for forex.
+
+    Deliberately not the gate or the card. ``bot/cards.py`` interpolates prices the
+    risk engine has already quantized, so nothing there is magnitude-sensitive, and a
+    second hand-tuned analyst report would add a fragile golden without covering the
+    hole this exists to close.
+    """
+    snapshot = golden_snapshot(symbol)
+    features = golden_features(snapshot, config)
+    charts = golden_charts(snapshot, features, config)
+    return {
+        "features": json.loads(json.dumps(features.model_dump(mode="json"))),
+        "charts": {
+            chart.params.spec.timeframe: {
+                "sha256": chart.sha256,
+                "params": chart.params.to_json_dict(),
+            }
+            for chart in charts
+        },
+    }
+
+
 __all__ = [
     "APPROVED_REPORT",
     "CAPITAL_EUR",
@@ -275,8 +318,10 @@ __all__ = [
     "INSTRUMENT",
     "NOW",
     "REJECTED_REPORT",
+    "SECOND_SYMBOL",
     "SYMBOL",
     "TZ",
     "GoldenCycle",
+    "golden_symbol_charts",
     "run_golden_cycle",
 ]

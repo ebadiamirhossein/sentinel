@@ -35,6 +35,7 @@ Pure: no clock, no database. The caller supplies both.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -42,6 +43,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from sentinel.core.config import LLMConfig, MarketConfig
+from sentinel.core.markets import Market
 
 
 class SpendState(StrEnum):
@@ -114,6 +116,11 @@ class SpendScope(StrEnum):
 
     MARKET = "market"
     GLOBAL = "global"
+    #: The global ceiling minus another market's **unspent** reserved floor
+    #: (FOREX.md §13 decision 6). Its own member because the action it calls for is
+    #: different again: this market has not overspent and the deployment has not hit
+    #: its ceiling — money is simply being held for somebody else, on purpose.
+    RESERVED = "reserved"
 
 
 class SpendVerdict(BaseModel):
@@ -129,6 +136,31 @@ class SpendVerdict(BaseModel):
         return self.state is SpendState.LIMIT_REACHED
 
 
+def reserved_elsewhere_usd(
+    *,
+    for_market: Market,
+    markets: Mapping[Market, MarketConfig],
+    day_spend_by_market: Mapping[Market, Decimal],
+) -> Decimal:
+    """How much of the global ceiling other markets are still holding back.
+
+    Only the **unspent** part of a floor is reserved: a market that has already spent
+    its floor is no longer protecting anything, and continuing to hold the money would
+    shrink every other market's ceiling for no benefit. So crypto's 8.00 floor reserves
+    8.00 at the start of the day and nothing once crypto has spent it.
+
+    ``markets`` should be the **enabled** markets only. A disabled market cannot spend,
+    so reserving for it would starve a live market to hold a dollar nobody can use.
+    """
+    held = Decimal(0)
+    for name, cfg in markets.items():
+        if name is for_market:
+            continue
+        spent = day_spend_by_market.get(name, Decimal(0))
+        held += max(Decimal(0), cfg.llm_reserved_floor_usd - spent)
+    return held
+
+
 def evaluate_market_spend(
     *,
     market_totals: SpendTotals,
@@ -136,6 +168,7 @@ def evaluate_market_spend(
     market: MarketConfig,
     global_limit_usd: Decimal,
     config: LLMConfig,
+    reserved_elsewhere: Decimal = Decimal(0),
 ) -> SpendVerdict:
     """One market's verdict under both ceilings (M10a Step 4).
 
@@ -151,12 +184,21 @@ def evaluate_market_spend(
     3. **This market's warn level**, then the global one. The market's is the more
        actionable of the two, so it is reported when both are crossed.
 
-    With one market enabled the two totals are the same number and the shipped
-    warn levels are the same figure, so this returns exactly what
-    :func:`evaluate_spend` returned before M10a existed — which is the point.
+    ``reserved_elsewhere`` (M10b-2) is checked **between** the two, and the position
+    is deliberate: it is a deployment-level rail like the global ceiling, not this
+    market's own budget, so reporting it as "you hit your limit" would name the wrong
+    cause and suggest the wrong fix. It defaults to zero, which is the behaviour this
+    function had before the floor existed.
+
+    With one market enabled the two totals are the same number, the shipped warn
+    levels are the same figure, and nothing is reserved elsewhere — so this returns
+    exactly what :func:`evaluate_spend` returned before M10a existed, which is the
+    point.
     """
     if global_totals.day_usd >= global_limit_usd:
         return SpendVerdict(state=SpendState.LIMIT_REACHED, scope=SpendScope.GLOBAL)
+    if reserved_elsewhere > 0 and global_totals.day_usd >= global_limit_usd - reserved_elsewhere:
+        return SpendVerdict(state=SpendState.LIMIT_REACHED, scope=SpendScope.RESERVED)
     if market_totals.day_usd >= market.llm_daily_budget_usd:
         return SpendVerdict(state=SpendState.LIMIT_REACHED, scope=SpendScope.MARKET)
     if market_totals.day_usd >= market.llm_daily_warn_usd:
@@ -173,5 +215,6 @@ __all__ = [
     "SpendVerdict",
     "evaluate_market_spend",
     "evaluate_spend",
+    "reserved_elsewhere_usd",
     "spend_window",
 ]

@@ -61,15 +61,27 @@ markets:
     # live card is exactly the change this milestone is forbidden to make.
     llm_daily_budget_usd: 10
     llm_daily_warn_usd: 7
+    # FOREX.md §13 decision 6 / M10a open question R5, applied in M10b-2. The
+    # sub-budgets sum to 14 under an 11 ceiling on purpose, so the markets compete
+    # for the last dollar. That is right between two measured markets and wrong the
+    # day an unmeasured one joins a measured one: a forex-heavy morning could take
+    # the shared dollar while crypto's live measurement window is still running.
+    # Only the UNSPENT part of this is held, so once crypto has spent 8 it reserves
+    # nothing and forex sees the full ceiling again.
+    # Written as `8`, not `8.00` — see the YAML-float note above.
+    llm_reserved_floor_usd: 8
 
-  # STILL OFF, and deploying M10b-1 is a no-op for the running crypto system.
+  # STILL OFF, and deploying M10b-2 is a no-op for the running crypto system.
   #
-  # M10a added the market dimension and no forex code at all. M10b-1 adds the data
+  # M10a added the market dimension and no forex code at all. M10b-1 added the data
   # spine: a Saxo FxSpot adapter, market hours, the OAuth chain, sizing, costs and the
-  # calendar — all tested, none of it wired into a cycle. The orchestrator still has
-  # no forex path (M10b-2 does that), so nothing under `forex:` below is reachable
-  # while this is false, and a forex signal cannot be produced at all until M10c adds
-  # the card and the tracker.
+  # calendar, none of it wired into a cycle. M10b-2 added the features, the chart
+  # variant, the adapter registry and an orchestrator path — which stops at an analyst
+  # report, because a forex plan has no shape to travel in until M10c adds the card and
+  # the tracker.
+  #
+  # While this is false the orchestrator is never constructed for forex at all, so none
+  # of that path runs and nothing under `forex:` below is reachable.
   forex:
     enabled: false
     dry_run: true
@@ -82,15 +94,24 @@ markets:
       - USDJPY
     llm_daily_budget_usd: 4
     llm_daily_warn_usd: 3
+    # Its own prompt file. FOREX.md §2.1 requires the prompt to STATE which inputs
+    # this market does not have, because an absence a model is not told about reads
+    # as a quiet market rather than as a missing input. Crypto keeps fable_v1 and is
+    # not edited — the golden prompt pins its bytes.
+    analyst_prompt_version: fable_forex_v1
 
 # The ceiling above both sub-budgets. Reaching it stops new deep analysis in EVERY
 # market; reaching a sub-budget stops only that one.
 #
 # 10 + 4 = 14 against a ceiling of 11, deliberately. Sub-budgets that summed to the
 # ceiling would let a quiet market reserve money a busy one could have used, all day,
-# every day. They compete instead. The consequence, which is real the day forex is
-# enabled: a forex-heavy morning can leave crypto with less than its own 10.00. See
-# journal/M10a_REPORT.md — M10b decides whether the measured market gets a floor.
+# every day. They compete instead.
+#
+# M10a left "does the measured market get a floor" open (R5). M10b-2 answers it: yes,
+# `markets.crypto.llm_reserved_floor_usd: 8`. Competition is right between two
+# measured markets and wrong when an unmeasured one joins a measured one. Only the
+# unspent part of the floor is held, so the competition resumes the moment crypto has
+# actually spent its 8 — the floor protects the measurement, not crypto's convenience.
 llm_daily_budget_global_usd: 11
 
 # PRD.md F1 (15 min cycle), ARCHITECTURE.md §3 (tracker every 60s).
@@ -365,9 +386,13 @@ telegram:
   poll_timeout_seconds: 30
   parse_mode: HTML
 
-# M10b-1 — the forex market's own settings. UNREACHABLE while
-# markets.forex.enabled is false, which is how this release ships: deploying M10b-1
+# M10b-1/M10b-2 — the forex market's own settings. UNREACHABLE while
+# markets.forex.enabled is false, which is how this release ships: deploying M10b-2
 # is a no-op for the running crypto system.
+#
+# M10b-2 wired a forex cycle that would read these (adapter registry, features,
+# charts, analyst prompt) and stops at an analyst report — sizing, the gate, the card
+# and the tracker are M10c. None of it is reachable while the market is disabled.
 #
 # A top-level block rather than fields on markets.forex, because everything here is
 # something only ONE market has at all — a pip grace period, a rollover hour, a swap

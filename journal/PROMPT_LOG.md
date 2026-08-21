@@ -139,3 +139,87 @@ if escalations fall but the WATCHLIST share stays near 61%, v2 is merely quieter
 not sharper, and the problem is upstream in what the screener is shown. A rise in
 `RECENTLY_ANALYSED` skips is expected and is the M8.2 rail doing its own job — those
 are counted separately in `cycles.skipped` and are not evidence about the prompt.
+
+---
+
+## `fable_forex_v1` — 2026-08-21 (M10b-2)
+
+**File:** `sentinel/analyst/prompts/fable_forex_v1.md`
+**Model tier:** top (`config.llm.analyst_model`, default claude-fable-5), high effort, vision
+**Source:** docs/specs/FOREX.md §2, §2.1, §5, §6, §7; docs/specs/PROMPTS.md §2
+**Status:** shipped behind `markets.forex.enabled: false`. **Never run against the live
+model.** No measurement exists for it and none can until forex is switched on.
+
+### The naming ruling (spec defect #19)
+
+ENSEMBLE.md §2 fixes prompt filenames per **provider** — `fable_vN.md`, `sol_vN.md` —
+settled with the owner on 2026-08-18 and recorded at the top of this file. A forex prompt
+introduces a **market** axis the convention has no slot for.
+
+**Owner ruling, 2026-08-21: `fable_forex_v1.md`.** Provider-major, market as a suffix.
+It keeps §2's axis primary, extends cleanly to `sol_forex_v1.md` when the second provider
+lands, and leaves `fable_v1.md` untouched as the crypto prompt.
+
+Selection is a new `MarketConfig.analyst_prompt_version`, defaulting to `fable_v1` — the
+same pattern `adapter: str` already uses in that model. The provider stays market-blind:
+it takes a snapshot, not a market, and a market check inside it would be the wrong shape.
+
+### Why a separate file rather than one prompt with a market section
+
+Because §2.1 is a statement, not a filter. The four inputs forex lacks — volume of any
+kind, open interest, long/short ratio, funding — are simply absent from a forex payload,
+and *an absence a model is not told about reads exactly like a quiet market.* A shared
+prompt would have to describe both markets to both, which is tokens spent teaching the
+crypto analyst about rollover.
+
+It also keeps the binding constraint trivially checkable: crypto's prompt has a
+zero-line diff, and `test_the_crypto_prompt_is_untouched_by_the_forex_one` asserts it
+mentions no forex concept at all.
+
+### Deltas from spec
+
+The spec has no forex prompt text to deviate from — FOREX.md describes the market and
+PROMPTS.md §2 describes the crypto analyst. This is written against both. What it adds
+beyond a translation of `fable_v1`:
+
+1. **A named list of what does not exist**, and the sentence "Their absence is NOT a
+   signal." (§2.1)
+2. **An explicit ban on reconstructing them** — from range, wick size, spread or
+   session. Stating an absence is not enough on its own: a model told "there is no
+   volume" will reach for a proxy unless told not to. Confluence step (d) says so again
+   at the point of use.
+3. **Rollover, never funding** (defect #12's rule). Charged 21:00 UTC, tripled Wednesday.
+4. **A cost check step (f)** that did not exist for crypto: a tight stop and a wide
+   spread is the combination that fails after costs, and the gate charges the spread on
+   both sides (§7.4, defect #16).
+5. **Bar alignment and the weekend** — 17:00 America/New_York, and price gaps across the
+   Friday-Sunday break.
+6. **Silence about margin, leverage and liquidation** (§7.6): CFD margin is
+   account-level, so there is no per-position liquidation price to discuss.
+7. Prior-period and session levels added to the liquidity/trap sweep list, because they
+   are where this market's obvious stops actually sit.
+
+### What did not change
+
+HARD BOUNDARIES 1-8 keep `fable_v1`'s structure and wording wherever the claim is
+market-independent, including **rule 8 verbatim** — the untrusted-content boundary
+described in the cross-cutting section above. `test_both_prompts_carry_the_untrusted_data_rule`
+covers every shipped prompt, so a new one cannot omit it. Forex news is central-bank RSS
+rather than CryptoPanic (§10); the fence and the rule are identical.
+
+The output schema, `candidate_status` vocabulary, confidence scale and the
+"you cannot approve" boundary are unchanged.
+
+### Rollback
+
+`markets.forex.analyst_prompt_version` in `config.yaml`. There is nothing to roll back to
+for forex, so rolling back means disabling the market.
+
+### What to watch, when it is ever run
+
+- How often the analyst reports an unavailable input as a *degradation* despite HARD
+  BOUNDARY 2's carve-out. That would mean the absence is still reading as a fault.
+- Whether any thesis cites volume, open interest or positioning. One occurrence is a
+  prompt failure, not a model quirk.
+- NO_SETUP rate against crypto's. Forex has fewer confluence inputs, so a materially
+  higher NO_SETUP rate is the expected and correct outcome, not a problem to tune away.

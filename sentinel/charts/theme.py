@@ -27,6 +27,16 @@ SUPPORT: Final = "#26a69a"
 RESISTANCE: Final = "#ef5350"
 LEVEL_LABEL: Final = "#e6edf3"
 
+#: Market-structure marks that are not S/R (M10b-2, FOREX.md §6). Distinct from
+#: SUPPORT/RESISTANCE because they are a different kind of claim: an S/R level was
+#: derived from touches, a prior-day high is simply where yesterday ended up.
+REFERENCE: Final = "#e3b341"
+REFERENCE_OPEN: Final = "#79c0ff"
+#: The London-New York overlap, shaded behind the candles. Very low alpha: it is
+#: context for the eye, and it must never compete with price.
+SESSION_BAND: Final = "#58a6ff"
+SESSION_BAND_ALPHA: Final = 0.07
+
 #: Data-quality banner. Deliberately loud: the analyst is told to be stricter on
 #: degraded data, so degradation has to be visible in the image, not only in the
 #: JSON alongside it.

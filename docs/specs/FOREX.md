@@ -760,3 +760,81 @@ Smaller corrections from the same build:
   request. So the widening that gives the spread profile ~35 samples per hour-of-day
   instead of ~10 costs nothing in feature terms, and the anchor instability D-d found
   does not reach this boundary.
+
+**2026-08-21 — from the M10b-2 build**
+
+Four more, all found the way the M10b-1 five were: by reading this document against the
+code that has to implement it. Owner rulings on all four are dated the same day.
+
+- **#17 §6 — the session labels have no definition.** §6 asks for "session labels:
+  Tokyo / London / New York / the London-NY overlap" and gives no hours and, worse, no
+  timezone basis. **Ruling: DST-aware local windows** — Tokyo 09:00-18:00 `Asia/Tokyo`,
+  London 08:00-17:00 `Europe/London`, New York 08:00-17:00 `America/New_York`, overlap
+  = London ∩ NY, converted through stdlib `zoneinfo` and never written down as a UTC
+  hour. This is D-k's lesson applied to sessions: the US and EU change daylight saving
+  on different dates, so for about three weeks each spring and one each autumn the
+  London-NY overlap is **five** hours rather than four. A config table of UTC hours
+  would be right for forty-four weeks a year and silently wrong for the rest. New York's
+  17:00 close is also the same instant Saxo anchors its daily bar to, and a test asserts
+  the two agree in both seasons.
+- **#18 §6 — the USD strength index and the correlation have no definitions either.**
+  "A synthetic USD strength index from the three pairs" names no formula; "rolling
+  cross-pair correlation" names no window, no timeframe and no return basis.
+  **Ruling:** USD legs `1/EURUSD`, `1/GBPUSD`, `USDJPY`; index = equal-weight
+  **geometric** mean of the legs, rebased to 100 at the window start, on 1h closes over
+  the 321-bar feature window; correlation = Pearson on **log returns**, 120 bars,
+  pairwise. Geometric because it is scale-free and symmetric — a leg halving and a leg
+  doubling cancel exactly, which an arithmetic mean of percentage changes does not, and
+  a test pins that property rather than a magic number. Log returns because two trending
+  price series correlate near 1 whatever they are doing, which would make §9's rail look
+  satisfied by arithmetic.
+  Both are **cross-symbol**, which §6 does not acknowledge: `features.engine.compute()`
+  is per-symbol and market-blind, so they are computed once per cycle in
+  `sentinel/fx/features.py` and shared. Two thirds of a dollar index is not a dollar
+  index — a missing pair yields `None`, never a partial one.
+- **#19 §11 / ENSEMBLE.md §2 — the prompt filename convention has no market axis.**
+  §2 fixes prompt filenames per *provider* (`fable_vN.md`), settled 2026-08-18. A forex
+  prompt is a second axis. **Ruling: `fable_forex_v1.md`** — provider-major, market as
+  suffix, extending to `sol_forex_v1.md`. `fable_v1.md` is untouched and is the crypto
+  prompt. Selected through a new `MarketConfig.analyst_prompt_version`, following the
+  `adapter: str` precedent in the same model.
+- **#20 §6 — the chart annotations had nowhere to be recorded.** §6 asks for prior-day
+  and prior-week levels and session shading on the chart. `ChartRenderParams` is the
+  reconstruction record and is dumped whole into the crypto chart golden, so a new field
+  would move crypto's bytes for a market that has none of these marks.
+  Raised as "draw them now, record them at M10c". **Ruled against**, and the reason is
+  worth keeping: a stored chart that draws a line nothing in the database explains
+  breaks the property M3 exists for, and "forex reaches no signal row yet" is true only
+  until the day it does — by which time the gap is in the code and nobody remembers it
+  was deliberate. **Resolved by conditional serialisation**: `ChartRenderParams` gains
+  `annotations`, and a `@model_serializer(mode="wrap")` omits the key entirely when it
+  is empty. Crypto's `to_json_dict()` is byte-identical to what it was before the field
+  existed; forex's carries every line and band it drew. Both halves are tested, and the
+  test that the key is *absent* has a sibling proving it is not absent always.
+
+### The M10b boundary defect — a milestone boundary is untested by construction
+
+**M10b-1 shipped a Saxo adapter whose output could not be drawn, and every one of its
+1777 tests passed.** `OHLCVSeries.to_frame` puts NaN in the volume column for a market
+with no volume; `charts/renderer._draw` passed `volume=True` unconditionally; mplfinance
+raised `ValueError('Axis limits cannot be NaN or Inf')` on the first forex render.
+
+Neither half was wrong. The adapter was tested, the renderer was tested, and **the join
+between them was not**, because the renderer belonged to the next session. Splitting
+M10b in two created a seam and the defect lived exactly in it.
+
+This is the same family as journal/M8_REPORT.md's "silence-as-success" and
+journal/M10b_REPORT.md §3b's `alembic upgrade head` exiting 0 having done nothing: a
+positive signal that was real and did not mean what it was taken to mean. Here the
+signal was a green suite, and what it actually meant was "every piece works alone".
+
+**The rule to carry forward: when a milestone boundary splits a producer from its
+consumer, the next milestone composes them first and builds second.** M10b-2 does that
+in `tests/core/test_forex_cycle.py`, which drives the real adapter over a synthetic
+venue into the real renderer and looks at the bytes.
+
+M10b-2's own boundary with M10c leaves four joins untested for the same reason, named
+here so they are the first thing M10c composes: a forex `AnalystReport` has never
+reached `bot/cards.py`; a forex `ChartRenderParams` has never been persisted into a
+`signals.chart_params` row; `ForexSizing` has never been fed levels from a real analyst
+report; and `TrackerLoop` has never seen a forex symbol.

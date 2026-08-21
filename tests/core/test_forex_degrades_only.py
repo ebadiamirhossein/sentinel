@@ -166,6 +166,11 @@ class _LLMCalls:
     async def spend_totals_across_markets(self, **_: object) -> SpendTotals:
         return SpendTotals(day_usd=self._store.spend_day, month_usd=self._store.spend_day)
 
+    async def day_spend_by_market(self, **_: object) -> dict[Market, Decimal]:
+        """M10b-2's reserved-floor input. One market in this fake, so the breakdown is
+        the same figure once more — and crypto's floor never reserves against crypto."""
+        return {Market.CRYPTO: self._store.spend_day}
+
 
 class _RiskState:
     def __init__(self, session: Any, *, market: Market = LEGACY_MARKET) -> None:
@@ -210,7 +215,9 @@ class _Fx:
 
 
 class _Screener:
-    def __init__(self, client: Any, config: Any, *, cycle_id: Any = None) -> None: ...
+    def __init__(
+        self, client: Any, config: Any, *, cycle_id: Any = None, prompt_version: str = ""
+    ) -> None: ...
 
     async def screen(self, snapshots: Any, features: Any) -> Any:
         interesting = [type("V", (), {"symbol": s.symbol})() for s in snapshots]
@@ -220,8 +227,11 @@ class _Screener:
 class _Analyst:
     name = "test-analyst"
 
-    def __init__(self, client: Any, config: Any, *, cycle_id: Any = None) -> None:
+    def __init__(
+        self, client: Any, config: Any, *, cycle_id: Any = None, prompt_version: str = ""
+    ) -> None:
         self.calls: list[Any] = []
+        self.prompt_version = prompt_version
 
     async def analyze(self, snapshot: Any, charts: Any, history: str) -> AnalystReport:
         # ``risk_double``'s report and ``market_context`` are written against each

@@ -969,6 +969,29 @@ class LLMCallRepository(MarketScopedRepository):
             unpriced_calls=int(unpriced),
         )
 
+    async def day_spend_by_market(self, *, day_start: datetime) -> dict[Market, Decimal]:
+        """Today's spend broken down by market — the reserved floor's input (M10b-2).
+
+        A third method rather than a parameter on either of the two above, for the
+        reason their own docstrings give: "what has crypto spent", "what has this
+        deployment spent" and "what has *each* market spent" are three questions asked
+        by three different rails, and a flag is how they end up answered by whichever
+        one the caller forgot to set.
+
+        Markets with no calls today are simply absent; the caller reads a missing
+        market as zero, which is what it is.
+        """
+        statement = (
+            select(
+                LLMCallRow.market,
+                func.coalesce(func.sum(LLMCallRow.cost_usd_estimate), 0),
+            )
+            .where(LLMCallRow.started_at >= day_start)
+            .group_by(LLMCallRow.market)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {Market(market): Decimal(total) for market, total in rows}
+
     async def recent(self, limit: int = 50) -> list[LLMCallRow]:
         result = await self._session.execute(
             select(LLMCallRow)

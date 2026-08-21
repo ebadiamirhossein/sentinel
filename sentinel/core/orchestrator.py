@@ -69,10 +69,11 @@ from sentinel.charts.models import ChartImage, ChartSpec
 from sentinel.charts.renderer import render_album
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import AppConfig, MarketConfig, Settings
+from sentinel.core.forex_cycle import MARKET_CLOSED_REASON, ForexAssembly, assemble_forex
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.pauses import effective_pause
-from sentinel.core.wiring import assemble_with_features, snapshot_assembler
+from sentinel.core.wiring import assemble_with_features, forex_adapter, snapshot_assembler
 from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import FxRate, MarketSnapshot
 from sentinel.llm.client import AnthropicClient
@@ -83,6 +84,7 @@ from sentinel.llm.spend import (
     SpendState,
     SpendVerdict,
     evaluate_market_spend,
+    reserved_elsewhere_usd,
     spend_window,
 )
 from sentinel.risk.engine import RiskEngine
@@ -165,6 +167,15 @@ class SkipReason(StrEnum):
     #: the setup timeframe has not produced a new candle since. Re-asking costs
     #: ~$0.28 to be told the same thing about the same unclosed bar.
     RECENTLY_ANALYSED = "RECENTLY_ANALYSED"
+    #: M10b-2, FOREX.md §5.1 — the market is shut. **A normal state, not a fault**,
+    #: and its own key rather than folded into NO_DATA: forex is closed for about 49
+    #: hours a week, and "how often was the market simply shut" has to be answerable
+    #: in SQL separately from "how often did the data fail to arrive".
+    MARKET_CLOSED = "MARKET_CLOSED"
+    #: M10b-2 — no usable candles for this symbol this cycle: unresolved instrument,
+    #: a degraded read (§4.4), or a tail whose newest bar is too old (§5.1, defect
+    #: #14). Which of the three is in ``Skip.detail``; the key is what groups.
+    NO_DATA = "NO_DATA"
 
 
 @dataclass(frozen=True)
@@ -396,6 +407,14 @@ class CycleOrchestrator:
         stored: dict[str, object],
         started: datetime,
     ) -> None:
+        if self._market is Market.FOREX:
+            # Dispatched here rather than branched throughout, so the crypto path
+            # below is the same code it was before M10b-2 — the two cycles genuinely
+            # differ (no screener, no gate, no card), and threading that through one
+            # method would put a forex condition on every line crypto runs.
+            await self._run_forex_cycle(result, symbols=symbols, stored=stored, started=started)
+            return
+
         config = effective_config(self._settings, stored)
         key = self._settings.secrets.anthropic_api_key
         if key is None:
@@ -436,6 +455,165 @@ class CycleOrchestrator:
                 )
             finally:
                 await client.aclose()
+
+    async def _run_forex_cycle(
+        self,
+        result: CycleResult,
+        *,
+        symbols: list[str],
+        stored: dict[str, object],
+        started: datetime,
+    ) -> None:
+        """Ingest, compute, render, ask the analyst — and stop there (FOREX.md §14).
+
+        **Where it stops, and why.** ``sentinel/risk/``'s gate produces a
+        ``TradePlan``, which is crypto-shaped: ``notional_usdt``,
+        ``suggested_leverage``, ``liq_distance_pct``, ``liq_buffer_ok`` and a
+        ``PlanCosts`` carrying a perpetual funding rate (spec defect #12). §7.6 forbids
+        faking the liquidation buffer and the frozen package may not be extended, so
+        there is nothing for a forex plan to travel in. The card, publishing and
+        tracking are M10c for the same reason.
+
+        So this records an analyst report and stops, with a log line saying so. It does
+        not fall through to ``_gate_and_publish``: that path would read a forex report
+        through crypto's sizing and produce numbers that are wrong in a way nothing
+        downstream could notice.
+        """
+        config = effective_config(self._settings, stored)
+        key = self._settings.secrets.anthropic_api_key
+        if key is None:
+            result.suspended_reason = "no ANTHROPIC_API_KEY"
+            result.analysis_suspended = True
+            log.warning("cycle.no_api_key", detail="the pipeline cannot analyse without a key")
+            return
+
+        async with forex_adapter(self._settings, self._database) as adapter:
+            assembly = await assemble_forex(
+                adapter, symbols, config=config, now=started, cycle_id=result.cycle_id
+            )
+
+        result.symbols_scanned = len(assembly.snapshots)
+        result.symbols_skipped = len(assembly.skipped)
+        for symbol, reason in assembly.skipped.items():
+            code = (
+                SkipReason.MARKET_CLOSED if reason == MARKET_CLOSED_REASON else SkipReason.NO_DATA
+            )
+            result.skipped[symbol] = Skip(code, reason)
+
+        if not assembly.snapshots:
+            log.info(
+                "cycle.no_snapshots",
+                cycle_id=str(result.cycle_id),
+                market=self._market.value,
+                reasons=sorted(set(assembly.skipped.values())),
+            )
+            return
+
+        async with self._database.session() as session:
+            repo = self._snapshots(session)
+            for snapshot in assembly.snapshots:
+                await repo.save(snapshot)
+            await session.commit()
+
+        verdict, reason = await self._spend_state(started, config=config)
+        result.spend_state_before = verdict.state
+        result.spend_scope_before = verdict.scope
+        if verdict.suspends_analysis:
+            result.analysis_suspended = True
+            result.suspended_reason = reason
+            for snapshot in assembly.snapshots:
+                result.skipped[snapshot.symbol] = Skip(SkipReason.SPEND_LIMIT, reason)
+            log.warning(
+                "cycle.analysis_suspended",
+                market=self._market.value,
+                scope=verdict.scope.value,
+                detail=reason,
+            )
+            return
+
+        client = AnthropicClient(config.llm, api_key=key.get_secret_value())
+        calls: list[LLMCall] = []
+        try:
+            for snapshot in assembly.snapshots:
+                calls += await self._analyse_forex_symbol(
+                    result, snapshot=snapshot, assembly=assembly, config=config, client=client
+                )
+        finally:
+            await client.aclose()
+
+        if calls:
+            async with self._database.session() as session:
+                await self._llm_calls(session).record_many(calls)
+                await session.commit()
+
+        after, _ = await self._spend_state(started, config=config)
+        result.spend_state_after = after.state
+        result.spend_scope_after = after.scope
+        result.spend_usd_estimate = sum((call.cost_usd_estimate for call in calls), Decimal(0))
+
+    async def _analyse_forex_symbol(
+        self,
+        result: CycleResult,
+        *,
+        snapshot: MarketSnapshot,
+        assembly: ForexAssembly,
+        config: AppConfig,
+        client: AnthropicClient,
+    ) -> list[LLMCall]:
+        """One symbol: charts with §6's marks, one analyst call, one stored report."""
+        charts = list(
+            render_album(
+                snapshot,
+                assembly.features[snapshot.symbol],
+                self._chart_specs(snapshot.symbol),
+                annotations=assembly.annotations.get(snapshot.symbol, ()),
+            )
+        )
+        analyst = AnthropicFableAnalyst(
+            client,
+            config,
+            cycle_id=result.cycle_id,
+            prompt_version=self._market_config(config).analyst_prompt_version,
+        )
+        try:
+            report = await analyst.analyze(snapshot, charts, "")
+        except AnalystUnavailable as exc:
+            log.warning(
+                "cycle.analyst_unavailable",
+                market=self._market.value,
+                symbol=snapshot.symbol,
+                reason=exc.reason,
+                detail=exc.detail,
+            )
+            return list(analyst.calls)
+
+        result.analyzed += 1
+        ok_call = next(
+            (call for call in reversed(analyst.calls) if call.status is LLMCallStatus.OK), None
+        )
+        async with self._database.session() as session:
+            await self._reports(session).save(
+                report,
+                created_at=snapshot.captured_at,
+                provider=AnthropicFableAnalyst.name,
+                cycle_id=result.cycle_id,
+                snapshot_id=snapshot.snapshot_id,
+                llm_call_id=None if ok_call is None else ok_call.call_id,
+            )
+            await session.commit()
+
+        if report.candidate_status is CandidateStatus.CANDIDATE:
+            result.candidates += 1
+        # The named stopping point. Not a fall-through: crypto's gate would read this
+        # report through crypto's sizing (defect #12), and M10c is where a forex plan
+        # gets a shape to travel in.
+        log.info(
+            "cycle.forex_stops_at_report",
+            symbol=snapshot.symbol,
+            status=report.candidate_status.value,
+            detail="sizing, gate, card and tracking are M10c",
+        )
+        return list(analyst.calls)
 
     async def _analyse(
         self,
@@ -503,6 +681,8 @@ class CycleOrchestrator:
             detail = (
                 "global spend ceiling reached"
                 if verdict.scope is SpendScope.GLOBAL
+                else "held back by another market's reserved floor"
+                if verdict.scope is SpendScope.RESERVED
                 else f"{self._market.value} spend limit reached"
             )
             for symbol in allowed:
@@ -565,7 +745,12 @@ class CycleOrchestrator:
         )
         history = await self._history_block(snapshot.symbol, owner_id=owner_id)
 
-        analyst = AnthropicFableAnalyst(client, config, cycle_id=result.cycle_id)
+        analyst = AnthropicFableAnalyst(
+            client,
+            config,
+            cycle_id=result.cycle_id,
+            prompt_version=self._market_config(config).analyst_prompt_version,
+        )
         try:
             report = await analyst.analyze(snapshot, charts, history)
         except AnalystUnavailable as exc:
@@ -946,15 +1131,30 @@ class CycleOrchestrator:
                 month_start=month_start,
                 priced_models=tuple(config.llm.pricing),
             )
+            by_market = await calls.day_spend_by_market(day_start=day_start)
 
+        # Enabled markets only: a disabled market cannot spend, so holding its floor
+        # back would starve a live market for a dollar nobody can use (M10b-2).
+        held = reserved_elsewhere_usd(
+            for_market=self._market,
+            markets={name: config.market(name) for name in config.enabled_markets},
+            day_spend_by_market=by_market,
+        )
         verdict = evaluate_market_spend(
             market_totals=totals,
             global_totals=overall,
             market=market,
             global_limit_usd=config.llm_daily_budget_global_usd,
             config=config.llm,
+            reserved_elsewhere=held,
         )
         floor = "at least " if totals.is_floor else ""
+        if verdict.scope is SpendScope.RESERVED:
+            return verdict, (
+                f"{floor}${overall.day_usd} spent today across all markets against a "
+                f"${config.llm_daily_budget_global_usd} ceiling, of which ${held} is "
+                f"reserved for other markets"
+            )
         if verdict.scope is SpendScope.GLOBAL:
             return verdict, (
                 f"{floor}${overall.day_usd} spent today across all markets against a "
