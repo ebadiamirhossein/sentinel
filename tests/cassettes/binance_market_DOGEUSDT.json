@@ -1,0 +1,153 @@
+{
+  "active": true,
+  "base": "DOGE",
+  "baseId": "DOGE",
+  "contract": true,
+  "contractSize": 1.0,
+  "created": 1594371600000,
+  "expiry": null,
+  "expiryDatetime": null,
+  "feeSide": "get",
+  "future": false,
+  "id": "DOGEUSDT",
+  "index": null,
+  "info": {
+    "baseAsset": "DOGE",
+    "baseAssetPrecision": 8,
+    "contractType": "PERPETUAL",
+    "deliveryDate": 4133404800000,
+    "filters": [
+      {
+        "filterType": "PRICE_FILTER",
+        "maxPrice": "30",
+        "minPrice": "0.002440",
+        "tickSize": "0.000010"
+      },
+      {
+        "filterType": "LOT_SIZE",
+        "maxQty": "300000000",
+        "minQty": "1",
+        "stepSize": "1"
+      },
+      {
+        "filterType": "MARKET_LOT_SIZE",
+        "maxQty": "30000000",
+        "minQty": "1",
+        "stepSize": "1"
+      },
+      {
+        "filterType": "MAX_NUM_ORDERS",
+        "limit": 200
+      },
+      {
+        "filterType": "MIN_NOTIONAL",
+        "notional": "5"
+      },
+      {
+        "filterType": "PERCENT_PRICE",
+        "multiplierDecimal": "4",
+        "multiplierDown": "0.9000",
+        "multiplierUp": "1.1000"
+      },
+      {
+        "filterType": "POSITION_RISK_CONTROL",
+        "positionControlSide": "NONE"
+      }
+    ],
+    "liquidationFee": "0.015000",
+    "maintMarginPercent": "2.5000",
+    "marginAsset": "USDT",
+    "marketTakeBound": "0.10",
+    "maxMoveOrderLimit": 10000,
+    "onboardDate": 1594371600000,
+    "orderTypes": [
+      "LIMIT",
+      "MARKET",
+      "STOP",
+      "STOP_MARKET",
+      "TAKE_PROFIT",
+      "TAKE_PROFIT_MARKET",
+      "TRAILING_STOP_MARKET"
+    ],
+    "pair": "DOGEUSDT",
+    "permissionSets": [
+      "GRID",
+      "COPY",
+      "RPI",
+      "DCA",
+      "PSB"
+    ],
+    "pricePrecision": 6,
+    "quantityPrecision": 0,
+    "quoteAsset": "USDT",
+    "quotePrecision": 8,
+    "requiredMarginPercent": "5.0000",
+    "status": "TRADING",
+    "symbol": "DOGEUSDT",
+    "timeInForce": [
+      "GTC",
+      "IOC",
+      "FOK",
+      "GTX",
+      "GTD"
+    ],
+    "triggerProtect": "0.1000",
+    "underlyingSubType": [
+      "Meme"
+    ],
+    "underlyingType": "COIN"
+  },
+  "inverse": false,
+  "limits": {
+    "amount": {
+      "max": 300000000.0,
+      "min": 1.0
+    },
+    "cost": {
+      "max": null,
+      "min": 5.0
+    },
+    "leverage": {
+      "max": null,
+      "min": null
+    },
+    "market": {
+      "max": 30000000.0,
+      "min": 1.0
+    },
+    "price": {
+      "max": 30.0,
+      "min": 0.00244
+    }
+  },
+  "linear": true,
+  "lowercaseId": "dogeusdt",
+  "maker": 0.0002,
+  "margin": false,
+  "marginModes": {
+    "cross": true,
+    "isolated": true
+  },
+  "option": false,
+  "optionType": null,
+  "percentage": true,
+  "precision": {
+    "amount": 1.0,
+    "base": 1e-08,
+    "price": 1e-05,
+    "quote": 1e-08
+  },
+  "quote": "USDT",
+  "quoteId": "USDT",
+  "settle": "USDT",
+  "settleId": "USDT",
+  "spot": false,
+  "stock": false,
+  "strike": null,
+  "subType": "linear",
+  "swap": true,
+  "symbol": "DOGE/USDT:USDT",
+  "taker": 0.0005,
+  "tierBased": false,
+  "type": "swap"
+}

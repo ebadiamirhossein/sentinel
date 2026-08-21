@@ -246,44 +246,67 @@ the stored chart bytes of **three live watchlist symbols**, and the suite — th
 suite M10a, M10b-1 and M10b-2 have all relied on to prove crypto did not move —
 would have stayed green.
 
-**The fix is an ADDITION, not a regeneration.** SOLUSDT (last close 75.84, on the
-live watchlist) is now a second golden symbol: `features_SOLUSDT.json` and
-`charts_SOLUSDT.json`. **The 23 existing fixtures were not regenerated and are
-byte-identical**, which `git diff --name-only tests/fixtures/` confirms as empty.
+**The fix is an ADDITION, not a regeneration.** Two more golden symbols, one per
+uncovered branch, both from the live watchlist:
 
-It has its own generator, `tests/fixtures/generate_goldens_m10b2.py`, which writes
-those two files and **cannot touch any other** — a named tuple of filenames rather
-than a derived glob. Refreshing the second symbol therefore cannot overwrite the
-fixtures whose whole job is to prove crypto output did not move.
+| symbol | last close | branch | added |
+|---|---|---|---|
+| BTCUSDT | 77,131.8 | `>= 1000` | M10a — the only one there was |
+| SOLUSDT | 90.83 | `1 .. 1000` | M10b-2 |
+| DOGEUSDT | 0.08374 | `< 1` | M10b-2 |
 
-**Proved, not assumed.** Perturbing only the 1-to-1000 branch —
-`f"{price:,.2f}"` to `f"{price:,.3f}"` — and running the golden suite:
+XRPUSDT was checked first and rejected: at 1.3766 it sits in the **same** branch as
+SOLUSDT and would have added a fixture without adding coverage.
 
-```
-FAILED test_the_second_symbols_chart_bytes_are_unchanged
-FAILED test_the_second_symbol_sits_in_a_different_formatter_branch
-```
+**The 23 existing fixtures were not regenerated and are byte-identical** —
+`git diff --name-only tests/fixtures/golden*` is empty across both commits. Four
+files were added: `features_SOLUSDT.json`, `charts_SOLUSDT.json`,
+`features_DOGEUSDT.json`, `charts_DOGEUSDT.json`.
 
-`test_chart_bytes_are_unchanged` — the BTCUSDT one — **passed**. That is the hole,
-demonstrated: before this addition the entire suite was green for a change that
-altered three live symbols' stored charts.
+The extra symbols have their own generator,
+`tests/fixtures/generate_goldens_m10b2.py`, whose write-set is derived from
+`EXTRA_SYMBOLS` alone — BTCUSDT's six fixtures are not in it and cannot be reached
+from there. Refreshing an extra symbol therefore cannot overwrite the fixtures whose
+whole job is to prove crypto output did not move.
 
-`test_the_second_symbol_sits_in_a_different_formatter_branch` is structural, so the
-addition cannot quietly stop covering what it was added for: it asserts the first
-golden symbol is above 1000 and the second is between 1 and 1000. Swapping the
-second symbol for another large-cap would leave both goldens passing while covering
-the same branch twice, which is the original defect wearing a new name.
+**DOGEUSDT needed cassettes that did not exist.** Only BTCUSDT and SOLUSDT had ever
+been recorded. `sentinel/tools/record_cassettes.py` recorded all of its symbols on
+every run, so adding one would have refreshed the other two with fresh market data
+and moved every golden at once — *a regeneration wearing an addition's clothes*. It
+gained `--symbols` and `--skip-http`, and the DOGE fixtures were recorded with
+`--symbols DOGEUSDT --skip-http` from the public keyless Binance endpoints, exactly
+as the other two were. `git status` confirmed no existing cassette was modified.
+The recording date differs from the others' (2026-08-21 vs 2026-08-18) and
+`tests/cassettes/README.md` says so — nothing compares two symbols against each
+other, so that is not a problem; it is the evidence that the addition was an
+addition.
 
-**What the second symbol does not cover, and why.** Not the gate and not the card.
+**Proved, not assumed.** Each branch was perturbed in turn and the golden suite run:
+
+| perturbed branch | golden that failed |
+|---|---|
+| `>= 1000` — `,.0f` → `,.1f` | `test_chart_bytes_are_unchanged` (BTCUSDT) |
+| `1 .. 1000` — `,.2f` → `,.3f` | `..._extra_symbols_chart_bytes_are_unchanged[SOLUSDT]` |
+| `< 1` — `.6g` → `.5g` | `..._extra_symbols_chart_bytes_are_unchanged[DOGEUSDT]` |
+
+**Exactly one golden failed each time, and a different one each time.** Before this
+work the second and third rows were both blank: the entire suite was green for a
+change that altered the stored charts of six live watchlist symbols.
+
+`test_every_formatter_branch_is_covered_by_exactly_one_golden_symbol` asserts the
+**partition** rather than the symbols, so the set cannot quietly collapse: swapping
+an extra symbol for another large-cap fails that test instead of silently covering
+one branch three times.
+
+**What the extra symbols do not cover, and why.** Not the gate and not the card.
 `bot/cards.py` interpolates prices the risk engine has already quantized, so nothing
 there is magnitude-sensitive; a second hand-tuned analyst report would add a fragile
-golden without covering the hole this exists to close. The sub-1 branch
-(XRP, DOGE, ADA) is still unpinned — a third symbol would close it, and that is a
-judgement call rather than a finding.
+golden without covering the hole this exists to close.
 
 **The lesson, in HANDOFF §4 item 10:** a golden pins the case it was built from, and
 nothing else. When adding one, ask which branches of which functions the chosen case
-actually reaches. Coverage is of inputs, not of code.
+actually reaches. Coverage is of inputs, not of code — and one input can only ever
+reach one branch of a conditional.
 
 ## 5. Features (step 7)
 
@@ -440,7 +463,7 @@ so the crypto path below it is the code it was before this milestone.
 
 ## 7. Numbers
 
-* **1899 passed, 60 skipped, 0 failed** — up from 1777, **122 new tests**.
+* **1902 passed, 60 skipped, 0 failed** — up from 1777, **125 new tests**.
 
   | file | tests |
   |---|---|
@@ -452,16 +475,17 @@ so the crypto path below it is the code it was before this milestone.
   | `tests/core/test_adapter_registry.py` | 7 |
   | `tests/core/test_scan_jobs.py` | 5 |
   | `tests/analyst/test_prompts.py` | 33 (was 23) |
-  | `tests/golden/test_golden_cycle.py` | 34 (was 30) — the second golden symbol |
+  | `tests/golden/` (both modules) | 37 (was 30) — two extra golden symbols |
 
 * `make check` **exit 0**: tests, ruff, `mypy --strict` over 277 files, 100% risk branch
   coverage, `check-deps`, `check-ops`, wheel build, image build and in-image import —
   which now also asserts **every configured market's** analyst prompt ships in the wheel,
   following M10b-1's calendar precedent.
 * `sentinel/risk/` and the three existing prompt files: **zero-line diff.**
-* Golden fixtures: **23 existing files byte-identical**, plus **2 added** for the
-  second golden symbol (§4a) — an addition, not a regeneration.
-* 21 files modified, 16 added. ~2,100 lines of new forex code, tests and documentation.
+* Golden fixtures: **23 existing files byte-identical**, plus **4 added** for the
+  two extra golden symbols (§4a) — an addition, not a regeneration. Ten new
+  DOGEUSDT cassettes; no existing cassette re-recorded.
+* 23 files modified, 28 added. ~2,200 lines of new forex code, tests and documentation.
 * **No `pyproject.toml` change.** `zoneinfo` is stdlib; `numpy` and `pandas` were already
   declared.
 

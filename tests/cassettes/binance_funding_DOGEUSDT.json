@@ -1,0 +1,29 @@
+{
+  "datetime": "2026-08-21T13:12:12.000Z",
+  "estimatedSettlePrice": 0.08399254,
+  "fundingDatetime": "2026-08-21T16:00:00.000Z",
+  "fundingRate": 0.0001,
+  "fundingTimestamp": 1787328000000,
+  "indexPrice": 0.08376341,
+  "info": {
+    "estimatedSettlePrice": "0.08399254",
+    "indexPrice": "0.08376341",
+    "interestRate": "0.00010000",
+    "lastFundingRate": "0.00010000",
+    "markPrice": "0.08375800",
+    "nextFundingTime": 1787328000000,
+    "symbol": "DOGEUSDT",
+    "time": 1787317932000
+  },
+  "interestRate": 0.0001,
+  "interval": null,
+  "markPrice": 0.083758,
+  "nextFundingDatetime": null,
+  "nextFundingRate": null,
+  "nextFundingTimestamp": null,
+  "previousFundingDatetime": null,
+  "previousFundingRate": null,
+  "previousFundingTimestamp": null,
+  "symbol": "DOGE/USDT:USDT",
+  "timestamp": 1787317932000
+}
