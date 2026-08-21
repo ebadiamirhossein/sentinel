@@ -223,3 +223,36 @@ for forex, so rolling back means disabling the market.
   prompt failure, not a model quirk.
 - NO_SETUP rate against crypto's. Forex has fewer confluence inputs, so a materially
   higher NO_SETUP rate is the expected and correct outcome, not a problem to tune away.
+
+### First run — 2026-08-21 (M10d)
+
+`fable_forex_v1` had never been sent to the model. It has now, once, and the "when it is
+ever run" above stops being hypothetical for the token figures — though not for the
+NO_SETUP rate, which one call cannot give.
+
+Measured by `python -m sentinel.tools.forex_prompt_cost --call`, `claude-fable-5`,
+effort high, **against a synthetic-venue payload** (the prices are not real; the payload's
+shape and size are):
+
+| | |
+|---|---|
+| verdict | NO_SETUP, schema-valid on the first attempt, no retry |
+| latency | 35.6 s against a 150 s timeout |
+| input | 10,360 + 4,854 cache read = 15,214 tokens |
+| output | 2,353 tokens |
+| cost | **$0.226104** cached, **$0.281925** uncached |
+| per cycle, 3 pairs | **$0.734** — one cache write, two reads |
+
+**No prompt text changed**, so this is not a new version. The file is byte-identical to
+the one M10b-2 wrote.
+
+Two things worth recording for the next reader:
+
+- **The first call the prompt ever made would have failed**, and not for a prompt reason:
+  the forex path passed `""` as its history block and an empty text block is an HTTP 400
+  (FOREX.md defect #27). The prompt was never the problem, and nothing could have found
+  it except sending it.
+- **The system block is cacheable and the caching matters to the bill.** A cycle pays one
+  cache write and two reads rather than three full input prices, which is 26% cheaper
+  than three times the single-call figure. Any future estimate of this prompt's cost that
+  multiplies by the pair count is wrong in that direction.

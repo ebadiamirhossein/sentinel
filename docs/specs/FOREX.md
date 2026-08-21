@@ -1104,6 +1104,78 @@ look for it. Owner rulings on all three are dated the same day.
   suite, keeps holding because the shipped config is still single-market.
   The only bytes M10c regenerates are the two lines defect #22 fixes.
 
+**2026-08-21 — from the M10d switch-on**
+
+Six more, and the shape of them is different from the twelve before. Those were found
+by reading this spec against the code. **These were found by composing the joins M10c
+left open and by turning the flag on** — five of the six were in code this document
+already described as done, and every one of them was invisible while forex was
+disabled. Owner rulings on all six are dated the same day.
+
+- **#24 §3.1 — the OAuth chain had three unwired callers out of four.** ``SaxoAuth``
+  itself is correct and has been since M10b. Nothing called ``bootstrap()``, so
+  ``SAXO_REFRESH_TOKEN`` never left ``.env`` and the token store was **empty at boot** —
+  forex would have died on its first cycle with a valid credential in the environment.
+  Nothing called ``ensure_fresh()``, so §3 requirement 5's five-minute cadence did not
+  exist and the token was touched once an hour by a scan, against a credential that
+  lives about an hour. And ``reauth_alert()`` was constructed only in a test, with
+  ``ReauthenticationRequired`` caught nowhere that could send a message. **Ruling:**
+  ``sentinel/core/forex_auth.ForexCredentialKeeper`` is those three callers and holds no
+  rules of its own; the alert is keyed on the dead credential's **fingerprint** rather
+  than the date, so a second death after a fresh login is not suppressed. §3.1 is also
+  reframed above — the one-hour memory is a rare-event cost, not constant toil.
+
+- **#25 §16.10 — the forex tracker job could not build its adapter.** ``app.track_for``
+  went through ``wiring.market_adapter``, which supplies neither an HTTP fetcher nor an
+  access-token provider; ``wiring._saxo`` raises ``UnknownAdapter`` without both. Binance
+  needs neither, so crypto has been fine since M7. The exception was swallowed into a
+  ``scheduler.tick_failed`` log line, so ``tracker:forex`` would have failed every 60
+  seconds for ever with ``/health`` green. **Ruling:** forex builds through
+  ``wiring.forex_adapter``, and ``_schedule_pipeline``'s closure is now *executed* in a
+  test rather than only counted.
+
+- **#26 §4.1 — the closed-candle rule is right for indicators and wrong for the
+  tracker.** ``PriceFeed`` asks one method two different questions and Binance answers
+  both correctly by returning the in-progress candle last. Saxo has no closed flag, so
+  the adapter applies §4.1 itself — which left the 1m fill read **120 s stale on every
+  tick** (M7 reads 1m high/low precisely so a 60-second poll cannot miss a wick) and made
+  the invalidation read drop the forming bar **twice**, discarding the newest closed
+  hour, which is the only hour an invalidation is ever measured on. **Ruling:** §4.1's
+  rule stands unchanged for anything computing an indicator, and
+  ``sentinel/fx/pricing.ForexCandleSource`` answers each of ``PriceFeed``'s two questions
+  separately. A high and a low are prices already traded; an EMA is not.
+
+- **#27 §2.1 — an empty section is an HTTP 400, not an empty section.** The forex path
+  passed ``""`` as its history block and ``user_blocks`` appended it unconditionally. The
+  Messages API refuses an empty text block outright, so **every forex analyst call would
+  have failed** — as an ``AnalystUnavailable`` that reads in the logs like a vendor
+  problem rather than like a bug. Nothing caught it because the forex prompt had never
+  once been sent. Verified against the live endpoint before the fix. **Ruling:** the
+  forex path builds a real history block through the same market-scoped
+  ``_history_block`` crypto uses, and ``user_blocks`` drops an empty block so the failure
+  is impossible rather than merely absent.
+
+- **#28 §11 — "switch-on moves no golden" was half true.** M10c pinned the tagged bytes
+  in advance and that half held perfectly. What it could not pin is that
+  ``render_surfaces()`` defaults to ``load_config()``: once the shipped config enabled
+  both markets it rendered the **tagged** form into the untagged fixtures, and
+  ``test_every_multi_market_surface_differs_by_its_header_alone`` compared a string with
+  itself. **Ruling:** ``single_market()`` mirrors ``multi_market()``; the single set
+  renders from it and the multi set from the shipped config. No fixture's contents moved
+  for the tag — the mapping moved.
+
+- **#29 §7.4 / §16.11 — the cost model omitted prompt caching, and forex has neither of
+  crypto's cost controls.** Measured (journal/M10d_REPORT.md): one call is **$0.226104**
+  cached and **$0.281925** uncached, and a cycle of three pairs pays one cache write and
+  two reads = **$0.734**, not the ~$1.00 a naive three-times-one estimate gives. The
+  larger point is structural and §16.11 should have said it: forex has **no screener and
+  no usable re-analysis cooldown**, so every pair buys a full analyst call every cycle.
+  A cooldown of one setup-timeframe candle saves nothing here, because forex's setup
+  timeframe is **1h** and the scan interval is 60 minutes — the cooldown would expire
+  exactly when the next scan fires. **Ruling:** a config-level scan window
+  (``forex.scan_hours_utc``, 07:00–21:00 UTC) is the cost control for the observation
+  window; a forex screener is deferred until there is data to tune it against.
+
 ### The M10b boundary defect — a milestone boundary is untested by construction
 
 **M10b-1 shipped a Saxo adapter whose output could not be drawn, and every one of its
