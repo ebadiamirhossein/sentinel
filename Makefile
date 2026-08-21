@@ -10,7 +10,7 @@ BIN := $(VENV)/bin
 COMPOSE ?= docker compose -f docker-compose.yml -f docker-compose.dev.yml
 
 .DEFAULT_GOAL := help
-.PHONY: help install test lint format typecheck coverage-risk check-ops check-wheel check-image check-fast check run up down restart logs ps migrate revision shell clean require-env backup verify-backup
+.PHONY: help install test lint format typecheck coverage-risk check-deps check-ops check-wheel check-image check-fast check run up down restart logs ps migrate revision shell clean require-env backup verify-backup
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -50,6 +50,20 @@ coverage-risk: install ## Risk engine: 100% branch coverage or fail (specs/RISK_
 # correct. Only building the artifact exercises packaging. Both targets below are
 # in `check` and neither ever skips silently — a skipped packaging check is
 # exactly how the break stayed hidden for two milestones.
+
+check-deps: install ## Every third-party import in sentinel/ must be a declared dependency
+	@# M10b-1. `httpx` was imported directly by six modules and declared by none: it
+	@# arrived transitively through `anthropic`, so nothing was wrong until `anthropic`
+	@# 1.0.0 moved to `httpx2` and a freshly resolved image had no httpx at all. The
+	@# app then died at boot on `import sentinel.main`.
+	@#
+	@# Nothing here could have raised it — tests, mypy and the wheel build all run
+	@# somewhere httpx happens to be installed. `make check-image` caught it, one
+	@# rebuild later than anybody would want. This checks the DECLARATION instead of
+	@# the installation, on the source tree, so it fails on the commit that adds the
+	@# import. On its first run it found two more of the same: numpy and
+	@# annotated_types. Owner ruling, 2026-08-21.
+	$(BIN)/python -m sentinel.tools.check_deps
 
 check-ops: ## Syntax-check the deploy scripts (shellcheck too, if installed)
 	@# M8. Same lesson as check-image, one layer out: ops/*.sh run only on the
@@ -91,9 +105,12 @@ check-image: ## Build the image AND import the app inside it
 		 from sentinel.core.config import load_config; cfg = load_config(); \
 		 v = cfg.llm.screener_prompt_version; \
 		 assert load_prompt(v).strip(), f'configured screener prompt {v} is not in the wheel'; \
-		 print('image imports, prompts ship, config loads')"
+		 from sentinel.fx.calendar import load_calendar; \
+		 cal = load_calendar(); \
+		 assert cal.source.endswith('calendar.yaml'), 'the forex calendar is not in the wheel'; \
+		 print('image imports, prompts ship, calendar ships, config loads')"
 
-check-fast: test lint typecheck coverage-risk check-ops ## The gate without the image build
+check-fast: test lint typecheck coverage-risk check-deps check-ops ## The gate without the image build
 check: check-fast check-wheel check-image ## Everything the milestone gate requires
 
 run: install require-env ## Run the app locally (no Docker)

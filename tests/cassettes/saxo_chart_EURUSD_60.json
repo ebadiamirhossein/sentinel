@@ -1,0 +1,147 @@
+{
+  "_provenance": {
+    "status": "VERIFIED",
+    "note": "VERIFIED, and still not a raw capture. This file was hand-authored from journal/M10b_SPIKE.md and then CHECKED FIELD BY FIELD against the live Saxo API on 2026-08-21 by `python -m sentinel.tools.saxo_record_fixtures --login`, which found every asserted value to match. The distinction is worth keeping: the values are verified, the file is not a recorded response. Re-verify at any time with `python -m sentinel.tools.saxo_record_fixtures --check`; the spike's own 89 raw evidence files were deleted with its throwaway scripts (commit 4c90819), which is why this file had to be reconstructed in the first place.",
+    "verified_at": "2026-08-21",
+    "verified_against": "live Saxo OpenAPI (gateway.saxobank.com), owner-run",
+    "source": "journal/M10b_SPIKE.md section 2 (row keys, window, DataVersion, empty ChartInfo/DisplayAndFormat, no volume field, no closed flag) and section 3 (spread medians: 1.1 pips typical, 2.7 pips at 21:00 UTC)",
+    "values_from_spike": {
+      "row_keys": [
+        "CloseAsk",
+        "CloseBid",
+        "HighAsk",
+        "HighBid",
+        "LowAsk",
+        "LowBid",
+        "OpenAsk",
+        "OpenBid",
+        "Time"
+      ],
+      "oldest": "2026-08-20T22:00:00Z",
+      "newest": "2026-08-21T07:00:00Z",
+      "DataVersion": 29779589,
+      "ChartInfo": "null (corrected from '{}' \u2014 D-h)",
+      "DisplayAndFormat": "null (corrected from '{}' \u2014 D-h)",
+      "volume_field": "absent on LIVE and SIM alike",
+      "closed_flag": "absent",
+      "EURUSD_median_spread_pips": 1.1,
+      "EURUSD_2100Z_median_spread_pips": 2.7
+    },
+    "synthetic": "The OHLC price LEVELS remain invented, around the section 3 infoprices control (Bid 1.16965 / Ask 1.16977 at 07:13Z). The live check verified the row KEYS, the window shape and the spreads \u2014 not these prices."
+  },
+  "Data": [
+    {
+      "Time": "2026-08-20T22:00:00.000000Z",
+      "OpenBid": 1.1689,
+      "OpenAsk": 1.16901,
+      "HighBid": 1.16923,
+      "HighAsk": 1.16934,
+      "LowBid": 1.16872,
+      "LowAsk": 1.16883,
+      "CloseBid": 1.16902,
+      "CloseAsk": 1.16913
+    },
+    {
+      "Time": "2026-08-20T23:00:00.000000Z",
+      "OpenBid": 1.16902,
+      "OpenAsk": 1.16913,
+      "HighBid": 1.16939,
+      "HighAsk": 1.1695,
+      "LowBid": 1.16884,
+      "LowAsk": 1.16895,
+      "CloseBid": 1.16918,
+      "CloseAsk": 1.16929
+    },
+    {
+      "Time": "2026-08-21T00:00:00.000000Z",
+      "OpenBid": 1.16918,
+      "OpenAsk": 1.16929,
+      "HighBid": 1.16939,
+      "HighAsk": 1.1695,
+      "LowBid": 1.16871,
+      "LowAsk": 1.16882,
+      "CloseBid": 1.16889,
+      "CloseAsk": 1.169
+    },
+    {
+      "Time": "2026-08-21T01:00:00.000000Z",
+      "OpenBid": 1.16889,
+      "OpenAsk": 1.16916,
+      "HighBid": 1.16952,
+      "HighAsk": 1.16979,
+      "LowBid": 1.16871,
+      "LowAsk": 1.16898,
+      "CloseBid": 1.16931,
+      "CloseAsk": 1.16958
+    },
+    {
+      "Time": "2026-08-21T02:00:00.000000Z",
+      "OpenBid": 1.16931,
+      "OpenAsk": 1.16942,
+      "HighBid": 1.16968,
+      "HighAsk": 1.16979,
+      "LowBid": 1.16913,
+      "LowAsk": 1.16924,
+      "CloseBid": 1.16947,
+      "CloseAsk": 1.16958
+    },
+    {
+      "Time": "2026-08-21T03:00:00.000000Z",
+      "OpenBid": 1.16947,
+      "OpenAsk": 1.16958,
+      "HighBid": 1.16968,
+      "HighAsk": 1.16979,
+      "LowBid": 1.16902,
+      "LowAsk": 1.16913,
+      "CloseBid": 1.1692,
+      "CloseAsk": 1.16931
+    },
+    {
+      "Time": "2026-08-21T04:00:00.000000Z",
+      "OpenBid": 1.1692,
+      "OpenAsk": 1.16931,
+      "HighBid": 1.16959,
+      "HighAsk": 1.1697,
+      "LowBid": 1.16902,
+      "LowAsk": 1.16913,
+      "CloseBid": 1.16938,
+      "CloseAsk": 1.16949
+    },
+    {
+      "Time": "2026-08-21T05:00:00.000000Z",
+      "OpenBid": 1.16938,
+      "OpenAsk": 1.16949,
+      "HighBid": 1.16976,
+      "HighAsk": 1.16987,
+      "LowBid": 1.1692,
+      "LowAsk": 1.16931,
+      "CloseBid": 1.16955,
+      "CloseAsk": 1.16966
+    },
+    {
+      "Time": "2026-08-21T06:00:00.000000Z",
+      "OpenBid": 1.16955,
+      "OpenAsk": 1.16966,
+      "HighBid": 1.16976,
+      "HighAsk": 1.16987,
+      "LowBid": 1.16931,
+      "LowAsk": 1.16942,
+      "CloseBid": 1.16949,
+      "CloseAsk": 1.1696
+    },
+    {
+      "Time": "2026-08-21T07:00:00.000000Z",
+      "OpenBid": 1.16949,
+      "OpenAsk": 1.1696,
+      "HighBid": 1.16981,
+      "HighAsk": 1.16992,
+      "LowBid": 1.16931,
+      "LowAsk": 1.16942,
+      "CloseBid": 1.1696,
+      "CloseAsk": 1.16971
+    }
+  ],
+  "DataVersion": 29779589,
+  "ChartInfo": null,
+  "DisplayAndFormat": null
+}

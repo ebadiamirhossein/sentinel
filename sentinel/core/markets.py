@@ -11,9 +11,12 @@ The value is a **string** on the wire and in the database, because that is what 
 ``String(16)`` column and a JSONB payload hold. ``StrEnum`` gives that for free
 while still failing loudly on a typo, which a bare ``str`` would not.
 
-M10a introduces ``FOREX`` and implements **none of it**. The member exists so the
-schema, the config and the statistics can carry the dimension before the adapter
-does; ``sentinel/core/wiring.py`` refuses to build an adapter for it, loudly.
+M10a introduced ``FOREX`` and implemented **none of it**: the member existed so the
+schema, the config and the statistics could carry the dimension before the adapter
+did. M10b-1 adds the adapter and the deterministic forex modules under
+``sentinel/fx/``, and still wires **no cycle** to them — the orchestrator builds only
+the Binance adapter. A forex row can therefore be written by a test and by nothing
+else, which is what ``markets.forex.enabled: false`` is meant to guarantee.
 """
 
 from __future__ import annotations

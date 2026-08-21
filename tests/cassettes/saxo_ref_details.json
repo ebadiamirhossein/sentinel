@@ -1,0 +1,86 @@
+{
+  "_provenance": {
+    "status": "VERIFIED",
+    "note": "VERIFIED, and still not a raw capture. This file was hand-authored from journal/M10b_SPIKE.md and then CHECKED FIELD BY FIELD against the live Saxo API on 2026-08-21 by `python -m sentinel.tools.saxo_record_fixtures --login`, which found every asserted value to match. The distinction is worth keeping: the values are verified, the file is not a recorded response. Re-verify at any time with `python -m sentinel.tools.saxo_record_fixtures --check`; the spike's own 89 raw evidence files were deleted with its throwaway scripts (commit 4c90819), which is why this file had to be reconstructed in the first place.",
+    "verified_at": "2026-08-21",
+    "verified_against": "live Saxo OpenAPI (gateway.saxobank.com), owner-run",
+    "source": "journal/M10b_SPIKE.md section 4, the /ref/v1/instruments/details table (Format.Decimals, Format.Format, OrderDecimals, TickSize, MinimumTradeSize, AmountDecimals) plus its 'Other findings' bullet (LotSize null, LotSizeType NotUsed, no MarginRates, no MarginTiers, no TradingSessions)",
+    "values_from_spike": {
+      "EURUSD": {
+        "Format.Decimals": 4,
+        "TickSize": "1e-05",
+        "MinimumTradeSize": 1000.0,
+        "Uic": 21
+      },
+      "GBPUSD": {
+        "Format.Decimals": 4,
+        "TickSize": "1e-05",
+        "MinimumTradeSize": 1000.0,
+        "Uic": 31
+      },
+      "USDJPY": {
+        "Format.Decimals": 2,
+        "TickSize": "0.001",
+        "MinimumTradeSize": 1000.0,
+        "Uic": 42
+      }
+    },
+    "shape_assumption": "The spike tabulates Format.Decimals and OrderDecimals as separate columns. This fixture nests BOTH inside Format, which is the documented Saxo shape. sentinel/fx/instruments.py raises rather than defaulting if Format.Decimals is absent, so if that nesting is wrong the re-record surfaces an error and never a wrong pip."
+  },
+  "Data": [
+    {
+      "AssetType": "FxSpot",
+      "Uic": 21,
+      "Symbol": "EURUSD",
+      "Description": "Euro/US Dollar",
+      "CurrencyCode": "USD",
+      "AmountDecimals": 2,
+      "Format": {
+        "Decimals": 4,
+        "Format": "AllowDecimalPips",
+        "OrderDecimals": 4
+      },
+      "TickSize": 1e-05,
+      "MinimumTradeSize": 1000.0,
+      "LotSize": null,
+      "LotSizeType": "NotUsed",
+      "IsTradable": true
+    },
+    {
+      "AssetType": "FxSpot",
+      "Uic": 31,
+      "Symbol": "GBPUSD",
+      "Description": "British Pound/US Dollar",
+      "CurrencyCode": "USD",
+      "AmountDecimals": 2,
+      "Format": {
+        "Decimals": 4,
+        "Format": "AllowDecimalPips",
+        "OrderDecimals": 4
+      },
+      "TickSize": 1e-05,
+      "MinimumTradeSize": 1000.0,
+      "LotSize": null,
+      "LotSizeType": "NotUsed",
+      "IsTradable": true
+    },
+    {
+      "AssetType": "FxSpot",
+      "Uic": 42,
+      "Symbol": "USDJPY",
+      "Description": "US Dollar/Japanese Yen",
+      "CurrencyCode": "JPY",
+      "AmountDecimals": 2,
+      "Format": {
+        "Decimals": 2,
+        "Format": "AllowDecimalPips",
+        "OrderDecimals": 2
+      },
+      "TickSize": 0.001,
+      "MinimumTradeSize": 1000.0,
+      "LotSize": null,
+      "LotSizeType": "NotUsed",
+      "IsTradable": true
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "_provenance": {
+    "status": "VERIFIED",
+    "note": "VERIFIED, and still not a raw capture. This file was hand-authored from journal/M10b_SPIKE.md and then CHECKED FIELD BY FIELD against the live Saxo API on 2026-08-21 by `python -m sentinel.tools.saxo_record_fixtures --login`, which found every asserted value to match. The distinction is worth keeping: the values are verified, the file is not a recorded response. Re-verify at any time with `python -m sentinel.tools.saxo_record_fixtures --check`; the spike's own 89 raw evidence files were deleted with its throwaway scripts (commit 4c90819), which is why this file had to be reconstructed in the first place.",
+    "verified_at": "2026-08-21",
+    "verified_against": "live Saxo OpenAPI (gateway.saxobank.com), owner-run",
+    "source": "journal/M10b_SPIKE.md section 4, 'Reference data' table (symbol / Uic / description)",
+    "values_from_spike": {
+      "Symbol": "USDJPY",
+      "Identifier": 42,
+      "Description": "US Dollar/Japanese Yen"
+    },
+    "shape_assumption": "The spike records the Uic and description it resolved; the surrounding envelope (Data array, Identifier/AssetType/SummaryType keys) is the documented /ref/v1/instruments shape and is NOT itself evidenced here."
+  },
+  "Data": [
+    {
+      "AssetType": "FxSpot",
+      "CurrencyCode": "JPY",
+      "Description": "US Dollar/Japanese Yen",
+      "ExchangeId": "SBFX",
+      "GroupId": 0,
+      "Identifier": 42,
+      "SummaryType": "Instrument",
+      "Symbol": "USDJPY",
+      "TradableAs": [
+        "FxSpot"
+      ]
+    },
+    {
+      "AssetType": "FxSpot",
+      "CurrencyCode": "SEK",
+      "Description": "US Dollar/Japanese Yen (near match, must not be selected)",
+      "ExchangeId": "SBFX",
+      "GroupId": 0,
+      "Identifier": 9042,
+      "SummaryType": "Instrument",
+      "Symbol": "USDSEK",
+      "TradableAs": [
+        "FxSpot"
+      ]
+    }
+  ]
+}

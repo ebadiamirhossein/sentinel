@@ -198,8 +198,9 @@ error anywhere. This exact mistake was made during the spike and caught only bec
 the API contradicted the spec. The `TickSize × 10` cross-check is therefore a **required
 assertion in code**, not a note in a document.
 
-Chart v3 returns empty `ChartInfo`/`DisplayAndFormat`, so precision comes from
-reference data **only**.
+Chart v3 returns **null** `ChartInfo` and `DisplayAndFormat` (corrected 2026-08-21 from
+the spike's "empty objects"), so precision comes from reference data **only** — there is
+nothing in the chart payload to read even by accident.
 
 Unresolvable instruments are skipped with a named reason, never silently.
 
@@ -284,11 +285,30 @@ an 18-pip stop.**
 
 Since we now measure the spread, the better rule is **spread-triggered rather than
 clock-triggered**: no new signal when the current spread exceeds a configured multiple of
-that instrument's median for that hour-of-day. Self-calibrating, and it also catches
-unscheduled widening that no clock would.
+that instrument's median. Self-calibrating, and it also catches unscheduled widening that
+no clock would.
+
+**Corrected 2026-08-21 (defect #15).** This section originally said "median **for that
+hour-of-day**", and that cannot work. At 21:00 UTC GBPUSD's hour-of-day median *is* 12.0
+pips, so a 12-pip spread at 21:00 is "normal for that hour" and passes the gate — while
+costing 0.667R of an 18-pip stop. The per-hour baseline normalises away precisely the
+widening the gate exists to catch, and the gate never fires at the one hour it was
+written for. So:
+
+- the **cost model** uses the **per-hour-of-day** median — the right expectation of what
+  trading in this hour costs, and what feeds net RR;
+- the **gate** uses the instrument's **global median** across the whole sample, so
+  rollover hours fail it naturally and a genuine anomaly fails it at any hour.
+
+The multiple is **3.0**, against the global median, and it is a starting guess to be
+calibrated from DRY_RUN data rather than a derived figure. Sanity check: EURUSD's global
+median of 1.1 gives a 3.3-pip threshold, GBPUSD's 1.8 gives 5.4, and its 21:00 median of
+12.0 fails that. Every firing is logged with instrument, hour, spread and threshold,
+because how often it fires is itself a measurement.
 
 Keep a time-based floor of 19:00–21:00 UTC as a backstop for when the spread series is
-unavailable.
+unavailable. In bar stamps that is 19, 20 and 21 — the three bars the spike measured as
+elevated — which is wall-clock 19:00–22:00.
 
 ### §5.4 — The weekend gap
 
@@ -422,17 +442,37 @@ holding period.
 v1 estimated 0.11R from SIM's synthetic 2.0 pips. **Measured EURUSD cost on an 18-pip
 stop is 0.061R** — v1 was pessimistic by about half.
 
-| Pair | Median spread | Cost on an 18-pip stop | Gross RR needed to net 1.5 |
+**Corrected 2026-08-21 (defect #16).** The arithmetic below originally computed net RR
+as `gross − cost/risk`. That is not what a round-trip spread does. §7.5 settles that
+levels come from the **bid** series and that execution is asymmetric — a long enters at
+ask and exits at bid — so one spread `s` makes the loss `risk + s` **and** the gain
+`reward − s`. It lands on both sides at once:
+
+```
+net   = (gross × risk − s) / (risk + s)
+gross = target + (1 + target) × s / risk        # inverted for the uplift needed
+```
+
+which is also the shape `sentinel/risk/costs.py` has used for crypto since M4 — costs
+that fall on the losing side go in the denominator, costs paid on the way out of a
+winner come off the numerator. Forex was the odd one out, not the crypto engine.
+
+Restated on an 18-pip stop, from a gross 1.5. The struck figures are what this section
+printed before the correction:
+
+| Pair | Median spread | Net from a gross 1.5 | Gross RR needed to net 1.5 |
 |---|---|---|---|
-| EURUSD | 1.1 | **0.061R** | 1.561 |
-| USDJPY | 1.5 | 0.083R | 1.583 |
-| GBPUSD | 1.8 | 0.100R | 1.600 |
-| **GBPUSD at 21:00** | **12.0** | **0.667R** | **2.167** |
+| EURUSD | 1.1 | **1.356** (was 1.439) | **1.653** (was 1.561) |
+| USDJPY | 1.5 | **1.308** (was 1.417) | **1.708** (was 1.583) |
+| GBPUSD | 1.8 | **1.273** (was 1.400) | **1.750** (was 1.600) |
+| **GBPUSD at 21:00** | **12.0** | **0.500** (was 0.833) | **3.167** (was 2.167) |
 
 The qualitative conclusion survives: **any positive cost sinks a gross 1.5**, so the gate
-will reject setups that look acceptable before costs. But the required uplift is modest
-in normal hours — and brutal at rollover, which is precisely what §5.3's spread trigger
-exists to catch.
+will reject setups that look acceptable before costs. What changes is the size of it —
+the required uplift is about **two and a half times** what this section claimed, because
+the cost is charged `1 + target` times rather than once. It is still modest in normal
+hours and brutal at rollover, which is precisely what §5.3's spread trigger exists to
+catch.
 
 ### §7.5 — Which side of the spread *(new — neither v1 nor the spike covered this)*
 
@@ -631,8 +671,11 @@ Crypto goldens run at every step. Nothing turns on until the owner says so.
   ESMA assumption.
 - **D-g §5.3** — elevated spreads span **19:00–21:00 UTC**, not ±15 min. GBPUSD at 21:00
   costs **0.667R** on an 18-pip stop. Rollover gate becomes spread-triggered.
-- **D-h §4.2** — chart v3 returns empty `ChartInfo`/`DisplayAndFormat`; precision from
-  reference data only.
+- **D-h §4.2** — chart v3 returns **null** `ChartInfo`/`DisplayAndFormat`; precision from
+  reference data only. *(Corrected 2026-08-21: the spike recorded these as empty objects
+  `{}`; the live re-check found them to be `null`. It changes nothing — they are never
+  read, and precision comes from reference data precisely because there is nothing to
+  read here — but the fixture now matches reality on a field the spec names.)*
 - **D-i §12** — `MarketDataViaOpenApiTermsAccepted: False` while data flows. Added as a
   named potential pause cause, not a reliable gate.
 - **D-j §4.4** — real tail lengths are **321/321/321/101**, not 201/201/201/101.
@@ -644,3 +687,76 @@ Crypto goldens run at every step. Nothing turns on until the owner says so.
 - **§7.4** — cost numbers corrected downward: 0.061R on an 18-pip EURUSD stop, not 0.11R.
 - **§7.5** — new open question the spike surfaced by omission: which side of the spread
   features are computed from.
+
+**2026-08-21 — from the M10b-1 build**
+
+The spike checked this spec against the live API. These were found checking it against
+the **code**, which is a different exercise and produced five more defects. Owner
+rulings on all of them are dated the same day.
+
+- **#12 §7/§11 — `TradePlan` cannot carry a forex plan.** It lives in the frozen
+  `sentinel/risk/` and is crypto-shaped: `notional_usdt`, `suggested_leverage`,
+  `liq_distance_pct`, `liq_buffer_ok`, and a `PlanCosts` carrying a perpetual-futures
+  funding rate. `bot/cards.py` reads all four directly. §7.6 forbids faking a
+  liquidation buffer, and the package may not be extended, so §7's implicit assumption
+  that a forex plan could travel as a `TradePlan` is false. **Ruling:** M10b ends at a
+  sizing result in a new `sentinel/fx/` package, with the stronger form of §2.1 applied
+  — a concept this market does not have gets **no field at all**, not a null and not a
+  zero. The card, publishing and tracking become **M10c**.
+- **#13 §2.1 — "omit, never zero" had nowhere to land.** `Candle.volume` was a required
+  Pydantic field and `ohlcv_candles.volume` was NOT NULL, so a forex candle could not
+  express the absence the section demands. **Ruling:** migration `0011` drops the NOT
+  NULL (catalogue-only, no row rewritten, no backfill), and the permission is policed in
+  **both** directions in code — a crypto candle with no volume and a forex candle with
+  one are each an error. "Nullable" quietly becoming "sometimes missing" for crypto would
+  corrupt relative volume with nothing to notice it by.
+- **#14 §5.1 — the stated premise is inverted.** This section says crypto's staleness
+  rule "would fire on every weekend snapshot". It would not:
+  `sentinel/ingestion/staleness.py` compares `OHLCVSeries.fetched_at`, which is always
+  ~now for a fresh fetch, not the newest candle's `open_time`. The real hazard is the
+  opposite — a weekend snapshot whose newest bar is fifty hours old would read as
+  perfectly **fresh**. The conclusion §5.1 reaches is right and its reasoning is
+  backwards: forex needs a **candle-recency** check crypto never needed, and that is the
+  check which must be skipped while the market is closed.
+- **#15 §5.3 — the spread gate's baseline was self-defeating.** Corrected in place above.
+- **#16 §7.4 — net RR was computed the wrong way round.** Corrected in place above. The
+  required uplift is ~2.5× what the section claimed.
+
+Smaller corrections from the same build:
+
+- **§4** — the adapter is `sentinel/ingestion/adapters/forex_saxo.py`, alongside the
+  Binance one, not `sentinel/ingestion/forex_saxo.py`.
+- **§4.2** — resolved instruments are cached in a new **`forex_instruments`** table, not
+  in `instrument_meta`. That model is a tick size, a quantity step, a minimum *notional*
+  and a contract size; forex has a Uic, a `Format.Decimals`, a pip and a minimum *trade
+  size* in base units. Three of those have no column there and the fourth would put a
+  units figure where a money one is read. Same defect class as #12.
+- **§7.3** — the spread profile is **computed** from the 1h tail rather than stored in a
+  table: no extra request, no extra migration, and the statistic stays a pure function of
+  data the cycle already holds. The forex 1h tail is therefore **1200 bars, not 321**
+  (owner correction, 2026-08-21): 321 is ~13 days and leaves ~10 samples per hour-of-day
+  bucket, and a median over ten noisy samples is not a baseline — least of all in the
+  tail hours where it decides whether a signal is emitted. 1200 is ~50 days and ~35
+  samples, still one request, sitting exactly at the ceiling. Features continue to use
+  the most recent 321 of that tail.
+- **§7.1** — the *entry* and *stop* handed to the sizer are bid-series levels. The spread
+  is charged as a cost, never shifted into the levels. Doing it the other way would move
+  every level by the spread — one pip on EURUSD, twelve at rollover on GBPUSD.
+- **Evidence — CLOSED 2026-08-21.** The spike's 89 raw JSON files were deleted along
+  with its throwaway scripts (commit `4c90819`). Dropping the scripts was right; the raw
+  responses were evidence and should have been kept, and every Saxo fixture in the suite
+  therefore had to be **reconstructed from this document** — which meant a misreading in
+  the spike would have reproduced into a fixture with nothing to catch it.
+  `python -m sentinel.tools.saxo_record_fixtures --login` was run against the live API on
+  2026-08-21 and **every asserted value matched**: Uics 21/31/42, `Format.Decimals`
+  4/4/2, the derived pips, `TickSize`, `MinimumTradeSize` 1000.0 and the chart row keys.
+  The fixtures are now **VERIFIED**, and their provenance headers say so with the date —
+  still not captures, and a test keeps the two claims distinct.
+- **§4.4 / D-d — SETTLED 2026-08-21, in our favour.** That a 1200-bar read reproduces a
+  321-bar one was an expectation when the tail was widened. It has now been checked
+  against the live API on all three pairs: the 1200-bar request returned **exactly**
+  1200, every bar of the shared window agreed, and the `TimeframeFeatures` computed from
+  the long tail's last 321 rows were **identical** to those from a direct 321-bar
+  request. So the widening that gives the spread profile ~35 samples per hour-of-day
+  instead of ~10 costs nothing in feature terms, and the anchor instability D-d found
+  does not reach this boundary.

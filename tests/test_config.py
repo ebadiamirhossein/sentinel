@@ -277,3 +277,57 @@ def test_asking_for_an_unconfigured_market_raises(tmp_path: Path) -> None:
 
     with pytest.raises(KeyError, match="forex"):
         load_config(crypto_only).market(Market.FOREX)
+
+
+def test_a_symbol_watched_by_two_markets_is_refused_at_load(tmp_path: Path) -> None:
+    """specs/FOREX.md §4.3, and M10a's open question about the candle primary key.
+
+    ``ohlcv_candles`` is keyed on ``(symbol, timeframe, open_time)`` without the
+    market, so two markets watching one symbol would upsert over each other with no
+    error at all. M10b answers M10a's question by **asserting** the assumption rather
+    than widening the key: an overlap becomes a config that will not load, instead of
+    candles that quietly interleave.
+    """
+    clash = tmp_path / "config.yaml"
+    clash.write_text(
+        "markets:\n"
+        "  crypto:\n"
+        "    enabled: true\n"
+        "    watchlist: [BTCUSDT, EURUSD]\n"
+        "  forex:\n"
+        "    enabled: false\n"
+        "    adapter: forex_saxo\n"
+        "    watchlist: [EURUSD]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match="watched by both"):
+        load_config(clash)
+
+
+def test_the_overlap_check_covers_a_market_that_is_switched_off(tmp_path: Path) -> None:
+    """Deliberately wider than the failure. An overlap introduced while forex is
+    disabled is a trap set for the day it is enabled, and the config edit is the
+    cheapest moment to hear about it."""
+    clash = tmp_path / "config.yaml"
+    clash.write_text(
+        "markets:\n"
+        "  crypto:\n"
+        "    enabled: true\n"
+        "    watchlist: [EURUSD]\n"
+        "  forex:\n"
+        "    enabled: false\n"
+        "    adapter: forex_saxo\n"
+        "    watchlist: [EURUSD]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match="watched by both"):
+        load_config(clash)
+
+
+def test_the_shipped_config_has_disjoint_watchlists(repo_config: AppConfig) -> None:
+    """The assertion above is only worth having if the file we ship passes it."""
+    seen: set[str] = set()
+    for market in repo_config.markets.values():
+        assert seen.isdisjoint(market.watchlist)
+        seen.update(market.watchlist)
+    assert {"EURUSD", "GBPUSD", "USDJPY"} <= seen

@@ -152,6 +152,27 @@ def alert_view(alert: Alert, *, spend: SpendView | None = None) -> AlertView:
             at=alert.since,
         )
 
+    if alert.kind is AlertKind.FOREX_REAUTH_REQUIRED:
+        # The one alert in this system that asks the owner to *do* something
+        # specific, so it says what, why, and how long it takes — and it says what
+        # kept running, because "forex is paused" must not read as "Sentinel is down".
+        body = [
+            "Forex is paused: the Saxo login chain has expired and cannot renew itself.",
+            "Crypto is unaffected — it is still scanning, gating and publishing.",
+            "",
+            "This needs a two-minute browser login on your own Mac. Nothing is broken.",
+        ]
+        if alert.detail:
+            body.append(alert.detail)
+        if alert.last_error:
+            body.append(f"Authorize here: {alert.last_error}")
+        return AlertView(
+            kind=alert.kind.value,
+            title="🔑 Sentinel — forex needs you to log in to Saxo again",
+            body=tuple(body),
+            at=alert.since,
+        )
+
     if spend is None:  # pragma: no cover — the caller always pairs these
         raise ValueError(f"{alert.kind} needs the spend totals to render")
 

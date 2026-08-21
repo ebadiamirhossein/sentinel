@@ -27,6 +27,36 @@ dependencies = [
   "ccxt>=4.4",
   "pandas>=2.2",
   "feedparser>=6.0",
+  # DECLARED 2026-08-21 (M10b-1), found by `make check-deps` on its very first run —
+  # two more of the same defect httpx was. Both are imported DIRECTLY by our own code
+  # (`sentinel/features/indicators.py` does `import numpy as np`, `sentinel/bot/pulse.py`
+  # does `from annotated_types import MaxLen`) and both were arriving transitively, the
+  # first through pandas/matplotlib and the second through pydantic. Neither is a new
+  # dependency — nothing new is installed by declaring them — but each was one upstream
+  # reorganisation away from being the next httpx.
+  #
+  # NOT pinned, unlike anthropic and httpx: those two were pinned to versions with live
+  # production evidence behind them, and there is no such evidence to pin these to. See
+  # journal/M10b_REPORT.md §3 on numpy and chart/feature determinism, which is a real
+  # open question and deliberately not settled here.
+  "numpy>=2.0",
+  "annotated-types>=0.7",
+  # DECLARED 2026-08-21 (M10b-1), and it should have been from M1. Six modules
+  # `import httpx` directly — ingestion/http.py, llm/client.py, core/wiring.py and
+  # three tools — and it was in no dependency list at all. It arrived transitively
+  # through `anthropic`, so everything worked until `anthropic` 1.0.0 moved to
+  # `httpx2`; a freshly resolved image then had no httpx and the app died at boot on
+  # `import sentinel.main`. `make check-image` caught it, which is exactly why
+  # journal/M7_REPORT.md §6 added the in-image import to the gate — the wheel built
+  # cleanly, so the wheel check alone was never going to.
+  #
+  # It stays declared even though the pinned anthropic below brings it transitively.
+  # An undeclared direct dependency is a latent break whichever way the transitive
+  # chain happens to move next (owner ruling 2026-08-21).
+  #
+  # PINNED EXACTLY to the version production is running, verified on the server.
+  # `make check-deps` enforces the declaration; nothing enforces the version but this.
+  "httpx==0.28.1",
   # M3 — chart renderer (owner-approved 2026-08-18).
   # PINNED EXACTLY, not >=: charts must be byte-reproducible for any stored
   # signal, and a rasterisation change in a future matplotlib would break that
@@ -37,7 +67,18 @@ dependencies = [
   # M5 — LLM pipeline (owner-approved 2026-08-18). The Messages API client for
   # both tiers: screener (claude-sonnet-4-6) and analyst (claude-fable-5).
   # Read-only inference; no exchange credentials pass through it, ever.
-  "anthropic>=0.122",
+  #
+  # PINNED EXACTLY 2026-08-21 (owner ruling), to the version production is running.
+  # Same convention as matplotlib/mplfinance below, and for a stronger reason: this
+  # was `>=0.122`, so the server ran 0.125.0, the test venv ran 0.122.0 and a fresh
+  # image resolved **1.0.0** — a major bump, on the one dependency that talks to the
+  # model, arriving as a silent side effect of the next deploy.
+  #
+  # 0.125.0 has 37 completed live cycles behind it. That is stronger evidence than
+  # any test suite, and it is the only version with evidence at all. Moving to 1.0.0
+  # is its own milestone with its own testing, not something that happens to a live
+  # measurement window while nobody is looking.
+  "anthropic==0.125.0",
   # M6 — Telegram bot (ARCHITECTURE.md §2 names it; pyproject reserved it for this
   # milestone). Read-only towards the exchange by construction: the bot talks to
   # api.telegram.org and to our own Postgres, and there is no execution path for it
@@ -63,7 +104,9 @@ dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.24",
   "pytest-cov>=6.0",
-  "httpx>=0.27",
+  # httpx is a RUNTIME dependency (see above), pinned there. It was listed here as
+  # well, which is how six direct imports went undeclared for nine milestones without
+  # anybody noticing: it was always installed, just never for the right reason.
   "mypy>=1.13",
   "ruff>=0.8",
   # M4 — property tests for the risk engine, required by name in
