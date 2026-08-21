@@ -1,0 +1,23 @@
+<b>— CRYPTO —</b>
+📡 <b>Pulse</b> — last cycle
+2026-08-18 14:58 EEST (11:58 UTC) · OK
+
+🔎 <b>Screener</b> — 2 of 10 escalated
+  SOLUSDT (long) — 1h pullback into EMA50 with volume drying up; 4h trend intact.
+  LINKUSDT (unclear) — Range compression at the top of the 4h box.
+
+⏭️ <b>Not analysed</b>
+  ADAUSDT — an open signal is already running on it
+  LINKUSDT — analysed recently and not a candidate then
+
+🧠 <b>Analyst</b>
+  SOLUSDT — <b>CANDIDATE</b> · conf 78 · trend_pullback long
+    <i>4h uptrend intact; 1h pullback into EMA50 and the prior breakout level 82.4 with volume drying up on the…</i>
+
+🚦 <b>Gate</b>
+  LINKUSDT — cleared the shared checks — the rest is per-account
+  SOLUSDT — ✅ a plan was approved and sent
+
+💵 <b>~$0.31 this cycle</b> · $7.42 today of $10 <i>(estimate, not a bill)</i>
+
+<i>The pipeline's reasoning, the same for everyone. /pulse 24h for the day.</i>

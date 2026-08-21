@@ -1,0 +1,15 @@
+<b>— CRYPTO —</b>
+👁️ <b>Watchlist</b> (10 symbols) <i>[yaml]</i>
+
+  · BTCUSDT
+  · ETHUSDT
+  · SOLUSDT
+  · BNBUSDT
+  · XRPUSDT
+  · DOGEUSDT
+  · AVAXUSDT
+  · LINKUSDT
+  · LTCUSDT
+  · ADAUSDT
+
+<i>/watchlist add SOLUSDT · /watchlist remove SOLUSDT</i>

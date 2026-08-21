@@ -562,8 +562,15 @@ def render_surfaces(config: AppConfig | None = None) -> dict[str, Any]:
             stats_view(stats_report(config), header=section_header(Market.CRYPTO, config)),
             TZ,
         ),
-        "pulse": pulse_card(pulse, TZ),
-        "pulse_24h": pulse_day_card(day, TZ),
+        # ``header=`` matters, and was missing until M10c. The real handlers pass
+        # ``section_header`` (bot/handlers/commands.py:430 and :459) and this rendered
+        # without it — so with one market the golden was right by coincidence, and the
+        # multi-market golden below would have under-pinned exactly the line switching
+        # forex on adds. With one market ``section_header`` returns "", so adding it
+        # moves no existing byte; the sha256 of pulse.txt and pulse_24h.txt are
+        # unchanged by this commit, which is the check that says so.
+        "pulse": pulse_card(pulse, TZ, header=section_header(Market.CRYPTO, config)),
+        "pulse_24h": pulse_day_card(day, TZ, header=section_header(Market.CRYPTO, config)),
         "pulse_symbol": PAGE_BREAK.join(symbol_pulse_card(symbol, TZ)),
         "positions": positions_card(
             _position_rows(config), TZ, header=section_header(Market.CRYPTO, config)
