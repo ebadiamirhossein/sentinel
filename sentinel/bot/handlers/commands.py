@@ -52,7 +52,7 @@ from sentinel.bot.cards import (
 )
 from sentinel.bot.context import BotContext
 from sentinel.bot.export import journal_filename, journal_workbook
-from sentinel.bot.formatting import escape
+from sentinel.bot.formatting import escape, money_eur
 from sentinel.bot.handlers.guard import answers_on_failure
 from sentinel.bot.keyboards import watchlist_request_keyboard
 from sentinel.bot.markets import (
@@ -98,7 +98,7 @@ async def capital(message: Message, command: CommandObject, ctx: BotContext, act
     account = actor.known()
     if not command.args:
         await message.answer(
-            f"Your capital: €{account.capital_eur}"
+            f"Your capital: €{money_eur(account.capital_eur)}"
             if account.capital_eur is not None
             else "Your capital is not set, so no signal can be sized for you and none "
             "will be sent.\nSet it with: /capital 10000"

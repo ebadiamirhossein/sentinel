@@ -174,6 +174,46 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
     second**. M10b-2 §12 names the four joins its own boundary with M10c leaves
     untested for the same reason.
 
+12. **A golden built from in-memory values cannot see a defect the database
+    round-trip introduces.** `tests/golden/pipeline.py` sizes against
+    `Decimal("10000")`, constructed in Python. The live system reads
+    `users.capital_eur` from a `Numeric(38, 18)` column and gets
+    `Decimal('200.000000000000000000')`. The two differ in **scale**, not in value,
+    so the card printed `capital €200.000000000000000000` for 54 cycles while the
+    golden stayed green — and no amount of *more* golden coverage would ever have
+    found it, because the blind spot is structural: the fixture cannot produce the
+    input that breaks. Found in M10c only because forex needed the same line.
+    **Which other goldens have this blind spot:** every value on the cycle golden
+    except two is quantized by `sentinel/risk/` before it reaches the card, so scale
+    is pinned upstream and the fixture's provenance does not matter.
+    `capital_eur` and `risk_per_trade_pct` were the exceptions — the only two
+    `TradePlan` fields assigned without `money()`/`percent()` — and both are fixed.
+    The **surfaces** goldens are the remaining exposure: `StatusView`,
+    `SettingsView` and `UserView` carry raw `Decimal`s straight from repository
+    rows, and `tests/golden/surfaces.py` builds those rows in memory too. Nothing
+    there is currently wrong, and nothing there would show it if it became wrong.
+    **When a surface renders a value that came from a `Numeric` column, assert on
+    its scale, not only on its value** — or render it through
+    `bot/formatting.money_eur`, which makes the scale the renderer's business
+    instead of the column's.
+
+13. **A test that looks like it is checking and is not is worse than no test.**
+    `test_no_arithmetic`'s layer 2 compared every rendered number to the plan's
+    numbers **as strings** — and `str(Decimal("200.000000000000000000"))` *is* what
+    the card printed, so the check passed with the defect in front of it. It
+    consumed the attention that would have found the gap: the file reads like a
+    thorough guard, it has a proof-of-teeth test, and it was blind to an entire
+    class of defect. It now compares by **value**, with an explicit third layer
+    stating the rule it was missing — *the renderer may fix a display scale; it may
+    never change a value.*
+    **The pattern worth copying is the proof of teeth, and specifically how it is
+    built:** when a check is loosened, the new test must break on the smallest thing
+    the check still has to catch. `test_the_scale_check_would_catch_a_changed_value`
+    perturbs €4570.30 to €4570.**31** — one digit, the same scale — so it fails
+    unless the value comparison genuinely works. A proof that mutated the number
+    beyond recognition would have passed against a check that had stopped working.
+
+
 ## 5. Boundaries that must survive any new feature
 
 - No execution code / trade-capable keys. Ever. (v1 hard boundary; revisit only

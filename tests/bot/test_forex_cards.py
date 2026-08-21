@@ -25,6 +25,7 @@ import pytest
 from sentinel.analyst.models import Direction, TimeframeLabel
 from sentinel.bot.cards import signal_card
 from sentinel.bot.forex_cards import ACCOUNT_LEVEL_MARGIN, WEEKEND_GAP, forex_signal_card
+from sentinel.bot.formatting import money_eur
 from sentinel.bot.models import SignalDecision, SignalRecord
 from sentinel.core.config import AppConfig
 from sentinel.core.markets import Market
@@ -287,7 +288,6 @@ def test_the_card_shows_the_engine_figures_verbatim(plan: ForexPlan, card: str) 
         plan.margin_eur,
         plan.stop_distance_pct,
         plan.stop_distance_pips,
-        plan.costs.total_eur,
         plan.costs.cost_pct_of_risk,
         plan.avg_entry,
         plan.avg_fill_price,
@@ -298,6 +298,13 @@ def test_the_card_shows_the_engine_figures_verbatim(plan: ForexPlan, card: str) 
         *plan.rr_targets_net,
     ):
         assert str(value) in card, f"{value} is on the plan but not on the card"
+
+    # The cost total is the one figure whose SCALE the card changes.
+    # ``fx/rounding.cost_money`` keeps four decimals because at €200 cents-rounding a
+    # spread moves net RR by 0.01R, and that precision is what fed the gate. The card
+    # shows money. Value preserved, scale fixed — the §16.8 / defect #22 rule.
+    assert f"€{money_eur(plan.costs.total_eur)}" in card
+    assert str(plan.costs.total_eur) not in card
 
 
 def test_a_decimal_never_reaches_the_card_in_scientific_notation(card: str) -> None:

@@ -6,7 +6,7 @@ fable_v1 · Signal #42 · 2026-08-18 15:00 EEST (12:00 UTC)
 
 ⚠️ <b>Against:</b> Funding is mildly crowded long.
 
-🎯 <b>Plan</b> (capital €10000 · risk 0.75% = €75.00 · EURUSD 1.1593)
+🎯 <b>Plan</b> (capital €10000.00 · risk 0.75% = €75.00 · EURUSD 1.1593)
 Entry ladder (limit orders) — last price 64100.0:
   1) <b>64150.0</b> (0.08%) — 40% of risk — 0.049 BTC (€2711.42)
   2) <b>63975.0</b> (-0.2%) — 35% of risk — 0.057 BTC (€3145.50)

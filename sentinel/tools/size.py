@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from sentinel.analyst.models import AnalystReport
+from sentinel.bot.formatting import money_eur, percent_2dp
 from sentinel.core.config import load_settings
 from sentinel.core.logging import configure_logging
 from sentinel.risk.engine import RiskEngine
@@ -66,7 +67,8 @@ def _render_plan(plan: TradePlan) -> str:
         f"── {plan.symbol} {arrow} "
         f"[{plan.setup_type.value} · {plan.timeframe_label.value} · conf {plan.confidence}] ──",
         f"gate          {plan.gate_status.value}",
-        f"capital       €{plan.capital_eur}  ·  risk {plan.risk_per_trade_pct}% "
+        f"capital       €{money_eur(plan.capital_eur)}  ·  "
+        f"risk {percent_2dp(plan.risk_per_trade_pct)}% "
         f"= €{plan.planned_risk_eur}  ·  EURUSD {plan.eurusd_rate}",
         "",
         f"entry ladder (limit orders)  ·  last price {plan.last_price}",

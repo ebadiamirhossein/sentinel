@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import re
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -161,12 +162,28 @@ def untraceable(card: str, plan: Any) -> list[str]:
     A leading minus is allowed against an unsigned plan value: ``stop_distance_pct``
     is stored as a magnitude and the card's "-" is a literal, exactly as
     ``tools/size.py`` prints it. The digits still have to match.
+
+    **Compared by value, not by string** (M10c, FOREX.md defect #22). A renderer is
+    allowed to fix a display *scale* — ``Decimal("200.000000000000000000")`` printed as
+    ``200.00`` — and is not allowed to change a value. A string comparison could not
+    express that distinction, which is precisely why the eighteen-decimal capital
+    survived: every check in this file passed with the defect present, because
+    ``200.000000000000000000`` *was* the plan's value.
+
+    The value check is not a loosening. ``9999.99`` against a plan holding ``4570.30``
+    is still caught, and ``test_the_traceability_check_would_catch_an_invented_number``
+    below is the proof. What it stops catching is a difference of trailing zeros, which
+    was never a fact about the number.
     """
     known = plan_numbers(plan.model_dump(mode="json"), set())
+    values = {Decimal(value) for value in known}
     return [
         token
         for token in card_numbers(card, plan)
-        if token not in known and token.lstrip("-") not in known
+        if token not in known
+        and token.lstrip("-") not in known
+        and Decimal(token) not in values
+        and -Decimal(token) not in values
     ]
 
 
@@ -212,3 +229,98 @@ def test_the_card_shows_the_engine_figures_verbatim(record: SignalRecord, tz: Zo
         *plan.rr_targets_net,
     ):
         assert str(value) in card, f"{value} is on the plan but not on the card"
+
+
+# --------------------------------------------------------------------------- #
+# Layer 3 — the renderer may fix a scale, and may never change a value
+# --------------------------------------------------------------------------- #
+#
+# The rule that was missing, and whose absence let ``capital €200.000000000000000000``
+# reach a live card for 54 cycles. Nothing asserted on scale, and every check that
+# compared *values* passed — because the value was right.
+
+
+#: Every money figure a card renders through ``money_eur``, and where it comes from.
+#: A pair rather than a bare field name, so the assertion reads the same way the card
+#: does: this text, from that number.
+MONEY_ON_THE_CARD = ("capital_eur",)
+
+
+@pytest.mark.parametrize("field", MONEY_ON_THE_CARD)
+def test_money_renders_at_cents_and_keeps_its_value(record: SignalRecord, field: str) -> None:
+    """Two decimals on the card, and the same number underneath.
+
+    Driven from a plan whose value carries the **eighteen** decimals a
+    ``Numeric(38, 18)`` column hands back, because that is the case that actually
+    happens and the one an in-process ``Decimal("10000")`` fixture cannot reach.
+    """
+    from_postgres = Decimal("200.000000000000000000")
+    plan = record.plan.model_copy(update={field: from_postgres})
+    card = signal_card(record.model_copy(update={"plan": plan}), ZoneInfo("Europe/Vilnius"))
+
+    assert "200.000000000000000000" not in card
+    assert "€200.00" in card
+    assert Decimal("200.00") == from_postgres
+
+
+def test_the_percentage_beside_it_gets_the_same_treatment(record: SignalRecord) -> None:
+    """``risk_per_trade_pct`` comes from the same column type and had the same defect.
+
+    Two decimals, **fixed** — see ``formatting.percent_2dp`` for why a budget figure
+    pads where a measurement trims. What matters here is only that the eighteen
+    decimals the column carries never reach the card, and that trimming does not
+    produce ``2E+1`` for a whole number on the way.
+    """
+    plan = record.plan.model_copy(update={"risk_per_trade_pct": Decimal("0.750000000000000000")})
+    card = signal_card(record.model_copy(update={"plan": plan}), ZoneInfo("Europe/Vilnius"))
+
+    assert "risk 0.75%" in card
+    assert "0.750000000000000000" not in card
+    assert "E+" not in card
+
+
+def test_the_scale_check_would_catch_a_changed_value(record: SignalRecord) -> None:
+    """Proof of teeth. Fixing a scale is allowed; rendering a different number is not.
+
+    Without this, ``untraceable``'s new value comparison could have been a loosening
+    nobody measured.
+    """
+    card = signal_card(record, ZoneInfo("Europe/Vilnius")).replace("€4570.30", "€4570.31")
+
+    assert "4570.31" in untraceable(card, record.plan)
+
+
+def test_every_status_card_percentage_survives_the_database_scale(
+    record: SignalRecord,
+) -> None:
+    """The two the audit found (HANDOFF §4 item 12), on the same card as the capital.
+
+    ``/status`` prints three sizing percentages and **all** of them trace back to
+    ``Numeric(38, 18)`` columns: ``risk per trade`` is the user's own setting, and
+    ``open risk`` is a sum of the ``risk_per_trade_pct`` each open plan was issued
+    with. Before M10c that line read ``open risk: 1.500000000000000000% of 2.25%``.
+
+    Fixing the capital and leaving these would have been the worse outcome of the two,
+    because the card would then have looked deliberate.
+    """
+    from sentinel.bot.cards import status_card
+    from sentinel.core.config import load_config
+    from tests.golden.surfaces import _status_view
+
+    # The golden's own view, with the three figures replaced by the scale Postgres
+    # actually returns. Built from ``_status_view`` rather than by hand so the rest of
+    # the card is the card, not a stub that happens to render.
+    from_postgres = Decimal("0.750000000000000000")
+    view = replace(
+        _status_view(load_config()),
+        capital_eur=Decimal("200.000000000000000000"),
+        risk_per_trade_pct=from_postgres,
+        open_risk_pct=Decimal("1.500000000000000000"),
+        max_open_risk_pct=Decimal("2.25"),
+    )
+    card = status_card(view, ZoneInfo("Europe/Vilnius"))
+
+    assert "capital: €200.00" in card
+    assert "risk per trade: 0.75%" in card
+    assert "open risk: 1.50% of 2.25%" in card
+    assert "000000000" not in card

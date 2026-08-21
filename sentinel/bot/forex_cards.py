@@ -40,7 +40,14 @@ from zoneinfo import ZoneInfo
 
 from sentinel.analyst.models import Direction
 from sentinel.bot.cards import DECISION_LABEL
-from sentinel.bot.formatting import DISCLAIMER, escape, local_and_utc, local_date_time
+from sentinel.bot.formatting import (
+    DISCLAIMER,
+    escape,
+    local_and_utc,
+    local_date_time,
+    money_eur,
+    percent_2dp,
+)
 from sentinel.bot.models import SignalRecord
 from sentinel.fx.plan import ForexPlan
 
@@ -96,7 +103,8 @@ def forex_signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool =
 
     lines.append("")
     lines.append(
-        f"🎯 <b>Plan</b> (capital €{plan.capital_eur} · risk {plan.risk_per_trade_pct}% "
+        f"🎯 <b>Plan</b> (capital €{money_eur(plan.capital_eur)} · "
+        f"risk {percent_2dp(plan.risk_per_trade_pct)}% "
         f"= €{plan.planned_risk_eur} · EUR{plan.quote_currency} {plan.eur_quote_rate})"
     )
     lines.append(f"Entry ladder (limit orders) — last price {plan.last_price}:")
@@ -181,9 +189,13 @@ def _cost_lines(plan: ForexPlan) -> list[str]:
     """
     costs = plan.costs
     lines = [
-        f"🧾 Costs: round trip €{costs.total_eur} = "
+        # ``total_eur`` carries four decimals on purpose — ``fx/rounding.cost_money``
+        # keeps them because at €200 cents-rounding a spread moves net RR by 0.01R,
+        # and that precision is what fed the gate. The CARD is a different job: a
+        # reader needs a cost in money, and "€2.3375" reads as a defect.
+        f"🧾 Costs: round trip €{money_eur(costs.total_eur)} = "
         f"{costs.cost_pct_of_risk}% of the €{plan.planned_risk_eur} risk budget",
-        f"    spread {costs.spread_pips} pips = €{costs.spread_cost_eur} "
+        f"    spread {costs.spread_pips} pips = €{money_eur(costs.spread_cost_eur)} "
         f"({escape(costs.spread_basis)})",
     ]
     if costs.entry_commission_eur > 0 or costs.exit_commission_eur > 0:

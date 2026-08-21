@@ -44,7 +44,7 @@ fable_v1 · Signal #1 · 2026-08-18 15:00 EEST (12:00 UTC)
 
 ⚠️ Against: Fear & Greed at 74 (greed) — crowded-long risk into resistance at 84.6.
 
-🎯 Plan (capital €10000 · risk 0.75% = €75.00 · EURUSD 1.1593)
+🎯 Plan (capital €10000.00 · risk 0.75% = €75.00 · EURUSD 1.1593)
 Entry ladder (limit orders) — last price 83.40:
   1) 83.10 (-0.36%) — 40% of risk — 18.30 SOL (€1311.77)
   2) 82.60 (-0.96%) — 35% of risk — 21.73 SOL (€1548.26)

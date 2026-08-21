@@ -1,15 +1,31 @@
-"""Display helpers for the Telegram layer: escaping, and time.
+"""Display helpers for the Telegram layer: escaping, time, and display **scale**.
 
 **No arithmetic lives here.** ``tests/bot/test_no_arithmetic.py`` scans this
 module and ``cards.py`` for arithmetic operators, because specs/TELEGRAM_UX.md §1
 says every number on a card comes from ``TradePlan`` — the bot renders, it never
 computes. A timezone conversion is a lookup, not a calculation: it re-labels one
 instant, it does not produce a new quantity.
+
+**M10c adds a third kind of lookup: display scale** (FOREX.md defect #22). A
+``Decimal`` prints at whatever scale it carries, and a value read from a
+``Numeric(38, 18)`` column carries eighteen — so the live card has been printing
+``capital €200.000000000000000000``. Quantizing for display changes the *scale* and
+never the *value*, which is why it belongs here and not in the engine: the two
+fields affected are the only ones on ``TradePlan`` assigned without ``money()`` or
+``percent()``, and the package that assigns them is frozen for the live measurement
+window.
+
+The rule this introduces, and the one the guard now enforces: **the renderer may fix
+a scale; it may never change a value.** That rule's absence is why the defect lived —
+``Decimal("200") == Decimal("200.000000000000000000")`` is true, so nothing that
+compared values could see it, and nothing asserted on scale at all. It is the same
+class as the ``$10`` -> ``$10.0`` regression ``tests/golden`` already names.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sentinel.core.logging import get_logger
@@ -21,6 +37,9 @@ DISCLAIMER = "Research tool — not financial advice. Past stats ≠ future resu
 
 RULE = "──────────────"
 
+#: Cents. Money is rendered at two decimals, always.
+CENTS = Decimal("0.01")
+
 
 def escape(text: str) -> str:
     """Escape the three characters Telegram's HTML parse mode reserves.
@@ -31,6 +50,38 @@ def escape(text: str) -> str:
     even if that sanitizer is one day loosened.
     """
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def money_eur(value: Decimal) -> str:
+    """A euro amount at cents precision, for interpolation into a card.
+
+    ``.quantize`` is a method call and survives the AST arithmetic scan for the same
+    reason ``abs()`` does: it invents no magnitude. Trailing zeros are **kept** — money
+    reads as money at two decimals, and "€200.0" is the exact regression the golden
+    surfaces already carry a note about.
+    """
+    return f"{value.quantize(CENTS, rounding=ROUND_HALF_UP)}"
+
+
+def percent_2dp(value: Decimal) -> str:
+    """A **sizing** percentage at exactly two decimals — ``0.75``, ``1.50``, ``2.25``.
+
+    Fixed rather than trimmed, deliberately, and the distinction is worth stating
+    because this codebase contains both conventions and they are both right.
+
+    ``sentinel.risk.rounding.percent`` **trims**, and every percentage the engine puts
+    on a plan goes through it: a stop distance reads ``-1.78%`` and a liquidation
+    distance reads ``20%``, because those are measurements and a trailing zero on a
+    measurement is noise.
+
+    These three are not measurements. ``risk per trade``, ``open risk`` and the rail
+    they are compared against are **budget** figures, and they are already rendered at
+    two decimals on the ``/status`` card. Padding keeps a risk of 1 reading as ``1.00%``
+    beside ``0.75%`` instead of as a bare ``1%``, and — the reason it matters here —
+    it changes not one byte of what those surfaces already print, so a fix for a
+    *scale* defect does not smuggle a *convention* change in behind it.
+    """
+    return f"{value.quantize(CENTS, rounding=ROUND_HALF_UP)}"
 
 
 def zone_info(name: str) -> ZoneInfo:
@@ -65,4 +116,14 @@ def local_date_time(moment: datetime, tz: ZoneInfo) -> str:
     return f"{local:%Y-%m-%d %H:%M %Z} ({moment:%Y-%m-%d %H:%M} UTC)"
 
 
-__all__ = ["DISCLAIMER", "RULE", "escape", "local_and_utc", "local_date_time", "zone_info"]
+__all__ = [
+    "CENTS",
+    "DISCLAIMER",
+    "RULE",
+    "escape",
+    "local_and_utc",
+    "local_date_time",
+    "money_eur",
+    "percent_2dp",
+    "zone_info",
+]

@@ -4,7 +4,7 @@
 /resume to lift it.
 
 <b>Sizing</b>
-  capital: €10000
+  capital: €10000.00
   risk per trade: 0.75%
   watchlist: 10 symbols
 

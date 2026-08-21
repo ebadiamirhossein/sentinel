@@ -26,7 +26,14 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sentinel.analyst.models import Direction
-from sentinel.bot.formatting import DISCLAIMER, escape, local_and_utc, local_date_time
+from sentinel.bot.formatting import (
+    DISCLAIMER,
+    escape,
+    local_and_utc,
+    local_date_time,
+    money_eur,
+    percent_2dp,
+)
 from sentinel.bot.models import (
     SignalDecision,
     SignalRecord,
@@ -107,7 +114,14 @@ def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False
 
     lines.append("")
     lines.append(
-        f"🎯 <b>Plan</b> (capital €{plan.capital_eur} · risk {plan.risk_per_trade_pct}% "
+        # ``capital_eur`` and ``risk_per_trade_pct`` are the only two figures on this
+        # line the engine does not quantize (defect #22): both come from
+        # ``Numeric(38, 18)`` columns, so on the live system they printed as
+        # €200.000000000000000000 and 0.750000000000000000%. Scale is fixed here
+        # because ``risk/engine.py`` is frozen; the value is untouched, and
+        # ``test_no_arithmetic`` now enforces exactly that distinction.
+        f"🎯 <b>Plan</b> (capital €{money_eur(plan.capital_eur)} · "
+        f"risk {percent_2dp(plan.risk_per_trade_pct)}% "
         f"= €{plan.planned_risk_eur} · EURUSD {plan.eurusd_rate})"
     )
     lines.append(f"Entry ladder (limit orders) — last price {plan.last_price}:")
@@ -244,12 +258,12 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
     lines.append("")
     lines.append("<b>Sizing</b>")
     lines.append(
-        f"  capital: €{view.capital_eur}"
+        f"  capital: €{money_eur(view.capital_eur)}"
         if view.capital_eur is not None
         else "  capital: <b>not set</b> — every signal is rejected with NO_CAPITAL "
         "until /capital runs"
     )
-    lines.append(f"  risk per trade: {view.risk_per_trade_pct}%")
+    lines.append(f"  risk per trade: {percent_2dp(view.risk_per_trade_pct)}%")
     lines.append(f"  watchlist: {view.watchlist_size} symbols")
 
     lines.append("")
@@ -282,7 +296,13 @@ def status_card(view: StatusView, tz: ZoneInfo) -> str:
 
     lines.append("")
     lines.append("<b>Risk in use</b>")
-    lines.append(f"  open risk: {view.open_risk_pct}% of {view.max_open_risk_pct}%")
+    # Both are sums of ``risk_per_trade_pct`` values that came from ``Numeric(38, 18)``
+    # columns, so before M10c this line read "open risk: 1.500000000000000000% of
+    # 2.25%" on the live system — the same defect as the capital above, two lines
+    # down the same card, and found only by auditing for it (HANDOFF §4 item 12).
+    lines.append(
+        f"  open risk: {percent_2dp(view.open_risk_pct)}% of {percent_2dp(view.max_open_risk_pct)}%"
+    )
     lines.append(f"  positions: {view.open_positions} of {view.max_positions}")
 
     lines.append("")

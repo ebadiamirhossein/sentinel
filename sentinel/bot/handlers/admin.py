@@ -41,7 +41,7 @@ from sentinel.bot.cards import (
     welcome_card,
 )
 from sentinel.bot.context import BotContext
-from sentinel.bot.formatting import escape
+from sentinel.bot.formatting import escape, money_eur
 from sentinel.bot.keyboards import (
     AdminAction,
     AdminCallback,
@@ -636,7 +636,9 @@ async def settings(message: Message, ctx: BotContext, actor: Actor) -> None:
                 (
                     (
                         "capital_eur",
-                        "not set" if account.capital_eur is None else f"€{account.capital_eur}",
+                        "not set"
+                        if account.capital_eur is None
+                        else f"€{money_eur(account.capital_eur)}",
                         "you" if account.capital_eur is not None else "unset",
                     ),
                     (
