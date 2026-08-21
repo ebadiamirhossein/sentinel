@@ -52,6 +52,20 @@ def loss_pause_key(user_id: int, at: datetime) -> str:
     return f"loss-pause:{user_id}:{at:%Y-%m-%d}"
 
 
+def calendar_coverage_key(at: datetime) -> str:
+    """One per UTC day, and deliberately not per user (M10d, specs/FOREX.md §8).
+
+    The economic calendar is an operator concern: a member has no lever to pull and
+    cannot edit a YAML file on the server. It goes to the owner alone, exactly as the
+    admin alerts do.
+
+    Daily rather than per cycle, because the condition holds for up to a fortnight
+    before coverage lapses and a message every hour for two weeks is a message that
+    gets muted — which would turn the rail into the silence it exists to prevent.
+    """
+    return f"calendar-coverage:{at:%Y-%m-%d}"
+
+
 class UserNotifier:
     """Send one notice to one user, at most once per key.
 
@@ -120,4 +134,10 @@ class UserNotifier:
         return True
 
 
-__all__ = ["UserNotifier", "loss_pause_key", "no_capital_key", "notice_id"]
+__all__ = [
+    "UserNotifier",
+    "calendar_coverage_key",
+    "loss_pause_key",
+    "no_capital_key",
+    "notice_id",
+]
