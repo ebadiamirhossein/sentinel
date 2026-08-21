@@ -821,8 +821,16 @@ class MarketConfig(_Strict):
 
 
 #: The keys ``markets:`` replaced. A config file carrying these and no ``markets``
-#: block is a pre-M10a file — which is what the deployed server runs, because
-#: docs/DEPLOY.md §6/§13 edit ``config.yaml`` in place — and is read as crypto-only.
+#: block is a pre-M10a file, and is read as crypto-only.
+#:
+#: **Correction (2026-08-21, hygiene session).** This used to say the deployed server
+#: runs such a file, because docs/DEPLOY.md §6/§13 edit ``config.yaml`` in place. It
+#: does not, and they do not: the server's ``config.yaml`` is byte-identical to the
+#: committed one and has carried a ``markets:`` block since some earlier deploy
+#: (verified on the live box 2026-08-21). §6/§13 could not have edited it in place
+#: anyway — the config is baked into the image at build time. The backward-compatible
+#: read below is kept for old files and for the frozen test fixture, not because any
+#: running deployment needs it.
 LEGACY_MARKET_KEYS = ("dry_run", "watchlist", "watchlist_max_symbols")
 
 
@@ -919,10 +927,11 @@ class AppConfig(_Strict):
     #: names them — which is the order every multi-market surface renders in.
     #:
     #: A config with no ``markets:`` block is read as crypto-only and synthesised
-    #: from the pre-M10a top-level keys; see :meth:`_carry_legacy_markets`. That is
-    #: not a nicety, it is the deployed reality: docs/DEPLOY.md §6/§13 edit the
-    #: server's ``config.yaml`` in place, so the file the live system loads is a
-    #: legacy-shaped one until the owner ships this milestone.
+    #: from the pre-M10a top-level keys; see :meth:`_carry_legacy_markets`.
+    #:
+    #: **Correction (2026-08-21, hygiene session).** This used to call that "the
+    #: deployed reality". It is not: the live server loads a ``markets:``-shaped file
+    #: identical to the committed one. See :data:`LEGACY_MARKET_KEYS` above.
     markets: dict[Market, MarketConfig] = Field(
         default_factory=lambda: {LEGACY_MARKET: MarketConfig(watchlist=DEFAULT_CRYPTO_WATCHLIST)}
     )
@@ -1091,7 +1100,11 @@ def load_config(
     # would produce a mapping carrying both shapes at once — which
     # ``normalise_markets`` refuses, correctly, for a file. Normalising first means
     # ARCHITECTURE §2's "DB > yaml > defaults" still holds for a server whose
-    # config.yaml has not been migrated yet, which is every server today.
+    # config.yaml has not been migrated yet.
+    #
+    # (Correction, 2026-08-21: that used to read "which is every server today". No
+    # server is in that state — the live one runs the committed markets:-shaped file.
+    # The normalise-first ordering is still correct for any file of either shape.)
     raw = normalise_markets(raw)
     if db_overrides:
         raw = _deep_merge(raw, db_overrides)

@@ -37,6 +37,22 @@ main() {
   fi
   log "updating $previous → $target"
 
+  # docs/DEPLOY.md §12. `dry_run: false` is a COMMITTED value now, not a local edit
+  # on this box, so the old accidental safeguard is gone: `git pull --ff-only` used
+  # to REFUSE to run against a locally-modified config.yaml, which forced somebody
+  # to read the diff. A clean file pulls silently, and the config is baked into the
+  # image below with nothing mounted over it — so whatever a laptop merged is what
+  # this machine will be running in about a minute.
+  #
+  # This prints it. It says "unchanged" rather than printing nothing, because
+  # silence is exactly what the two defects §13 records looked like.
+  if git diff --quiet "$previous" HEAD -- config.yaml; then
+    log "config.yaml: unchanged in this update"
+  else
+    log "config.yaml CHANGED in this update — READ THIS, it is your live settings:"
+    git --no-pager diff "$previous" HEAD -- config.yaml
+  fi
+
   log "step 3/5 — building"
   compose build app || rollback "$previous" "the image did not build"
 

@@ -216,11 +216,17 @@ def test_the_shipped_config_carries_the_floor_the_owner_decided() -> None:
 
 
 def test_the_legacy_deployed_config_behaves_identically() -> None:
-    """The frozen pre-M10a config the server actually runs has no floor at all.
+    """The frozen pre-M10a config has no floor at all.
 
-    ``docs/DEPLOY.md`` §6/§13 edit ``config.yaml`` in place, so the deployed file is
-    still the legacy shape and does not carry ``llm_reserved_floor_usd``. That is the
-    one difference ``tests/test_config.py`` names — and it is behaviourally invisible,
+    **Correction (2026-08-21, hygiene session):** this docstring used to say this was
+    "the config the server actually runs", because ``docs/DEPLOY.md`` §6/§13 edit
+    ``config.yaml`` in place. Neither half is true — the live server's file is
+    byte-identical to the committed one and carries the floor, and §6/§13 never edited
+    anything in place because the config is baked into the image. What is asserted
+    below is unchanged and still worth asserting: a legacy-shaped file, which this
+    fixture is and which any un-migrated file would be, does not carry
+    ``llm_reserved_floor_usd``. That is the one difference ``tests/test_config.py``
+    names — and it is behaviourally invisible,
     because a floor only ever reserves against *other* markets and a legacy config has
     exactly one. Proved here rather than assumed, since the alternative is a rail that
     silently does not apply where it was meant to.

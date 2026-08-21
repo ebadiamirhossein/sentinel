@@ -81,8 +81,17 @@ def test_every_surface_this_milestone_touches_has_a_golden(
 # --------------------------------------------------------------------------- #
 
 #: ``config.yaml`` frozen at the commit before M10a — the legacy shape, with no
-#: ``markets:`` block, which is what the deployed file is (docs/DEPLOY.md §6/§13
-#: edit it in place, so ``git pull`` never rewrote it).
+#: ``markets:`` block.
+#:
+#: **Correction (2026-08-21, hygiene session).** This used to say the legacy shape is
+#: "what the deployed file is", because docs/DEPLOY.md §6/§13 edit it in place so
+#: ``git pull`` never rewrote it. Both halves are false: the live server's
+#: ``config.yaml`` is byte-identical to the committed ``markets:``-shaped one
+#: (verified 2026-08-21), and §6/§13 never edited it in place — the config is baked
+#: into the image at build time, so a host-side edit would not have reached the
+#: running process at all. The test below is unaffected and stays: what it actually
+#: asserts is that the two SHAPES render identically, which is M10a's promise and is
+#: still the thing worth pinning.
 LEGACY_DEPLOYED = Path(__file__).resolve().parents[1] / "fixtures" / "config_legacy_deployed.yaml"
 
 

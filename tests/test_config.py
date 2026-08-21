@@ -140,10 +140,23 @@ def test_json_logs_follow_environment() -> None:
 # M10a — the markets block, and the config the server is actually running
 # --------------------------------------------------------------------------- #
 
-#: ``config.yaml`` exactly as it stood before M10a, frozen. This is the shape the
-#: LIVE deployment loads: docs/DEPLOY.md §6 and §13 edit the server's copy in place
-#: (``sed -i 's/^dry_run: true/dry_run: false/'``), so the running file has no
-#: ``markets:`` block and ``dry_run: false``.
+#: ``config.yaml`` exactly as it stood before M10a, frozen.
+#:
+#: **Correction (2026-08-21, hygiene session).** This used to say it is "the shape the
+#: LIVE deployment loads", on the grounds that docs/DEPLOY.md §6 and §13 edit the
+#: server's copy in place with ``sed -i 's/^dry_run: true/dry_run: false/'``. Nothing
+#: in that sentence survived checking:
+#:
+#: * the live server's ``config.yaml`` is byte-identical to the committed one and has
+#:   a ``markets:`` block (verified on the box, 2026-08-21);
+#: * that ``sed`` is anchored to line start and cannot match the indented
+#:   ``markets.crypto.dry_run``, so it never changed anything;
+#: * and even a successful edit would not have reached the running process, because
+#:   the config is ``COPY``-ed into the image and no volume is mounted over it.
+#:
+#: The fixture keeps its job: it is the legacy SHAPE, and the tests below assert that
+#: shape still loads and still describes the same crypto market. That claim is
+#: unchanged.
 LEGACY_DEPLOYED = Path(__file__).resolve().parent / "fixtures" / "config_legacy_deployed.yaml"
 
 #: What crypto's settings are today, field by field. Written out rather than
@@ -243,6 +256,49 @@ def test_forex_ships_disabled_and_unimplemented(repo_config: AppConfig) -> None:
     assert forex.adapter == "forex_saxo"
     assert forex.watchlist == ("EURUSD", "GBPUSD", "USDJPY")
     assert Market.FOREX not in repo_config.enabled_markets
+
+
+def test_the_shipped_config_still_carries_the_live_settings(repo_config: AppConfig) -> None:
+    """Live mode is a **committed** value, so a laptop can flip it. This is the gate.
+
+    Added 2026-08-21 (hygiene session). Until M10a the server's ``config.yaml`` was
+    edited on the box, so ``dry_run: false`` lived there and not in git — and
+    ``ops/update.sh``'s ``git pull --ff-only`` REFUSED to run against a locally
+    modified file, which forced somebody to read the diff before discarding it. That
+    was never designed as a safeguard, but it was one.
+
+    The server file is now byte-identical to this one (verified on the box
+    2026-08-21), so that refusal cannot happen any more and the safeguard is gone.
+    Flipping either value below and merging would deploy silently: ``ops/update.sh``
+    pulls, rebuilds, restarts and reports healthy, and the config is baked into the
+    image with nothing mounted over it. Nobody would be asked anything.
+
+    **What this test is and is not.** Both flips already fail the suite today, by
+    accident — forex through ``test_the_shipped_config_is_still_single_market``, and
+    ``dry_run`` through ``test_the_new_config_and_the_legacy_one_agree_about_crypto``,
+    which compares against a frozen fixture that happens to pin ``false``. Neither
+    failure *says* what happened. This one does, in its own name. It is a diagnostic,
+    not a new safety net — and it gates the COMMIT, only when somebody runs
+    ``make check``. There is no CI. It does not protect the server; ``ops/update.sh``
+    printing the ``config.yaml`` diff at deploy time is what does.
+
+    **If you are here because this failed and you need to go quiet, use ``/pause``.**
+    It is a Telegram command, needs no deploy and no rebuild, and stops new signals
+    while the tracker keeps managing anything already open. Editing this test is for
+    deliberately changing what ships, which should be deliberate. Editing it to work
+    around an incident is the wrong tool and a slower one.
+    """
+    assert repo_config.market(Market.CRYPTO).dry_run is False, (
+        "markets.crypto.dry_run is committed as False — the crypto measurement window "
+        "is live. If you meant to enter dry run, that is a deliberate change to what "
+        "ships and this test changes with it. If you are in an incident, use /pause."
+    )
+    assert repo_config.market(Market.FOREX).enabled is False, (
+        "markets.forex.enabled is committed as False. Switching forex on is a "
+        "milestone with its own regeneration step (docs/DEPLOY.md §13b), not a "
+        "config edit — enabling it makes config.multi_market true and moves every "
+        "crypto card's bytes."
+    )
 
 
 def test_the_sub_budgets_deliberately_exceed_the_global_ceiling(

@@ -80,13 +80,22 @@ def test_agreement_is_silent() -> None:
 
 def test_only_exact_pins_fail() -> None:
     """``>=`` and ``~=`` both permit movement; treating either as a pin would fail the
-    gate for doing exactly what the declaration allows."""
+    gate for doing exactly what the declaration allows.
+
+    ``ccxt`` and ``pandas`` were the unpinned half of this test until 2026-08-21, when
+    the hygiene session pinned both (journal/HYGIENE_2026-08-21.md §2). ``uvicorn`` is
+    now the unpinned control, and it is deliberately still unpinned rather than merely
+    not got round to: it serves a loopback ``/health`` endpoint and touches no number
+    the product produces, and one live divergence keeps the WARN branch of this check
+    observable instead of leaving it exercised only by the synthetic cases below.
+    """
     declared = requirements()
 
     assert declared["anthropic"] == "0.125.0"
     assert declared["numpy"] == "2.2.6"
-    assert declared["pandas"] is None
-    assert declared["ccxt"] is None
+    assert declared["pandas"] == "3.0.5"
+    assert declared["ccxt"] == "4.5.75"
+    assert declared["uvicorn"] is None
 
 
 def test_names_are_normalised_on_both_sides() -> None:
@@ -110,7 +119,9 @@ def test_every_declared_dependency_is_covered() -> None:
     declared = requirements()
 
     assert len(declared) > 15
-    assert {"anthropic", "httpx", "matplotlib", "mplfinance", "numpy"} <= set(declared)
+    assert {"anthropic", "ccxt", "httpx", "matplotlib", "mplfinance", "numpy", "pandas"} <= set(
+        declared
+    )
 
 
 def test_dev_extras_are_excluded() -> None:

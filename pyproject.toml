@@ -24,8 +24,45 @@ dependencies = [
   "pyyaml>=6.0",
   "apscheduler>=3.10,<4",
   # M1 — ingestion (owner-approved 2026-08-18)
-  "ccxt>=4.4",
-  "pandas>=2.2",
+  #
+  # `ccxt` PINNED EXACTLY 2026-08-21 (hygiene session, owner ruling). It was `>=4.4`,
+  # and on `check_pins`' first real run it was one of the two unpinned divergences it
+  # reported: `.venv` had 4.5.74 and a freshly resolved image had **4.5.75**
+  # (journal/M10c_REPORT.md §12).
+  #
+  # This is the library every candle in the OPEN crypto measurement window arrives
+  # through — the OHLCV the features, the charts, the gate and every stored signal are
+  # computed from. Unpinned, it moves under a routine rebuild with nobody choosing it,
+  # and journal/HYGIENE_2026-08-21.md §1 makes that worse than it looks: `COPY
+  # config.yaml` sits ABOVE `RUN pip install .` in the Dockerfile, so **every** config
+  # change on the server re-resolves it. The version the measurement runs on would have
+  # been decided by whatever PyPI happened to be serving on the day somebody edited a
+  # watchlist entry.
+  #
+  # 4.5.75 is what the image resolved, measured rather than quoted — `make check-image`
+  # on 2026-08-21, image built 17:17 UTC, and `pip index versions ccxt` confirms 4.5.75
+  # is also the current release, so this pins to where a fresh resolve already lands
+  # rather than holding it back. `.venv` was brought UP to it; the image is what
+  # production runs and `.venv` is what must agree with it, never the other way round.
+  "ccxt==4.5.75",
+  # `pandas` PINNED EXACTLY 2026-08-21 (hygiene session, owner ruling). HANDOFF.md §4
+  # item 14 and journal/M10c_REPORT.md §12 both named this as deliberately deferred:
+  # it was `>=2.2` and sits in exactly the position numpy sat in, under every RSI, ATR
+  # and EMA value and under every chart byte, where an upstream change moves stored
+  # numbers with no error anywhere.
+  #
+  # Unlike numpy, this one was ALREADY IN AGREEMENT: `.venv` and the image both
+  # resolved **3.0.5**, which is why `check_pins` never warned about it — a divergence
+  # is the only thing it can see, and "both sides floating in step, for now" looks
+  # exactly like "fine". So the pin moves no version and cannot move a golden; it
+  # converts an accident into a decision. Verified after pinning: the golden, chart and
+  # indicator suites all byte-identical, 37 goldens untouched.
+  #
+  # Note it is a **3.x** pin. HANDOFF §4 item 14 was written assuming this stack was
+  # near the `>=2.2` floor; both environments had in fact been carried across a major
+  # version by ordinary resolution, unrecorded. That is the same defect one level up,
+  # and pinning is what stops the next one happening the same way.
+  "pandas==3.0.5",
   "feedparser>=6.0",
   # DECLARED 2026-08-21 (M10b-1), found by `make check-deps` on its very first run —
   # two more of the same defect httpx was. Both are imported DIRECTLY by our own code

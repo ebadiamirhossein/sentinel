@@ -178,18 +178,47 @@ mkdir -p /opt/sentinel/backups
 
 ## 6. `config.yaml` — start in dry run
 
+> **Correction (2026-08-21, from the hygiene session) — the command below was wrong
+> twice, and both are fixed in place rather than left to be copy-pasted.**
+> This is a runbook, not a spec: a wrong command here is a live hazard, so the text
+> is corrected and the original is quoted inside this block for the record instead of
+> being left standing beneath it.
+>
+> 1. **It was `grep -n "^dry_run" config.yaml`.** Since M10a there is no top-level
+>    `dry_run:` key — the only two live at `markets.crypto.dry_run` and
+>    `markets.forex.dry_run`, both indented. The `^` anchor matched nothing and the
+>    command printed no output at all, which reads exactly like "the file is fine".
+> 2. **`config.yaml` is read at IMAGE BUILD TIME, not at container start.**
+>    `Dockerfile` does `COPY config.yaml ./` and `docker-compose.yml` mounts no config
+>    volume onto the `app` service, so the running container reads `/app/config.yaml`
+>    out of the image layer. Editing the file on the host changes nothing until the
+>    image is rebuilt. §7's `docker compose up -d --build` is what applies it.
+>
+> The same two defects hit §13 and §13b step 5, which are corrected there.
+
 ```bash
-grep -n "^dry_run" config.yaml
+grep -n -A1 "^  crypto:" config.yaml    # markets.crypto — dry_run is indented under it
+grep -n "dry_run" config.yaml           # every dry_run in the file, at any indent
 ```
 
-It must say `dry_run: true` for the first 24 hours. In this mode the full cycle
-runs — ingestion, screener, charts, the analyst, the risk gate, storage, the
-tracker — and **publishes nothing to Telegram**. The card that would have been
+The crypto one must say `dry_run: true` for the first 24 hours. In this mode the
+full cycle runs — ingestion, screener, charts, the analyst, the risk gate, storage,
+the tracker — and **publishes nothing to Telegram**. The card that would have been
 sent is written to the log verbatim, the signal is stored with `dry_run=true`, and
 `/stats` reports it as its own population.
 
 A day of this produces a *measured* paper record instead of merely an absence of
 crashes. §13 is how you turn it off.
+
+**Confirm it from the running process, not from the file.** After §7's first boot,
+the value the container actually loaded is printed once at startup:
+
+```bash
+docker compose logs app | grep pipeline_scheduled     # dry_run={'crypto': True}
+```
+
+"The file on disk says `true`" is not evidence about what is running — see the
+correction above for why those two can differ.
 
 While you are in the file, `watchlist:` and the `risk:` block are worth a look —
 but the defaults are the ones every milestone was tested against.
@@ -235,8 +264,21 @@ yet. The first scan runs one scan interval (60 min) after boot.
 docker compose logs --tail=50 app
 ```
 
-Expect `app.started`, `scheduler.pipeline_scheduled` (with `dry_run=true`) and
-`bot.polling_started`. `bot.disabled` means the Telegram token is missing.
+Expect `app.started`, `scheduler.pipeline_scheduled` and `bot.polling_started`.
+`bot.disabled` means the Telegram token is missing.
+
+`scheduler.pipeline_scheduled` is the one line that says what the process actually
+loaded, so it is worth reading rather than just counting:
+
+```
+scheduler.pipeline_scheduled markets=['crypto'] job_ids=['scan:crypto', 'tracker']
+  scan_interval_minutes={'crypto': 60} tracker_interval_seconds=60
+  dry_run={'crypto': True}
+```
+
+`dry_run` and `job_ids` are read from the config **inside the container** — which is
+not necessarily the file you last edited on the host (§6's correction). This line is
+the evidence; the file is not.
 
 ### 8.3 The bot
 
@@ -481,6 +523,60 @@ Backs up first, then `git pull --ff-only`, rebuilds the image, restarts the app,
 and waits for `/health`. Downtime is one container restart — seconds. Migrations
 run from the app's own entrypoint, so there is no separate step to forget.
 
+> **Correction (2026-08-21, from the hygiene session) — the blockquote below no
+> longer describes this server, and what replaced it is more dangerous than what it
+> warned about.** The original text is left standing beneath, unedited, because a
+> runbook that quietly rewrites itself cannot be checked against the state it
+> recorded. Read this first, then it.
+>
+> **What was verified on the live server, 2026-08-21:**
+>
+> ```
+> $ grep -n "markets:\|dry_run\|llm_reserved_floor_usd" config.yaml
+> 21:markets:
+> 23:    enabled: true          # markets.crypto
+> 31:    dry_run: false         # markets.crypto
+> 72:    llm_reserved_floor_usd: 8
+> 86:    enabled: false         # markets.forex
+> 87:    dry_run: true          # markets.forex
+>
+> $ git diff config.yaml
+> (no output — the server file is byte-identical to the committed one)
+> ```
+>
+> So the server's `config.yaml` **has no local edits at all**, and has had a
+> `markets:` block since some earlier deploy. The collision the blockquote below
+> tells you to expect **did not happen on the M10c deploy and will not happen**
+> while the file stays clean. Its recovery procedure is still correct *if* somebody
+> ever does edit the file on the box — it is kept for that reason, not deleted.
+>
+> **THE STANDING HAZARD THIS CREATES.** Because the server file is clean,
+> `dry_run: false` — live mode — now lives **in git**, not as a local edit on the
+> box. The old safeguard was exactly the failure the blockquote complains about:
+> `git pull --ff-only` refusing to run forced somebody to read the diff before
+> discarding it. **That safeguard is gone, precisely because the file is clean.**
+>
+> Live mode can now be flipped from a laptop by a merge, silently, and this deploy
+> will succeed: `ops/update.sh` pulls, rebuilds, restarts and reports healthy.
+> `Dockerfile`'s `COPY config.yaml ./` bakes the committed file straight into the
+> image and `docker-compose.yml` mounts nothing over it, so there is no server-side
+> copy that would win.
+>
+> Two things now stand in its way, and neither is a substitute for reading:
+>
+> * `ops/update.sh` prints `git diff <previous> HEAD -- config.yaml` after the pull
+>   and before the build. **Read it.** It says "config.yaml: unchanged in this
+>   update" when there is nothing to see, so silence is never ambiguous.
+> * `make check` fails if the shipped `config.yaml` has `markets.crypto.dry_run`
+>   true or `markets.forex.enabled` true
+>   (`tests/test_config.py::test_the_shipped_config_still_carries_the_live_settings`).
+>   That gates the **commit**, and only if somebody runs the gate — there is no CI
+>   in this repository. It does not protect the server.
+>
+> **To go the other way in a hurry, use `/pause`, not a config edit.** It is a
+> Telegram command, needs no deploy and no rebuild, and stops new signals while the
+> tracker keeps managing anything already open.
+
 > **`config.yaml` is tracked, and §6 and §13 edit it in place on the server.** So
 > `git pull --ff-only` fails whenever a commit also changes that file — which is
 > not rare: M10a, M10b-1 and M10b-2 all changed it. The symptom is
@@ -518,20 +614,71 @@ To watch it come up: `docker compose logs -f app`.
 
 ## 13. Going live (after 24h of dry run)
 
+> **Correction (2026-08-21, from the hygiene session) — step 3 could not have
+> worked, and was never run.** Corrected in place rather than left beneath a note,
+> because this is the one command in the runbook that decides whether real money is
+> at stake and nobody should be able to copy-paste the broken version. What it said
+> was:
+>
+> ```bash
+> sed -i 's/^dry_run: true/dry_run: false/' config.yaml
+> docker compose restart app
+> ```
+>
+> **Both lines are wrong, independently.**
+>
+> 1. The `sed` is anchored to line start with `^`. Since M10a the only `dry_run`
+>    keys are `markets.crypto.dry_run` and `markets.forex.dry_run`, both indented
+>    four spaces. It matched nothing, changed nothing, and **exited 0**.
+> 2. `docker compose restart app` restarts the existing container from the existing
+>    image. `Dockerfile` does `COPY config.yaml ./` and `docker-compose.yml` mounts
+>    no config volume onto `app`, so the config lives in the image layer. A host-side
+>    edit reaches the running system only after a **rebuild**. Plain
+>    `docker compose up -d` is also a no-op here — Compose recreates a container only
+>    when its *definition* changes, and editing a host file does not change it.
+>
+> Had anybody run step 3 as written, it would have printed nothing, exited 0, and
+> left the system in rehearsal while every subsequent check said it was fine. Going
+> live on 2026-08-19 evidently happened another way — by committing `dry_run: false`
+> and deploying through §12, which rebuilds. The procedure survived unexecuted, which
+> is why the defect survived with it.
+>
+> Note the consequence for §12's hazard block: because `dry_run` is now a committed
+> value, the corrected procedure below is **not** how live mode normally changes any
+> more. A merge does it. Read §12.
+
 1. Read the rehearsal record: `/stats` in Telegram. The **DRY RUN** population is
    its own set of numbers and is never merged into the real book.
 2. Confirm the spend was what you expected: `python -m sentinel.tools.spend`.
-3. Then, and only then:
+3. Then, and only then — edit the file by hand, because the key is nested:
 
 ```bash
 cd /opt/sentinel
-sed -i 's/^dry_run: true/dry_run: false/' config.yaml
-docker compose restart app
-docker compose logs --tail=20 app | grep pipeline_scheduled   # dry_run=False
+$EDITOR config.yaml                 # markets: → crypto: → dry_run: false
+grep -n "dry_run" config.yaml       # confirm the CRYPTO one, indented, now says false
 ```
 
+4. Rebuild and recreate. A restart is not enough — the config is baked into the
+   image (see the correction above):
+
+```bash
+docker compose up -d --build app
+```
+
+5. Confirm from the **running process**, not from the file. This line is emitted at
+   startup by the container, out of the config it actually loaded:
+
+```bash
+docker compose logs --tail=20 app | grep pipeline_scheduled
+# markets=['crypto'] job_ids=['scan:crypto', 'tracker'] dry_run={'crypto': False}
+```
+
+If that says `True`, the rebuild did not take and you are still in rehearsal —
+whatever the file on disk says.
+
 The next approved plan is posted for real. `/pause` stops new signals at any time;
-the tracker keeps managing anything already open.
+the tracker keeps managing anything already open, and it is the right lever for
+going quiet in a hurry — it needs no deploy and no rebuild.
 
 ## 13a. Letting somebody else in (M8.1)
 
@@ -563,6 +710,47 @@ is how you would read somebody else's book from the server if you ever had to �
 deliberately a shell command on the box, not a Telegram command.
 
 ## 13b. Enabling forex — what must be on the server first
+
+> **Correction (2026-08-21, from the hygiene session) — this section's opening
+> premise is false, and its prerequisite is already satisfied.** The text below is
+> left standing unedited, apart from step 5, because a runbook that quietly rewrites
+> itself cannot be checked against the state it recorded. Read this first.
+>
+> **"The problem" below says the server's `config.yaml` predates M10a and has no
+> `markets:` block at all. It does have one.** Verified on the live server,
+> 2026-08-21:
+>
+> ```
+> $ grep -n "markets:\|dry_run\|llm_reserved_floor_usd" config.yaml
+> 21:markets:
+> 23:    enabled: true          # markets.crypto
+> 31:    dry_run: false         # markets.crypto
+> 72:    llm_reserved_floor_usd: 8
+> 86:    enabled: false         # markets.forex
+> 87:    dry_run: true          # markets.forex
+>
+> $ git diff config.yaml
+> (no output — the server file is byte-identical to the committed one)
+> ```
+>
+> Both bullets under "The problem" are therefore out of date: the server **has** a
+> `markets.forex` section, and it **has** `markets.crypto.llm_reserved_floor_usd: 8`.
+> Some earlier deploy applied step 3 of the procedure below as a side effect —
+> `git pull` rewrote the file because there was nothing local to collide with.
+>
+> **So steps 2, 3 and 4 are already done, and there is nothing to reconstruct.**
+> Switch-on day is step 6 alone: one line, `markets.forex.enabled: false` → `true`,
+> committed and deployed through §12. The floor is already in with the block, which
+> is what steps 3-4 existed to guarantee.
+>
+> **Step 5 is corrected in place**, because it carried the same defect §13 did: it
+> said `docker compose restart app`, and a restart cannot apply a config change. The
+> config is `COPY`-ed into the image (`Dockerfile`) with no volume mounted over it
+> (`docker-compose.yml`), so a rebuild is required. See §13's correction.
+>
+> Nothing else in this section changes. The credentials paragraph, the floor
+> argument, the warning about `config.multi_market` moving crypto's card bytes, and
+> the "forex starts in dry_run" rule all stand as written.
 
 **Not yet.** Forex ships disabled and cannot produce a signal until M10c adds the
 card and the tracker. This section exists because the prerequisite is a config
@@ -607,11 +795,19 @@ correct and is why nothing has broken. But it means the server carries:
    spend the shared dollar while crypto's measurement window is running, which is
    the exact failure FOREX.md §13 decision 6 exists to prevent. Config load will
    not complain: a missing floor is a valid zero.
-5. Restart and confirm the job list is still one scan:
+5. Rebuild, recreate, and confirm the job list from the **running process**. A
+   restart cannot apply a config change — the config is baked into the image (see
+   the correction at the top of this section):
    ```bash
-   docker compose restart app
+   docker compose up -d --build app
    docker compose logs --tail=20 app | grep pipeline_scheduled
    ```
+   Before switch-on that line reads
+   `markets=['crypto'] job_ids=['scan:crypto', 'tracker']`. After it, expect
+   `markets=['crypto', 'forex']` and **four** ids —
+   `['scan:crypto', 'scan:forex', 'tracker', 'tracker:forex']`. Note crypto's
+   tracker keeps the bare id `tracker` it has had since M7: APScheduler keys on the
+   id and the running deployment's job is that one (journal/M10c_REPORT.md §11).
 6. Only then, and only when M10c has shipped, set `markets.forex.enabled: true`.
    Forex starts in `dry_run: true` and stays there until the numbers justify
    otherwise (FOREX.md §11).

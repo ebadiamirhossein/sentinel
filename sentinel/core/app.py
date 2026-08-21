@@ -200,16 +200,25 @@ def _schedule_pipeline(
 
         return track
 
+    # Every id this function registers, in registration order, for the log line
+    # below. Collected here rather than read back from `scheduler.get_jobs()`,
+    # because the heartbeat job is registered before this function is called and
+    # would silently join the list — this field is meant to say what the PIPELINE
+    # registered, and nothing else.
+    job_ids: list[str] = []
+
     for market in settings.config.enabled_markets:
+        scan_id = f"scan:{market.value}"
         scheduler.add_job(
             scan_for(market),
             trigger="interval",
             minutes=settings.config.market(market).scan_interval_minutes,
-            id=f"scan:{market.value}",
+            id=scan_id,
             replace_existing=True,
             max_instances=1,
             coalesce=True,
         )
+        job_ids.append(scan_id)
     for market in settings.config.enabled_markets:
         # The crypto job keeps the bare id ``tracker`` it has had since M7. Renaming it
         # would be a live-system change for tidiness: APScheduler keys on the id, and
@@ -224,9 +233,17 @@ def _schedule_pipeline(
             max_instances=1,
             coalesce=True,
         )
+        job_ids.append(job_id)
     log.info(
         "scheduler.pipeline_scheduled",
         markets=[market.value for market in settings.config.enabled_markets],
+        # M10c §11 asserts crypto's tracker keeps the bare id ``tracker``, and that
+        # assertion was checkable only from the test suite: APScheduler's own boot
+        # line logs the FUNCTION name (``track_for.<locals>.track``), so the deploy
+        # could not confirm it (journal/M10c_REPORT.md, Deployed §2). This puts the
+        # ids where a human on the box can read them. On switch-on day there will be
+        # two tracker jobs and the difference will matter.
+        job_ids=job_ids,
         scan_interval_minutes={
             market.value: settings.config.market(market).scan_interval_minutes
             for market in settings.config.enabled_markets
