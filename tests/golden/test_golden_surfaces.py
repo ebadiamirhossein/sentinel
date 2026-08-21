@@ -18,7 +18,9 @@ from typing import Any
 
 import pytest
 
-from sentinel.core.config import load_config
+from sentinel.core.config import AppConfig, load_config
+from sentinel.core.markets import Market
+from tests.golden.pipeline import single_market
 from tests.golden.surfaces import render_surfaces
 
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "golden_cycle" / "surfaces"
@@ -44,7 +46,14 @@ TEXT_SURFACES = (
 
 @pytest.fixture(scope="module")
 def surfaces() -> dict[str, Any]:
-    return render_surfaces()
+    """The **single-market** form: what every surface renders with one market enabled.
+
+    ``single_market()`` since M10d, where it was a bare ``render_surfaces()`` before.
+    The shipped config now enables both markets, so the default would render the
+    *tagged* form and compare it against the untagged fixtures below. The bytes did
+    not move; which config produces them did. See ``tests/golden/pipeline.single_market``.
+    """
+    return render_surfaces(single_market(load_config()))
 
 
 @pytest.mark.parametrize("name", TEXT_SURFACES)
@@ -95,22 +104,60 @@ def test_every_surface_this_milestone_touches_has_a_golden(
 LEGACY_DEPLOYED = Path(__file__).resolve().parents[1] / "fixtures" / "config_legacy_deployed.yaml"
 
 
-@pytest.mark.parametrize("name", TEXT_SURFACES)
-def test_the_deployed_config_renders_the_same_surface(surfaces: dict[str, Any], name: str) -> None:
-    """Every surface, rendered from the config the live system loads.
+def as_legacy_settings(config: AppConfig) -> AppConfig:
+    """The shipped config with the one setting the legacy shape cannot express.
 
-    The strongest form of M10a's promise. The goldens above are produced from the
-    repo's new ``markets:``-shaped file; this asserts the *deployed* legacy-shaped
-    file produces the identical text, character for character. It is how the
-    ``$10`` → ``$10.0`` regression was caught — ``Decimal`` equality said the two
+    **Needed from M10d, and the reason is about the shapes rather than about a
+    number.** A pre-M10a config has no global ceiling: ``llm.daily_spend_limit_usd``
+    is simultaneously the deployment's limit *and* the single market's budget, and
+    ``normalise_markets`` synthesises ``markets.crypto.llm_daily_budget_usd`` from it.
+    The ``markets:`` shape splits those into two keys, and M10d gives them different
+    values — crypto keeps 10, the deployment ceiling goes to 20 for the forex
+    observation window.
+
+    So the two files now genuinely disagree about the deployment-wide spend line, and
+    they disagree because one shape cannot say what the other says. Holding that one
+    setting equal is what keeps this test a statement about **shape**, which is what
+    it claims to be. Raising the number in the frozen fixture instead was tried and is
+    wrong: there the key means *crypto's budget*, so it would assert crypto's budget
+    had doubled, which it has not.
+    """
+    return config.model_copy(
+        update={
+            "llm": config.llm.model_copy(
+                update={
+                    "daily_spend_limit_usd": config.market(Market.CRYPTO).llm_daily_budget_usd,
+                    "daily_spend_warn_usd": config.market(Market.CRYPTO).llm_daily_warn_usd,
+                }
+            )
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def as_legacy() -> dict[str, Any]:
+    return render_surfaces(as_legacy_settings(single_market(load_config())))
+
+
+@pytest.mark.parametrize("name", TEXT_SURFACES)
+def test_the_deployed_config_renders_the_same_surface(as_legacy: dict[str, Any], name: str) -> None:
+    """Every surface, rendered from both shapes of the same settings.
+
+    The strongest form of M10a's promise: the legacy-shaped file and the
+    ``markets:``-shaped one produce identical text, character for character. It is how
+    the ``$10`` → ``$10.0`` regression was caught — ``Decimal`` equality said the two
     configs agreed, and the rendered card said otherwise.
+
+    The M10d correction is in ``as_legacy_settings``: the comparison holds the one
+    setting the legacy shape cannot express, so that a deliberate change to the
+    deployment ceiling is not reported as a shape difference.
     """
     legacy = render_surfaces(load_config(LEGACY_DEPLOYED))
 
-    assert legacy[name] == surfaces[name], REGENERATE
+    assert legacy[name] == as_legacy[name], REGENERATE
 
 
-def test_the_deployed_config_produces_the_same_journal(surfaces: dict[str, Any]) -> None:
+def test_the_deployed_config_produces_the_same_journal(as_legacy: dict[str, Any]) -> None:
     legacy = render_surfaces(load_config(LEGACY_DEPLOYED))
 
-    assert legacy["journal"] == surfaces["journal"], REGENERATE
+    assert legacy["journal"] == as_legacy["journal"], REGENERATE

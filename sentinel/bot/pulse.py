@@ -206,6 +206,11 @@ SKIP_WORDING: dict[str, str] = {
     # rather than discovered missing on switch-on day.
     "MARKET_CLOSED": "the market is closed",
     "NO_DATA": "no usable market data arrived for it",
+    # M10d. Both are forex-only. The first is a config window rather than the venue:
+    # the market is open and we chose not to look, which is a different answer to
+    # "why was it quiet" and deserves different words.
+    "OUTSIDE_SCAN_HOURS": "outside the hours forex is scanned",
+    "MARKET_CONDITION": "a market-condition rail blocked it before analysis",
 }
 
 #: The three whose wording is derived from somebody's book rather than from the

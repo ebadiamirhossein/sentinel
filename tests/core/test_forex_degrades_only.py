@@ -634,19 +634,57 @@ async def test_the_forex_market_is_closed(
 async def test_the_forex_sub_budget_is_exhausted(
     live_settings: Settings, crypto_store: CycleStore, crypto_snapshot: MarketSnapshot
 ) -> None:
-    """M10a's two-tier guard, from the other side: forex over its own $4 while the
-    deployment is under the $11 ceiling stops forex and nothing else."""
-    config = live_settings.config
+    """M10a's two-tier guard, from the other side: forex over its **own** sub-budget
+    while the deployment is under the ceiling stops forex and nothing else.
+
+    The figures are derived from the config rather than written as 4.50 and 6.00, so
+    the rail raise M10d made for the observation window did not turn this test — whose
+    subject is which market gets stopped — into a test of two numbers.
+    """
+    # A sub-budget SMALL enough to be the binding constraint, built here rather than
+    # read from the shipped config — and the reason is itself the finding.
+    #
+    # With M10d's observation-window rails, forex's own budget (16) sits ABOVE the
+    # ceiling crypto's reserved floor leaves it (20 - 8 = 12), so the reserve always
+    # bites first and `SpendScope.MARKET` is unreachable for forex on the shipped
+    # numbers. That is the intended design — sub-budgets sum past the ceiling so the
+    # markets compete — but it means this test's subject, "a market's OWN budget stops
+    # it and nothing else", cannot be staged from config.yaml any more. Staging it
+    # explicitly keeps the test about the guard; what the shipped numbers do has its
+    # own file, tests/core/test_forex_spend_guards.py.
+    base = live_settings.config
+    forex_budget = Decimal("4.00")
+    config = base.model_copy(
+        update={
+            "markets": {
+                **base.markets,
+                Market.FOREX: base.market(Market.FOREX).model_copy(
+                    update={"llm_daily_budget_usd": forex_budget}
+                ),
+            }
+        }
+    )
+    over_its_own = forex_budget + Decimal("0.50")
+    crypto_spent = Decimal("1.50")
+    everywhere = over_its_own + crypto_spent
+    reserve_ceiling = (
+        config.llm_daily_budget_global_usd - config.market(Market.CRYPTO).llm_reserved_floor_usd
+    )
+    assert over_its_own < reserve_ceiling, (
+        "the scenario needs forex's OWN budget to be what stops it, not the reserve"
+    )
+    assert everywhere < config.llm_daily_budget_global_usd
+
     forex_verdict = evaluate_market_spend(
-        market_totals=SpendTotals(day_usd=Decimal("4.50"), month_usd=Decimal("4.50")),
-        global_totals=SpendTotals(day_usd=Decimal("6.00"), month_usd=Decimal("6.00")),
+        market_totals=SpendTotals(day_usd=over_its_own, month_usd=over_its_own),
+        global_totals=SpendTotals(day_usd=everywhere, month_usd=everywhere),
         market=config.market(Market.FOREX),
         global_limit_usd=config.llm_daily_budget_global_usd,
         config=config.llm,
     )
     crypto_verdict = evaluate_market_spend(
-        market_totals=SpendTotals(day_usd=Decimal("1.50"), month_usd=Decimal("1.50")),
-        global_totals=SpendTotals(day_usd=Decimal("6.00"), month_usd=Decimal("6.00")),
+        market_totals=SpendTotals(day_usd=crypto_spent, month_usd=crypto_spent),
+        global_totals=SpendTotals(day_usd=everywhere, month_usd=everywhere),
         market=config.market(Market.CRYPTO),
         global_limit_usd=config.llm_daily_budget_global_usd,
         config=config.llm,

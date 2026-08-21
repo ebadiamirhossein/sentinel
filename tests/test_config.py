@@ -247,15 +247,24 @@ def test_the_money_values_render_identically_too(repo_config: AppConfig, field: 
     assert str(new) == str(old)
 
 
-def test_forex_ships_disabled_and_unimplemented(repo_config: AppConfig) -> None:
-    """M10a adds the dimension and no forex code. The config says so out loud."""
+def test_forex_ships_enabled_and_live_published(repo_config: AppConfig) -> None:
+    """**Inverted at M10d.** This asserted `enabled is False` and `dry_run is True`.
+
+    ``dry_run: false`` is the part worth stating rather than assuming, because it
+    contradicts FOREX.md §11's "forex starts in DRY_RUN" and the contradiction is
+    deliberate. journal/M7_REPORT.md settled what dry_run does: it publishes NOTHING —
+    the card is rendered, logged, and never seen. The goal of the observation window is
+    that the owner READS real forex cards and does not trade them; "not trading" is his
+    hand, not a flag, and a rehearsal that shows him nothing rehearses nothing.
+    Owner decision, 2026-08-21.
+    """
     forex = repo_config.market(Market.FOREX)
 
-    assert forex.enabled is False
-    assert forex.dry_run is True
+    assert forex.enabled is True
+    assert forex.dry_run is False
     assert forex.adapter == "forex_saxo"
     assert forex.watchlist == ("EURUSD", "GBPUSD", "USDJPY")
-    assert Market.FOREX not in repo_config.enabled_markets
+    assert Market.FOREX in repo_config.enabled_markets
 
 
 def test_the_shipped_config_still_carries_the_live_settings(repo_config: AppConfig) -> None:
@@ -293,27 +302,61 @@ def test_the_shipped_config_still_carries_the_live_settings(repo_config: AppConf
         "is live. If you meant to enter dry run, that is a deliberate change to what "
         "ships and this test changes with it. If you are in an incident, use /pause."
     )
-    assert repo_config.market(Market.FOREX).enabled is False, (
-        "markets.forex.enabled is committed as False. Switching forex on is a "
-        "milestone with its own regeneration step (docs/DEPLOY.md §13b), not a "
-        "config edit — enabling it makes config.multi_market true and moves every "
-        "crypto card's bytes."
+    assert repo_config.market(Market.FOREX).enabled is True, (
+        "markets.forex.enabled is committed as True for the observation window that "
+        "opened 2026-08-21 and is REVIEWED 2026-09-04. Turning it back off is as "
+        "deliberate as turning it on was: it is a config edit that needs a REBUILD "
+        "(the config is baked into the image), and this test changes with it. If you "
+        "are in an incident, use /pause forex — it needs no deploy, stops forex "
+        "spending as well as publishing, and leaves the crypto measurement running."
+    )
+    assert repo_config.market(Market.FOREX).dry_run is False, (
+        "markets.forex.dry_run is committed as False, against FOREX.md §11's default, "
+        "because M7 proved dry_run publishes nothing and the point of this window is "
+        "that the owner reads real cards."
     )
 
 
 def test_the_sub_budgets_deliberately_exceed_the_global_ceiling(
     repo_config: AppConfig,
 ) -> None:
-    """10 + 4 against 11, on purpose (M10a Step 4).
+    """10 + 16 against 20, on purpose (M10a Step 4; the numbers moved at M10d).
 
     Budgets that summed to the ceiling would let a quiet market reserve money a busy
     one could use. Asserted rather than left as a comment, because it looks exactly
     like an arithmetic mistake and somebody would "fix" it.
+
+    The **relationship** is what is pinned, and the literal ceiling is asserted
+    separately below so that re-tuning the window's rails is one obvious edit rather
+    than a hunt.
     """
     total = sum(repo_config.market(market).llm_daily_budget_usd for market in repo_config.markets)
 
     assert total > repo_config.llm_daily_budget_global_usd
-    assert repo_config.llm_daily_budget_global_usd == Decimal("11")
+
+
+def test_the_observation_windows_rails_are_the_committed_ones(repo_config: AppConfig) -> None:
+    """The raised rails, written down once so reverting them is a single obvious edit.
+
+    Raised 2026-08-21 for the forex observation window. **REVIEW 2026-09-04.** Revert
+    values: global 11, forex 4/3, llm 10/7. A spend rail raised for a rehearsal and
+    never lowered is how the $73/day incident started, so the way back is asserted
+    beside the way forward rather than living only in a config comment.
+
+    ``llm.daily_spend_warn_usd`` is here because it is the one that is easy to leave
+    behind: ``evaluate_market_spend`` reads it as the GLOBAL warn, so at 7 against a
+    $20 ceiling it would fire a Telegram spend notice every single day.
+    """
+    assert repo_config.llm_daily_budget_global_usd == Decimal("20")
+    assert repo_config.market(Market.FOREX).llm_daily_budget_usd == Decimal("16")
+    assert repo_config.market(Market.FOREX).llm_daily_warn_usd == Decimal("12")
+    assert repo_config.llm.daily_spend_limit_usd == Decimal("20")
+    assert repo_config.llm.daily_spend_warn_usd == Decimal("16")
+
+    # Untouched by the window, and that is the point of the floor.
+    assert repo_config.market(Market.CRYPTO).llm_daily_budget_usd == Decimal("10")
+    assert repo_config.market(Market.CRYPTO).llm_daily_warn_usd == Decimal("7")
+    assert repo_config.market(Market.CRYPTO).llm_reserved_floor_usd == Decimal("8")
 
 
 def test_a_config_carrying_both_shapes_is_refused(tmp_path: Path) -> None:

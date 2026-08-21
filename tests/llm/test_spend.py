@@ -84,23 +84,38 @@ def test_a_quiet_day_is_ok(config: AppConfig) -> None:
 
 
 def test_crossing_the_warn_level_warns_without_suspending(config: AppConfig) -> None:
-    assert config.llm.daily_spend_warn_usd == Decimal("7")
-    assert evaluate_spend(totals(day="7.00"), config.llm) is SpendState.WARN
-    assert evaluate_spend(totals(day="9.99"), config.llm) is SpendState.WARN
+    """Read off the configured levels rather than off 7 and 10.
+
+    They were literals until M10d raised the rails for the forex observation window
+    and every one of these failed for a reason that had nothing to do with the guard.
+    What is worth pinning is the *boundary behaviour*; the numbers are the owner's and
+    they move.
+    """
+    warn = config.llm.daily_spend_warn_usd
+    limit = config.llm.daily_spend_limit_usd
+    assert warn < limit, "a warn level at or above the limit is a misconfiguration"
+
+    assert evaluate_spend(totals(day=str(warn)), config.llm) is SpendState.WARN
+    assert evaluate_spend(totals(day=str(warn - Decimal("0.01"))), config.llm) is SpendState.OK
+    assert evaluate_spend(totals(day=str(limit - Decimal("0.01"))), config.llm) is SpendState.WARN
 
 
 def test_reaching_the_limit_suspends(config: AppConfig) -> None:
-    """``>=``, not ``>``: $10.00 spent against a $10 limit is the limit reached.
+    """``>=``, not ``>``: spending exactly the limit is the limit reached.
     Waiting for a cent more would let a run of cheap calls sit at the ceiling."""
-    assert config.llm.daily_spend_limit_usd == Decimal("10")
-    assert evaluate_spend(totals(day="10.00"), config.llm) is SpendState.LIMIT_REACHED
-    assert evaluate_spend(totals(day="41.00"), config.llm) is SpendState.LIMIT_REACHED
+    limit = config.llm.daily_spend_limit_usd
+    assert evaluate_spend(totals(day=str(limit - Decimal("0.01"))), config.llm) is not (
+        SpendState.LIMIT_REACHED
+    )
+    assert evaluate_spend(totals(day=str(limit)), config.llm) is SpendState.LIMIT_REACHED
+    assert evaluate_spend(totals(day=str(limit * 4)), config.llm) is SpendState.LIMIT_REACHED
 
 
 def test_the_limit_outranks_the_warning(config: AppConfig) -> None:
     """A day past the limit is not merely a warning, whatever order the thresholds
     happen to be configured in."""
-    assert evaluate_spend(totals(day="12"), config.llm) is SpendState.LIMIT_REACHED
+    over = config.llm.daily_spend_limit_usd + Decimal("2")
+    assert evaluate_spend(totals(day=str(over)), config.llm) is SpendState.LIMIT_REACHED
 
 
 def test_a_warn_level_above_the_limit_never_masks_the_limit(config: AppConfig) -> None:

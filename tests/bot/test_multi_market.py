@@ -42,8 +42,21 @@ NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
 
 def enabled_forex(config: AppConfig) -> AppConfig:
-    """The shipped config with forex switched on. Config only — no adapter exists."""
+    """Forex switched on. A no-op on the shipped config since M10d, kept because
+    several tests build a single-market one and want the other form."""
     forex = config.market(Market.FOREX).model_copy(update={"enabled": True})
+    return config.model_copy(update={"markets": {**config.markets, Market.FOREX: forex}})
+
+
+def disabled_forex(config: AppConfig) -> AppConfig:
+    """Forex switched off — what the shipped config was until M10d.
+
+    The three tests below are about **a disabled market**, not about which market
+    happens to be disabled this month, so they now say so explicitly rather than
+    leaning on the shipped flag. Leaning on it is why they broke on switch-on day, and
+    the version that reads the shipped config was only ever testing the config.
+    """
+    forex = config.market(Market.FOREX).model_copy(update={"enabled": False})
     return config.model_copy(update={"markets": {**config.markets, Market.FOREX: forex}})
 
 
@@ -104,11 +117,15 @@ async def run(handler: Any, ctx: BotContext, args: str | None = None) -> FakeMes
 def test_the_header_is_empty_with_one_market(repo_config: AppConfig) -> None:
     """The whole "crypto output does not change" promise, in one function.
 
-    Every surface asks ``section_header``; with forex disabled it answers with
-    nothing, and there is exactly one place for that to be wrong.
+    Every surface asks ``section_header``; with one market it answers with nothing,
+    and there is exactly one place for that to be wrong. specs/TELEGRAM_UX.md §3e
+    keeps promising it after switch-on, so it keeps being asserted after switch-on —
+    against an explicitly single-market config rather than against the shipped one.
     """
-    assert section_header(Market.CRYPTO, repo_config) == ""
-    assert repo_config.multi_market is False
+    single = disabled_forex(repo_config)
+
+    assert section_header(Market.CRYPTO, single) == ""
+    assert single.multi_market is False
 
 
 def test_the_header_names_the_market_once_two_are_enabled(repo_config: AppConfig) -> None:
@@ -176,7 +193,7 @@ def test_a_named_market_narrows(repo_config: AppConfig) -> None:
 def test_a_disabled_market_is_an_error_not_an_empty_answer(repo_config: AppConfig) -> None:
     """Somebody asking for forex today is told it is switched off, rather than
     handed a blank card they would read as "no signals yet"."""
-    refused = resolve_markets("forex", repo_config)
+    refused = resolve_markets("forex", disabled_forex(repo_config))
 
     assert isinstance(refused, Invalid)
     assert "not enabled" in refused.message
@@ -279,7 +296,7 @@ async def test_pulse_can_be_narrowed_to_one_market(
 
 
 async def test_pulse_refuses_a_disabled_market(store: FakeStore, repo_config: AppConfig) -> None:
-    message = await run(commands.pulse, context(store, repo_config), "forex")
+    message = await run(commands.pulse, context(store, disabled_forex(repo_config)), "forex")
 
     assert "not enabled" in message.last
     assert_sendable(message.last)

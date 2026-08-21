@@ -30,7 +30,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 from unittest.mock import patch
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -417,8 +417,17 @@ class _LLMCalls(_Repo):
 
 
 class _Pause(_Repo):
+    """The operator's pause rails, from the store rather than hardcoded absent (M10d).
+
+    They returned a bare ``PauseState()`` while nothing in a forex cycle read them
+    before the fan-out. ``/pause forex`` now stops the cycle **before the analyst**
+    (§16.5's "guards before spend"), so a double that could not express a pause could
+    not test the switch at all — and the switch existing is what makes a two-week
+    live observation window safe to start.
+    """
+
     async def load(self, user_id: int | None = None) -> PauseState:
-        return PauseState()
+        return self.store.pause
 
 
 class _SettingsRepo(_Repo):
@@ -520,18 +529,39 @@ def _forex_settings(config: AppConfig) -> Settings:
     )
 
 
+class ForexCycleRun(NamedTuple):
+    """What one driven cycle leaves behind, including what it never asked for."""
+
+    result: Any
+    published: list[Any]
+    store: CycleStore
+    fx_client: _FxClient
+    transport: SyntheticSaxo
+
+
 async def _no_setup_stats(*args: Any, **kwargs: Any) -> list[Any]:
     """No resolved outcomes yet, which is what a fresh forex book actually has."""
     return []
 
 
 async def run_forex_cycle(
-    config: AppConfig, *, calendar: EconomicCalendar, store: CycleStore | None = None
-) -> tuple[Any, list[Any], CycleStore, _FxClient]:
+    config: AppConfig,
+    *,
+    calendar: EconomicCalendar,
+    store: CycleStore | None = None,
+    now: datetime | None = None,
+) -> ForexCycleRun:
+    """One real forex cycle over a synthetic venue.
+
+    Returns the **transport** as well, because two of M10d's assertions are about
+    requests that were never made: "outside the scan window this costs zero, not
+    cheap" is a claim about the venue, and a result object cannot distinguish a cycle
+    that fetched three tails and declined to analyse from one that never asked.
+    """
     store = store or CycleStore()
     store.users = [owner_account(7222549221, capital_eur=CAPITAL_EUR)]
     published: list[Any] = []
-    transport = SyntheticSaxo()
+    transport = SyntheticSaxo(now=now) if now is not None else SyntheticSaxo()
     fx_client = _FxClient()
     tz = ZoneInfo("Europe/Vilnius")
 
@@ -576,7 +606,7 @@ async def run_forex_cycle(
         patch.object(orchestrator_module, "setup_stats", _no_setup_stats),
     ):
         result = await engine.run()
-    return result, published, store, fx_client
+    return ForexCycleRun(result, published, store, fx_client, transport)
 
 
 async def test_the_forex_analyst_is_never_handed_an_empty_history_block() -> None:
@@ -612,7 +642,7 @@ async def test_a_full_forex_cycle_reaches_a_published_card() -> None:
     """
     config = load_config()
     now = SyntheticSaxo().now
-    result, published, _store, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
+    result, published, _store, _, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
 
     assert result.error is None
     assert result.market is Market.FOREX
@@ -632,7 +662,7 @@ async def test_the_cycle_fetches_the_euro_rate_for_every_quote_currency() -> Non
     """§7.1: USDJPY sizes through EURJPY, so one request must cover USD **and** JPY."""
     config = load_config()
     now = SyntheticSaxo().now
-    _, _, store, fx_client = await run_forex_cycle(config, calendar=calendar_covering(now))
+    _, _, store, fx_client, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
 
     assert fx_client.asked == [("JPY", "USD")]
     assert set(store.fx_rates) == {"EURUSD", "EURJPY"}
@@ -642,7 +672,7 @@ async def test_the_usdjpy_plan_is_sized_at_the_yen_rate_not_the_dollar_one() -> 
     """The ~145x error §7.1 names, asserted absent on a plan the real cycle produced."""
     config = load_config()
     now = SyntheticSaxo().now
-    _, _, store, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
+    _, _, store, _, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
 
     plans = [d.plan for d in store.gate_decisions if d.plan is not None]
     yen = next((plan for plan in plans if plan.symbol == "USDJPY"), None)
@@ -660,19 +690,32 @@ async def test_a_stale_calendar_stops_the_whole_cycle_short_of_a_signal() -> Non
     "what happens on the day forex is switched on before the calendar is populated".
     """
     config = load_config()
-    result, published, store, _ = await run_forex_cycle(config, calendar=OPEN_CALENDAR)
+    result, published, store, _, _ = await run_forex_cycle(config, calendar=OPEN_CALENDAR)
 
-    assert result.analyzed == 3
     assert published == []
-    assert store.gate_decisions
-    assert all(d.reason.value == "CALENDAR_STALE" for d in store.gate_decisions)
+
+    # **This assertion inverted at M10d, and the inversion is the point.** It used to
+    # read `result.analyzed == 3` and `all(d.reason == CALENDAR_STALE)`: three
+    # claude-fable-5 calls, ~$0.68, paid in full and then rejected by the gate on a
+    # condition that was knowable before the first one. The calendar rail now runs
+    # BEFORE the analyst, as ARCHITECTURE §3 says guards should and as the crypto path
+    # has since M7.
+    assert result.analyzed == 0, "a stale calendar must not cost three analyst calls"
+    assert store.gate_decisions == [], "the gate never ran, so it decided nothing"
+
+    # The reason is not lost by moving — it moves table. `cycles.skipped` is where
+    # crypto's pre-analyst rejections have always been recorded, and a rejection is
+    # still data (PRD F10); writing a `gate_decisions` row for a gate that never ran
+    # would be the fabrication, not the omission.
+    assert set(result.skipped) == set(SYMBOLS)
+    assert all(skip.detail == "CALENDAR_STALE" for skip in result.skipped.values())
 
 
 async def test_every_gate_verdict_is_recorded_whether_or_not_it_approved() -> None:
     """PRD F10: a rejection is data. M9 cannot compare what was never written down."""
     config = load_config()
     now = SyntheticSaxo().now
-    _, _, store, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
+    _, _, store, _, _ = await run_forex_cycle(config, calendar=calendar_covering(now))
 
     assert len(store.gate_decisions) == 3
     assert all(d.prompt_version == "fable_forex_v1" for d in store.gate_decisions)
