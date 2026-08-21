@@ -331,14 +331,32 @@ tracker wiring — still behind `enabled: false`. Split out of M10b because thes
 visual checking, which is different work from the fixture-driven half and deserves its
 own attention rather than the tail of a long session.
 
-## M10c — Forex card, publishing and tracking (spec pending — do not implement)
-`TradePlan` is crypto-shaped and frozen, so a forex plan cannot travel as one (FOREX.md
-defect #12): `notional_usdt`, `suggested_leverage`, `liq_distance_pct` and
-`liq_buffer_ok` have no forex meaning, and §7.6 forbids faking the liquidation buffer.
-This milestone decides the plan model, the card renderer, the publisher branch and the
-tracker loop for a market whose margin is account-level. It is also where §11's
-**deliberate** regeneration of the golden surfaces happens, as a named step: switching
-forex on gives crypto cards their market tag, which changes their bytes.
+## M10c — Forex card, publishing and tracking ✅
+Answers spec defect #12. `ForexPlan` is a **parallel** model in `sentinel/fx/`, not a
+`TradePlan`, not a subclass and not a shared base class — it mirrors the shared
+vocabulary field for field (which is what lets one signals table, one publisher and one
+tracker serve both markets with no translation layer) and has **no field at all** for a
+liquidation buffer, a funding rate or a derived leverage. The gate is a composition of
+rails that already existed, in the order `risk/engine.py` established. `SignalRecord.plan`
+widens to a union with **no migration**, and the hazard that creates — two look-alike
+models a mis-dispatch could confuse — is answered by dispatching on `market` with no
+fallback, and by a test asserting neither model's field set is a subset of the other's.
+The tracker learns that a closed market is not a stall, and every forex ladder's expiry
+is capped at the Friday close at **gate** time so none can rest over a weekend.
+
+Three further spec defects, all dated in FOREX.md's corrections log. **#21**: crypto's
+`max_entry_distance_pct: 3.0` could never fire in a market that moves 0.5% a day, and a
+rail that cannot fire reads on a checklist as a rail — forex gets its own thresholds.
+**#22**: `capital` and `risk_per_trade_pct` are the only two `TradePlan` fields the engine
+does not quantize and both come from `Numeric(38, 18)` columns, so the live card printed
+`€200.000000000000000000`; no golden could see it, because the fixture's capital is an
+in-process `Decimal` that never round-trips through Postgres. **#23** is a defect in the
+milestone *instruction*: §11's regeneration cannot execute in a milestone that also
+requires `enabled: false`, so the tagged form is pinned as an **addition** instead and
+switch-on day moves no golden at all.
+**Exit criteria (met):** `markets.forex.enabled: false`, `git diff sentinel/risk/` empty,
+risk branch coverage unchanged at 100%, `make check` exit 0, and the only crypto bytes
+that moved are defect #22's two lines — approved in advance, line by line.
 
 ## M11 — Ensemble shadow mode (1 day) (spec pending — do not implement)
 OpenAI GPT-5.6 Sol as second AnalystProvider per docs/specs/ENSEMBLE.md §3; parallel
