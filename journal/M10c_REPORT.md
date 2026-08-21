@@ -1,5 +1,38 @@
 # M10c — the forex plan, the card, publishing and tracking
 
+## State at handoff
+
+**Branch `m10c-forex-plan-card-publishing`, 11 commits, HEAD is the commit adding this
+section (last code commit `1ddb6e3`). `main` is at `940c5b6` — identical to
+`origin/main`, untouched, zero commits of its own. Nothing is pushed and nothing is
+deployed.**
+
+Built and green, not merged: `ForexPlan` and the forex gate in `sentinel/fx/`, the forex
+card, the publisher branch, the market-hours-aware tracker, one tracker job per enabled
+market, `numpy==2.2.6`, and a `check-image` assertion that `.venv` and the image resolve
+the same pinned versions. `make check` exit 0; `git diff main -- sentinel/risk/
+sentinel/analyst/prompts/` **empty**; 2076 tests hermetic, 2143 with the opt-in Postgres
+tests; 37 goldens, of which exactly **two** moved and both were approved line by line.
+
+**The next three actions, in order:**
+
+1. **Merge** this branch to `main` and push. It is a no-op for the running system:
+   `markets.forex.enabled: false`, `config.multi_market: False`, **no migration**.
+2. **Deploy** per `docs/DEPLOY.md` §12 — `git checkout -- config.yaml` first, because
+   this branch changes `config.yaml` and `ops/update.sh` uses `git pull --ff-only`. On a
+   live server that diff contains `dry_run: false`; read it before discarding it.
+3. **Confirm the only visible change**: `/status` and the next signal card should show
+   `capital: €200.00`, `risk per trade: 0.75%` and `open risk: …% of 2.25%` where they
+   printed eighteen decimal places. **Nothing else on either card may differ.** If
+   anything else moved, that is a defect and not a regeneration.
+
+Do **not** enable forex. What that needs — `SAXO_APP_KEY`, a browser login, the
+`markets:` block with crypto's reserved floor, and a populated `calendar.yaml` — is
+`docs/DEPLOY.md` §13b, and §13 below lists the joins to compose first.
+
+---
+
+
 **Date:** 2026-08-21. **Status:** complete, `make check` **exit 0**, **not deployed.**
 
 The milestone that answers spec defect #12. `TradePlan` lives in the frozen
