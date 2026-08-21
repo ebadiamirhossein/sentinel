@@ -39,6 +39,7 @@ from sentinel.bot.notifier import TrackerNotifier
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.core.clock import utc_now
 from sentinel.core.config import Settings, load_settings
+from sentinel.core.forex_auth import ForexCredentialKeeper
 from sentinel.core.logging import configure_logging, get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import CycleOrchestrator
@@ -50,6 +51,11 @@ from sentinel.tracker.loop import TrackerLoop
 from sentinel.tracker.prices import DEFAULT_MAX_CANDLES, CandleSource, PriceFeed
 
 log = get_logger(__name__)
+
+#: The Saxo refresh job's id. Registered only when forex is enabled, so a crypto-only
+#: deployment's job list is unchanged — which is what "deploying this is a no-op" rests
+#: on and what `scheduler.pipeline_scheduled`'s `job_ids` now makes readable from the box.
+FOREX_TOKEN_JOB = "forex-token-refresh"
 
 
 class HealthChecks(BaseModel):
@@ -235,6 +241,32 @@ def _schedule_pipeline(
             coalesce=True,
         )
         job_ids.append(job_id)
+
+    if Market.FOREX in settings.config.enabled_markets:
+        # §3 requirement 5, which had no caller until M10d. The access token lives
+        # ~20 minutes, but the cadence is really about the REFRESH token: it lives
+        # ~1 hour, rotates on every use, and each refresh resets that hour. That hour
+        # is the whole margin between a restart that survives unattended and one that
+        # needs a browser login, so this runs on its own timer rather than riding on a
+        # scan — including all weekend, when the market is shut and nothing is reading
+        # a chart. Without it the token would be touched once an hour by a 60-minute
+        # scan, against a credential that lives about that long: survival by luck.
+        #
+        # `jitter` so a fleet of restarts does not synchronise on the token endpoint,
+        # and `max_instances=1` because two concurrent refreshes would each spend the
+        # same single-use token and one of them would lose.
+        scheduler.add_job(
+            _refresh_forex_token(state, settings, database),
+            trigger="interval",
+            seconds=settings.config.forex.token_refresh_interval_seconds,
+            jitter=30,
+            id=FOREX_TOKEN_JOB,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        job_ids.append(FOREX_TOKEN_JOB)
+
     log.info(
         "scheduler.pipeline_scheduled",
         markets=[market.value for market in settings.config.enabled_markets],
@@ -255,6 +287,32 @@ def _schedule_pipeline(
             for market in settings.config.enabled_markets
         },
     )
+
+
+def _credential_keeper(
+    state: AppState, settings: Settings, database: Database
+) -> ForexCredentialKeeper:
+    """The Saxo credential's keeper, with somewhere to send the re-auth alert.
+
+    ``notices`` is ``None`` when no bot is configured. That is a degraded start, not a
+    crash — /health and the scheduler are still useful — and the keeper then logs
+    ``forex.reauth_required`` and sends nothing, which is the honest outcome rather
+    than a swallowed exception.
+    """
+    notices = None if state.bot is None else _notices_for(state, settings, database)
+    return ForexCredentialKeeper(settings, database, notices=notices)
+
+
+def _refresh_forex_token(
+    state: AppState, settings: Settings, database: Database
+) -> Callable[[], Coroutine[Any, Any, None]]:
+    async def refresh() -> None:
+        # `tick()` never raises; this wrapper exists only to give APScheduler a
+        # zero-argument coroutine and to keep the bot lookup late, so a bot that
+        # starts after the scheduler is still found.
+        await _credential_keeper(state, settings, database).tick()
+
+    return refresh
 
 
 @asynccontextmanager
@@ -396,6 +454,28 @@ async def _announce_pauses(
         )
 
 
+async def _seed_forex_credential(state: AppState, settings: Settings, database: Database) -> None:
+    """Put ``.env``'s bootstrap refresh token into Postgres, once, at boot (M10d).
+
+    **Nothing called ``bootstrap()`` until now**, so ``SAXO_REFRESH_TOKEN`` never left
+    ``.env``: the token store was empty on the first cycle, ``refresh()`` raised "no
+    Saxo credential is stored", and forex would have been dead from its first minute
+    with a perfectly good credential sitting in the environment. It is the earliest and
+    quietest of the three unwired pieces of the OAuth chain (journal/M10d_REPORT.md P3).
+
+    Idempotent by construction rather than by this call site remembering to be careful:
+    ``bootstrap()`` refuses to overwrite a stored credential, because the ``.env`` token
+    is single-use and was spent on the first refresh — so a redeploy that overwrote the
+    live chain with it would end the chain and force the login it exists to avoid.
+
+    Skipped entirely when forex is disabled, so a crypto-only boot does not touch a
+    Saxo table or read a Saxo secret.
+    """
+    if Market.FOREX not in settings.config.enabled_markets:
+        return
+    await _credential_keeper(state, settings, database).seed()
+
+
 async def _seed_owner(database: Database, settings: Settings) -> None:
     """Make sure an OWNER row exists (M8.1).
 
@@ -463,6 +543,7 @@ def create_app(
 
         if isinstance(db, Database):
             await _seed_owner(db, resolved)
+            await _seed_forex_credential(state, resolved, db)
             state.last_cycle_at = await _last_cycle_at(db)
             _schedule_pipeline(scheduler, state, resolved, db)
         else:  # pragma: no cover — only an injected test double lands here

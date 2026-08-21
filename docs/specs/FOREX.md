@@ -133,17 +133,45 @@ Measured:
 8. **Credentials never appear** in logs, process listings, or error messages — the
    standard `ops/lib.sh` already enforces.
 
-### §3.1 — The one-hour memory is a real operational cost
+### §3.1 — The one-hour memory is a **rare-event** cost, not constant toil *(reframed 2026-08-21, M10d)*
 
-The refresh chain remembers for one hour. **If Sentinel is down longer than that, the
-refresh token is dead and the owner must complete a browser login by hand.**
+**This section previously read as ongoing work. It is not, and the difference decides
+whether Saxo is a viable provider.** The refresh chain remembers for one hour and
+**every refresh resets that hour**, so with the five-minute cadence running the window
+is only ever consumed by an outage.
 
-That covers: a long deploy, a server reboot, a Docker upgrade, any outage over an hour.
-There is no way to engineer around it at this account tier.
+Measured against how this deployment actually behaves:
 
-So the alert must **name re-authentication as the action and carry the authorize URL**.
-A generic "forex paused" sends the owner hunting a data problem when the fix is a
-two-minute login.
+| event | duration | survives? |
+|---|---|---|
+| `docker compose up -d --build` | **~30 s** | yes, easily |
+| the owner's last server reboot | **~90 s** | yes, easily |
+| routine operation | — | yes; each refresh resets the hour |
+| an outage **longer than an hour** | > 3600 s | **no — one manual browser login** |
+
+So the honest statement is: **one manual login after an outage longer than an hour.**
+Not "log in once, forever" (v1, false), and not constant toil (this section until
+M10d, misleading). It is a rare-event cost, and it is the price of this provider at
+this account tier — Certificate Based Authentication is the only unattended option
+Saxo documents and it is partners-only.
+
+Three things follow, and **all three were unimplemented until M10d** even though this
+section had specified them since the spike (journal/M10d_REPORT.md P3):
+
+1. **Something must call `bootstrap()`.** Otherwise `SAXO_REFRESH_TOKEN` never leaves
+   `.env`, the store is empty at boot, and forex is dead on its first cycle with a
+   valid credential sitting in the environment. `sentinel/core/app.py` seeds at boot;
+   the stored credential always wins, so a redeploy cannot overwrite a live chain with
+   the spent `.env` one.
+2. **Something must call `ensure_fresh()` on a timer.** The `forex-token-refresh` job
+   runs every `token_refresh_interval_seconds` (300) with jitter, registered only when
+   forex is enabled, and it runs **through the weekend** — the market being shut does
+   not pause the credential's clock.
+3. **Something must catch `ReauthenticationRequired` and send the alert.** It names
+   re-authentication as the action and carries the authorize URL, because a generic
+   "forex paused" sends the owner hunting a data problem when the fix is a two-minute
+   login. It is keyed on the **dead credential's fingerprint**, not on the date: one
+   message per dead chain, and a fresh one if a fresh chain dies the same day.
 
 The flow itself stays as designed: the owner logs in on his own Mac, the code lands on
 `https://localhost:8080/callback`, and the refresh token goes into the server's `.env`.

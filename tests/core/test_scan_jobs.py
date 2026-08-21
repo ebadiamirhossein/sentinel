@@ -179,4 +179,9 @@ def test_the_logged_ids_are_the_ones_switch_on_day_will_read(settings: Settings)
         "scan:forex",
         "tracker",
         "tracker:forex",
+        # M10d. §3 requirement 5's five-minute cadence, which had no caller at all
+        # until this milestone. Registered ONLY with forex enabled, which is what
+        # keeps the crypto-only list above unchanged — the "deploying this is a no-op"
+        # claim rests on that line, not on an argument.
+        "forex-token-refresh",
     ]

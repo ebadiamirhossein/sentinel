@@ -86,6 +86,11 @@ class SaxoAuth:
         self._config = config
         self._fetcher = fetcher
         self._store = store
+        #: Exposed so a caller that already built this chain can reuse its HTTP client
+        #: for the chart adapter rather than opening a second one (M10d,
+        #: :func:`sentinel.core.wiring.forex_adapter`). Read-only by convention: the
+        #: fetcher is the caller's and closing it is the caller's job.
+        self.fetcher = fetcher
         self._app_key = app_key
         self._app_secret = app_secret
         self._clock = clock or SystemClock()
@@ -122,6 +127,22 @@ class SaxoAuth:
         await self._persist(seeded)
         log.info("forex.auth_bootstrapped", refresh=seeded.refresh_fingerprint)
         return seeded
+
+    async def stored_fingerprint(self) -> str | None:
+        """The stored credential's fingerprint, or ``None`` when nothing is stored.
+
+        A fingerprint, never a value — the same sha256-prefix discipline the spike used
+        to compare two runs without exposing either. It exists so the re-authentication
+        alert can be keyed on **which** credential died (M10d): one message per dead
+        chain, and a fresh one after a fresh login, where a date-keyed alert would
+        suppress the second death of the day.
+
+        On the auth object rather than on the caller, so there is one store here and
+        not two — a caller that built its own would be reading a different object that
+        merely happens to point at the same table.
+        """
+        current = await self._store.load()
+        return None if current is None else current.refresh_fingerprint
 
     # ── the token a caller actually wants ────────────────────────────────────
 
