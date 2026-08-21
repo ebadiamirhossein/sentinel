@@ -1,0 +1,169 @@
+{
+  "15m": {
+    "params": {
+      "candles_drawn": 60,
+      "data_quality": "OK",
+      "degraded_fields": [],
+      "emas_drawn": [
+        20,
+        50
+      ],
+      "fetched_at": "2026-08-18T08:00:00Z",
+      "first_candle_at": "2026-08-17T17:15:00Z",
+      "image_sha256": "fa516ae774a0c9eb7aafc64f168d1c8c6988dfabcd1e2c2f5aaa0733293039e5",
+      "last_candle_at": "2026-08-18T08:00:00Z",
+      "last_close": "75.84",
+      "levels_drawn": [],
+      "renderer_version": 1,
+      "source": "binance_usdm",
+      "spec": {
+        "candle_window": 120,
+        "dpi": 100,
+        "ema_periods": [
+          20,
+          50,
+          200
+        ],
+        "height_px": 1000,
+        "max_levels": 6,
+        "symbol": "SOLUSDT",
+        "timeframe": "15m",
+        "volume_panel_ratio": 0.22,
+        "width_px": 1600
+      }
+    },
+    "sha256": "fa516ae774a0c9eb7aafc64f168d1c8c6988dfabcd1e2c2f5aaa0733293039e5"
+  },
+  "1h": {
+    "params": {
+      "candles_drawn": 60,
+      "data_quality": "OK",
+      "degraded_fields": [],
+      "emas_drawn": [
+        20,
+        50
+      ],
+      "fetched_at": "2026-08-18T08:00:00Z",
+      "first_candle_at": "2026-08-15T21:00:00Z",
+      "image_sha256": "77ea297a7b87e8a635ff4c3dec4cd3bff440e059961c46ca9577d3ce27f6d3a8",
+      "last_candle_at": "2026-08-18T08:00:00Z",
+      "last_close": "75.84",
+      "levels_drawn": [
+        {
+          "kind": "SUPPORT",
+          "price": "75.18666666666667",
+          "timeframe": "1h",
+          "touches": 6
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "75.63",
+          "timeframe": "1h",
+          "touches": 4
+        },
+        {
+          "kind": "RESISTANCE",
+          "price": "76.09333333333333",
+          "timeframe": "1h",
+          "touches": 3
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "74.0",
+          "timeframe": "1h",
+          "touches": 1
+        }
+      ],
+      "renderer_version": 1,
+      "source": "binance_usdm",
+      "spec": {
+        "candle_window": 120,
+        "dpi": 100,
+        "ema_periods": [
+          20,
+          50,
+          200
+        ],
+        "height_px": 1000,
+        "max_levels": 6,
+        "symbol": "SOLUSDT",
+        "timeframe": "1h",
+        "volume_panel_ratio": 0.22,
+        "width_px": 1600
+      }
+    },
+    "sha256": "77ea297a7b87e8a635ff4c3dec4cd3bff440e059961c46ca9577d3ce27f6d3a8"
+  },
+  "4h": {
+    "params": {
+      "candles_drawn": 59,
+      "data_quality": "OK",
+      "degraded_fields": [],
+      "emas_drawn": [
+        20,
+        50
+      ],
+      "fetched_at": "2026-08-18T08:00:00Z",
+      "first_candle_at": "2026-08-08T12:00:00Z",
+      "image_sha256": "158ac9359e61bb9557e83b57a3aeec1ed21b7b08923db18ddf508a9b46b95c7e",
+      "last_candle_at": "2026-08-18T04:00:00Z",
+      "last_close": "76.06",
+      "levels_drawn": [
+        {
+          "kind": "SUPPORT",
+          "price": "74.59",
+          "timeframe": "4h",
+          "touches": 2
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "75.155",
+          "timeframe": "4h",
+          "touches": 2
+        },
+        {
+          "kind": "RESISTANCE",
+          "price": "76.2",
+          "timeframe": "4h",
+          "touches": 1
+        },
+        {
+          "kind": "SUPPORT",
+          "price": "74.0",
+          "timeframe": "4h",
+          "touches": 1
+        },
+        {
+          "kind": "RESISTANCE",
+          "price": "76.6",
+          "timeframe": "4h",
+          "touches": 1
+        },
+        {
+          "kind": "RESISTANCE",
+          "price": "77.33",
+          "timeframe": "4h",
+          "touches": 1
+        }
+      ],
+      "renderer_version": 1,
+      "source": "binance_usdm",
+      "spec": {
+        "candle_window": 120,
+        "dpi": 100,
+        "ema_periods": [
+          20,
+          50,
+          200
+        ],
+        "height_px": 1000,
+        "max_levels": 6,
+        "symbol": "SOLUSDT",
+        "timeframe": "4h",
+        "volume_panel_ratio": 0.22,
+        "width_px": 1600
+      }
+    },
+    "sha256": "158ac9359e61bb9557e83b57a3aeec1ed21b7b08923db18ddf508a9b46b95c7e"
+  }
+}

@@ -1,0 +1,386 @@
+[
+  {
+    "baseVolume": 3018260157.0,
+    "datetime": "2026-08-20T14:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3018260157.00000000",
+      "sumOpenInterestValue": "233734066.55808000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787234400000
+    },
+    "openInterestAmount": 3018260157.0,
+    "openInterestValue": 233734066.55808,
+    "quoteVolume": 233734066.55808,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787234400000
+  },
+  {
+    "baseVolume": 3028945460.0,
+    "datetime": "2026-08-20T15:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3028945460.00000000",
+      "sumOpenInterestValue": "237590481.88240000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787238000000
+    },
+    "openInterestAmount": 3028945460.0,
+    "openInterestValue": 237590481.8824,
+    "quoteVolume": 237590481.8824,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787238000000
+  },
+  {
+    "baseVolume": 3031077489.0,
+    "datetime": "2026-08-20T16:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3031077489.00000000",
+      "sumOpenInterestValue": "243166221.35465714",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787241600000
+    },
+    "openInterestAmount": 3031077489.0,
+    "openInterestValue": 243166221.35465714,
+    "quoteVolume": 243166221.35465714,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787241600000
+  },
+  {
+    "baseVolume": 3011561401.0,
+    "datetime": "2026-08-20T17:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3011561401.00000000",
+      "sumOpenInterestValue": "250475988.71642947",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787245200000
+    },
+    "openInterestAmount": 3011561401.0,
+    "openInterestValue": 250475988.71642947,
+    "quoteVolume": 250475988.71642947,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787245200000
+  },
+  {
+    "baseVolume": 3000882395.0,
+    "datetime": "2026-08-20T18:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3000882395.00000000",
+      "sumOpenInterestValue": "248353027.01020000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787248800000
+    },
+    "openInterestAmount": 3000882395.0,
+    "openInterestValue": 248353027.0102,
+    "quoteVolume": 248353027.0102,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787248800000
+  },
+  {
+    "baseVolume": 2979063440.0,
+    "datetime": "2026-08-20T19:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "2979063440.00000000",
+      "sumOpenInterestValue": "237436599.31965440",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787252400000
+    },
+    "openInterestAmount": 2979063440.0,
+    "openInterestValue": 237436599.3196544,
+    "quoteVolume": 237436599.3196544,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787252400000
+  },
+  {
+    "baseVolume": 3000970872.0,
+    "datetime": "2026-08-20T20:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3000970872.00000000",
+      "sumOpenInterestValue": "239028050.18780930",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787256000000
+    },
+    "openInterestAmount": 3000970872.0,
+    "openInterestValue": 239028050.1878093,
+    "quoteVolume": 239028050.1878093,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787256000000
+  },
+  {
+    "baseVolume": 3000934277.0,
+    "datetime": "2026-08-20T21:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3000934277.00000000",
+      "sumOpenInterestValue": "240284807.55939000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787259600000
+    },
+    "openInterestAmount": 3000934277.0,
+    "openInterestValue": 240284807.55939,
+    "quoteVolume": 240284807.55939,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787259600000
+  },
+  {
+    "baseVolume": 2998378727.0,
+    "datetime": "2026-08-20T22:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "2998378727.00000000",
+      "sumOpenInterestValue": "240439990.11813000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787263200000
+    },
+    "openInterestAmount": 2998378727.0,
+    "openInterestValue": 240439990.11813,
+    "quoteVolume": 240439990.11813,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787263200000
+  },
+  {
+    "baseVolume": 3002782650.0,
+    "datetime": "2026-08-20T23:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "3002782650.00000000",
+      "sumOpenInterestValue": "238243177.67712000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787266800000
+    },
+    "openInterestAmount": 3002782650.0,
+    "openInterestValue": 238243177.67712,
+    "quoteVolume": 238243177.67712,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787266800000
+  },
+  {
+    "baseVolume": 2969777755.0,
+    "datetime": "2026-08-21T00:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "2969777755.00000000",
+      "sumOpenInterestValue": "238904751.52763414",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787270400000
+    },
+    "openInterestAmount": 2969777755.0,
+    "openInterestValue": 238904751.52763414,
+    "quoteVolume": 238904751.52763414,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787270400000
+  },
+  {
+    "baseVolume": 2976355428.0,
+    "datetime": "2026-08-21T01:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "2976355428.00000000",
+      "sumOpenInterestValue": "241858642.07928000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787274000000
+    },
+    "openInterestAmount": 2976355428.0,
+    "openInterestValue": 241858642.07928,
+    "quoteVolume": 241858642.07928,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787274000000
+  },
+  {
+    "baseVolume": 2972361879.0,
+    "datetime": "2026-08-21T02:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "155563856383.70526000",
+      "sumOpenInterest": "2972361879.00000000",
+      "sumOpenInterestValue": "245237600.01791763",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787277600000
+    },
+    "openInterestAmount": 2972361879.0,
+    "openInterestValue": 245237600.01791763,
+    "quoteVolume": 245237600.01791763,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787277600000
+  },
+  {
+    "baseVolume": 2946943573.0,
+    "datetime": "2026-08-21T03:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2946943573.00000000",
+      "sumOpenInterestValue": "239969615.14939000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787281200000
+    },
+    "openInterestAmount": 2946943573.0,
+    "openInterestValue": 239969615.14939,
+    "quoteVolume": 239969615.14939,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787281200000
+  },
+  {
+    "baseVolume": 2938487720.0,
+    "datetime": "2026-08-21T04:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2938487720.00000000",
+      "sumOpenInterestValue": "240273176.64850360",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787284800000
+    },
+    "openInterestAmount": 2938487720.0,
+    "openInterestValue": 240273176.6485036,
+    "quoteVolume": 240273176.6485036,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787284800000
+  },
+  {
+    "baseVolume": 2913968629.0,
+    "datetime": "2026-08-21T05:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2913968629.00000000",
+      "sumOpenInterestValue": "239819618.16670000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787288400000
+    },
+    "openInterestAmount": 2913968629.0,
+    "openInterestValue": 239819618.1667,
+    "quoteVolume": 239819618.1667,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787288400000
+  },
+  {
+    "baseVolume": 2928995113.0,
+    "datetime": "2026-08-21T06:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2928995113.00000000",
+      "sumOpenInterestValue": "242237385.78926610",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787292000000
+    },
+    "openInterestAmount": 2928995113.0,
+    "openInterestValue": 242237385.7892661,
+    "quoteVolume": 242237385.7892661,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787292000000
+  },
+  {
+    "baseVolume": 2935738373.0,
+    "datetime": "2026-08-21T07:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2935738373.00000000",
+      "sumOpenInterestValue": "244282790.01733000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787295600000
+    },
+    "openInterestAmount": 2935738373.0,
+    "openInterestValue": 244282790.01733,
+    "quoteVolume": 244282790.01733,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787295600000
+  },
+  {
+    "baseVolume": 2948656166.0,
+    "datetime": "2026-08-21T08:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2948656166.00000000",
+      "sumOpenInterestValue": "246036843.54757480",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787299200000
+    },
+    "openInterestAmount": 2948656166.0,
+    "openInterestValue": 246036843.5475748,
+    "quoteVolume": 246036843.5475748,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787299200000
+  },
+  {
+    "baseVolume": 2946348544.0,
+    "datetime": "2026-08-21T09:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2946348544.00000000",
+      "sumOpenInterestValue": "252236898.85184000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787302800000
+    },
+    "openInterestAmount": 2946348544.0,
+    "openInterestValue": 252236898.85184,
+    "quoteVolume": 252236898.85184,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787302800000
+  },
+  {
+    "baseVolume": 2882371067.0,
+    "datetime": "2026-08-21T10:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2882371067.00000000",
+      "sumOpenInterestValue": "243528014.95812827",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787306400000
+    },
+    "openInterestAmount": 2882371067.0,
+    "openInterestValue": 243528014.95812827,
+    "quoteVolume": 243528014.95812827,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787306400000
+  },
+  {
+    "baseVolume": 2888006549.0,
+    "datetime": "2026-08-21T11:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2888006549.00000000",
+      "sumOpenInterestValue": "244123193.58697000",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787310000000
+    },
+    "openInterestAmount": 2888006549.0,
+    "openInterestValue": 244123193.58697,
+    "quoteVolume": 244123193.58697,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787310000000
+  },
+  {
+    "baseVolume": 2909792498.0,
+    "datetime": "2026-08-21T12:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2909792498.00000000",
+      "sumOpenInterestValue": "241541176.90878050",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787313600000
+    },
+    "openInterestAmount": 2909792498.0,
+    "openInterestValue": 241541176.9087805,
+    "quoteVolume": 241541176.9087805,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787313600000
+  },
+  {
+    "baseVolume": 2898463917.0,
+    "datetime": "2026-08-21T13:00:00.000Z",
+    "info": {
+      "CMCCirculatingSupply": "171289443126.57907000",
+      "sumOpenInterest": "2898463917.00000000",
+      "sumOpenInterestValue": "243246801.82865920",
+      "symbol": "DOGEUSDT",
+      "timestamp": 1787317200000
+    },
+    "openInterestAmount": 2898463917.0,
+    "openInterestValue": 243246801.8286592,
+    "quoteVolume": 243246801.8286592,
+    "symbol": "DOGE/USDT:USDT",
+    "timestamp": 1787317200000
+  }
+]

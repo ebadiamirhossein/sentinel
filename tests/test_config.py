@@ -201,8 +201,21 @@ def test_the_new_config_and_the_legacy_one_agree_about_crypto(repo_config: AppCo
     ``config.yaml`` gained a ``markets:`` block; the frozen legacy file has none.
     They must describe the identical crypto market, or M10a changed the live
     system's behaviour by editing a config file.
+
+    **M10b-2 introduces exactly one deliberate difference**, and it is named here
+    rather than excluded quietly: the reserved crypto floor (FOREX.md §13 decision 6)
+    is set in the repo config and absent from the frozen legacy file, which predates
+    ``markets:`` entirely. It has no behavioural effect while crypto is the only
+    enabled market — a floor only ever reserves against *other* markets, and there
+    are none — which
+    ``tests/llm/test_reserved_floor.py::test_the_legacy_deployed_config_behaves_identically``
+    proves rather than asserts. Everything else must still be identical.
     """
-    assert repo_config.market(Market.CRYPTO) == load_config(LEGACY_DEPLOYED).market(Market.CRYPTO)
+    new = repo_config.market(Market.CRYPTO)
+    legacy = load_config(LEGACY_DEPLOYED).market(Market.CRYPTO)
+    exclude = {"llm_reserved_floor_usd"}
+    assert new.model_dump(exclude=exclude) == legacy.model_dump(exclude=exclude)
+    assert (new.llm_reserved_floor_usd, legacy.llm_reserved_floor_usd) == (Decimal(8), Decimal(0))
 
 
 @pytest.mark.parametrize("field", ["llm_daily_budget_usd", "llm_daily_warn_usd"])

@@ -156,11 +156,13 @@ def _schedule_pipeline(
 
     async def track() -> None:
         try:
-            # One adapter, one market (M10a). ``market_adapter`` builds the Binance
-            # client, so this loop can price crypto and nothing else — named here
-            # rather than left to a default, so the day a second market has open
-            # signals it is a visible gap and not a silent one.
-            async with market_adapter(settings) as adapter:
+            # One adapter, one market (M10a). ``market_adapter`` resolves through
+            # M10b-2's registry now, so passing CRYPTO here is what keeps this loop
+            # pricing crypto and nothing else — named rather than left to a default,
+            # so the day a second market has open signals it is a visible gap and not
+            # a silent one. **That day is M10c**: forex cannot produce a signal until
+            # the card and the tracker land, so there is nothing here to price yet.
+            async with market_adapter(settings, Market.CRYPTO) as adapter:
                 loop = TrackerLoop(
                     database,
                     PriceFeed(adapter, settings.config.tracker),

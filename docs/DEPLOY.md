@@ -25,6 +25,8 @@ cannot collide with the neighbour.
 | 11 | Reboot: what happens, and proving it | 3 min |
 | 12 | Shipping the next commit | *when needed* |
 | 13 | Going live (after 24h of dry run) | *when ready* |
+| 13a | Letting somebody else in | *when needed* |
+| 13b | Enabling forex — what must be on the server first | *not yet* |
 | 14 | Troubleshooting | *when needed* |
 
 **§1–§8 are 24 minutes and end with a running, verified system** — that is the
@@ -479,6 +481,24 @@ Backs up first, then `git pull --ff-only`, rebuilds the image, restarts the app,
 and waits for `/health`. Downtime is one container restart — seconds. Migrations
 run from the app's own entrypoint, so there is no separate step to forget.
 
+> **`config.yaml` is tracked, and §6 and §13 edit it in place on the server.** So
+> `git pull --ff-only` fails whenever a commit also changes that file — which is
+> not rare: M10a, M10b-1 and M10b-2 all changed it. The symptom is
+> `error: Your local changes to the following files would be overwritten by merge`,
+> and the fix is to discard the server's edits and re-apply them after:
+>
+> ```bash
+> cd /opt/sentinel
+> git diff config.yaml            # READ THIS FIRST — it is your live settings
+> git checkout -- config.yaml
+> ./ops/update.sh
+> # then re-apply whatever the diff showed, e.g. dry_run, and restart
+> ```
+>
+> Read the diff before discarding it. On a server that has gone live it contains
+> at minimum `dry_run: false` (§13), and discarding that without re-applying it
+> puts the system back into rehearsal silently.
+
 If it does not come up, the script prints the exact rollback commands and messages
 you. By hand they are:
 
@@ -541,6 +561,72 @@ docker compose run --rm --no-deps app python -m sentinel.tools.stats --user <id>
 
 is how you would read somebody else's book from the server if you ever had to —
 deliberately a shell command on the box, not a Telegram command.
+
+## 13b. Enabling forex — what must be on the server first
+
+**Not yet.** Forex ships disabled and cannot produce a signal until M10c adds the
+card and the tracker. This section exists because the prerequisite is a config
+change on the server that nothing in the code can do for you, and discovering it on
+switch-on day is the wrong time.
+
+**The problem.** The server's `config.yaml` predates M10a: §6 and §13 edit it in
+place, so it has **no `markets:` block at all**. It is read as crypto-only, which is
+correct and is why nothing has broken. But it means the server carries:
+
+- no `markets.forex` section — so forex cannot be enabled by flipping a flag,
+  because there is no flag on that machine;
+- **no `markets.crypto.llm_reserved_floor_usd`** — so crypto's reserved budget
+  floor is not in effect there. Harmless today (a floor only reserves against
+  *other* markets, and there is only one) and **not** harmless the moment a second
+  market can spend.
+
+**The procedure, when the time comes.**
+
+1. Take a backup first: `./ops/backup.sh`.
+2. Read what the server's config currently differs from the repo's:
+   ```bash
+   cd /opt/sentinel && git diff config.yaml
+   ```
+   Keep that output. It is your live settings.
+3. Take the repo's `markets:` block — it already contains both markets, the floor
+   and the forex prompt version — by discarding the local edits and re-applying
+   them on top:
+   ```bash
+   git checkout -- config.yaml
+   ./ops/update.sh
+   ```
+4. Re-apply the settings from step 2 (at minimum `markets.crypto.dry_run: false`
+   if you have gone live) and confirm all three of these are present:
+   ```bash
+   grep -A2 "llm_reserved_floor_usd" config.yaml     # must be 8, under markets.crypto
+   grep -A2 "analyst_prompt_version" config.yaml     # fable_forex_v1, under markets.forex
+   grep -n "enabled" config.yaml                     # crypto true, forex STILL false
+   ```
+   **The floor must go in with the forex block, not after it.** A config that
+   enables forex without `llm_reserved_floor_usd: 8` lets a forex-heavy morning
+   spend the shared dollar while crypto's measurement window is running, which is
+   the exact failure FOREX.md §13 decision 6 exists to prevent. Config load will
+   not complain: a missing floor is a valid zero.
+5. Restart and confirm the job list is still one scan:
+   ```bash
+   docker compose restart app
+   docker compose logs --tail=20 app | grep pipeline_scheduled
+   ```
+6. Only then, and only when M10c has shipped, set `markets.forex.enabled: true`.
+   Forex starts in `dry_run: true` and stays there until the numbers justify
+   otherwise (FOREX.md §11).
+
+**One thing that changes crypto when forex is switched on.** With two markets
+enabled, `config.multi_market` becomes true and crypto's cards gain a market tag —
+which changes their bytes. The golden surfaces must be regenerated **deliberately,
+as a named step in that milestone**, never as a side effect. See
+`journal/M10b_2_REPORT.md` §12.
+
+**Forex also needs credentials the crypto deployment has never had:** `SAXO_APP_KEY`
+and `SAXO_APP_SECRET` in `.env`, plus a one-time browser login to seed the refresh
+token. The refresh chain has a one-hour memory, so any outage longer than that needs
+that login repeated by hand (FOREX.md §3.1). None of it is needed while forex is
+disabled.
 
 ## 14. Troubleshooting
 

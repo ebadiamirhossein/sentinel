@@ -687,6 +687,13 @@ class ForexConfig(_Strict):
 #: ``enabled: false`` is supposed to mean.
 CRYPTO_ADAPTER = "crypto_binance"
 
+#: The forex adapter, registered in :mod:`sentinel.core.wiring` from M10b-2. M10a
+#: deliberately left this name unregistered so a market claiming it would fail loudly
+#: rather than silently do nothing; M10b-1 built the adapter behind it; M10b-2 wires
+#: it up. The loud-failure property survives — an *unknown* name still raises — which
+#: is the case that actually happens, because it is a typo.
+FOREX_ADAPTER = "forex_saxo"
+
 
 class MarketConfig(_Strict):
     """One market's own settings (M10a).
@@ -718,6 +725,28 @@ class MarketConfig(_Strict):
     #: This market's slice of the day's LLM budget, and the level at which it warns.
     llm_daily_budget_usd: Dec = Decimal("10")
     llm_daily_warn_usd: Dec = Decimal("7")
+    #: Which analyst prompt this market's deep analysis uses. Same pattern as
+    #: :attr:`adapter` — a name in config, resolved in one place — because the
+    #: alternative is a market check inside the provider, and the provider is
+    #: deliberately market-blind (it takes a snapshot, not a market).
+    #:
+    #: Provider-major filename per specs/ENSEMBLE.md §2, market as suffix; settled
+    #: with the owner 2026-08-21 as spec defect #19. Crypto keeps ``fable_v1``, whose
+    #: bytes the golden prompt pins.
+    analyst_prompt_version: str = "fable_v1"
+    #: How much of the global ceiling this market keeps for itself (FOREX.md §13
+    #: decision 6, M10a open question R5, applied in M10b-2).
+    #:
+    #: The sub-budgets deliberately sum to more than the ceiling so markets compete
+    #: for the last dollar. That is the right default between two *measured* markets
+    #: and the wrong one the day an unmeasured market joins a measured one: a
+    #: forex-heavy morning could spend the shared dollar and leave crypto — which has
+    #: a live measurement window running — short. A floor says "this much is not
+    #: available to anyone else", and only the **unspent** part of it is held, so a
+    #: market that does not use its floor stops reserving it.
+    #:
+    #: Zero, the default, is exactly the pre-M10b-2 behaviour.
+    llm_reserved_floor_usd: Dec = Decimal("0")
 
 
 #: The keys ``markets:`` replaced. A config file carrying these and no ``markets``
@@ -894,6 +923,31 @@ class AppConfig(_Strict):
                         f"over each other silently."
                     )
                 seen[symbol] = name
+        return self
+
+    @model_validator(mode="after")
+    def _reserved_floors_fit_under_the_ceiling(self) -> AppConfig:
+        """Floors must be satisfiable, and each must fit inside its own budget.
+
+        Both halves are load-time errors rather than runtime surprises. Floors summing
+        past the global ceiling is a deployment that can never satisfy its own
+        promises; a floor above the market's own daily budget reserves money that
+        market is not permitted to spend, which would starve every other market to
+        hold a dollar nobody can use.
+        """
+        for name, cfg in self.markets.items():
+            if cfg.llm_reserved_floor_usd > cfg.llm_daily_budget_usd:
+                raise ValueError(
+                    f"{name.value}: reserved floor ${cfg.llm_reserved_floor_usd} exceeds its "
+                    f"own daily budget ${cfg.llm_daily_budget_usd} — it would reserve money "
+                    f"this market is not allowed to spend"
+                )
+        total = sum((cfg.llm_reserved_floor_usd for cfg in self.markets.values()), start=Decimal(0))
+        if total > self.llm_daily_budget_global_usd:
+            raise ValueError(
+                f"reserved floors sum to ${total}, above the global ceiling "
+                f"${self.llm_daily_budget_global_usd} — the deployment could never honour them"
+            )
         return self
 
     def market(self, market: Market = LEGACY_MARKET) -> MarketConfig:

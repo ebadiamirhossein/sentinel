@@ -105,10 +105,12 @@ check-image: ## Build the image AND import the app inside it
 		 from sentinel.core.config import load_config; cfg = load_config(); \
 		 v = cfg.llm.screener_prompt_version; \
 		 assert load_prompt(v).strip(), f'configured screener prompt {v} is not in the wheel'; \
+		 names = sorted({m.analyst_prompt_version for m in cfg.markets.values()}); \
+		 assert all(load_prompt(n).strip() for n in names), f'an analyst prompt in {names} is not in the wheel'; \
 		 from sentinel.fx.calendar import load_calendar; \
 		 cal = load_calendar(); \
 		 assert cal.source.endswith('calendar.yaml'), 'the forex calendar is not in the wheel'; \
-		 print('image imports, prompts ship, calendar ships, config loads')"
+		 print(f'image imports, prompts ship ({\", \".join(names)}), calendar ships, config loads')"
 
 check-fast: test lint typecheck coverage-risk check-deps check-ops ## The gate without the image build
 check: check-fast check-wheel check-image ## Everything the milestone gate requires

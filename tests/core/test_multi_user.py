@@ -510,9 +510,14 @@ class CountingAnalyst:
 
     name = "counting"
     analyses = 0
+    last_prompt_version = ""
 
-    def __init__(self, client: Any, config: Any, *, cycle_id: Any) -> None:
+    def __init__(
+        self, client: Any, config: Any, *, cycle_id: Any, prompt_version: str = ""
+    ) -> None:
         self.calls: list[Any] = []
+        self.prompt_version = prompt_version
+        CountingAnalyst.last_prompt_version = prompt_version
 
     async def analyze(self, snapshot: Any, charts: Any, history: str) -> AnalystReport:
         CountingAnalyst.analyses += 1
@@ -572,6 +577,11 @@ async def test_the_deep_analyst_is_called_once_no_matter_how_many_users(
         )
 
     assert CountingAnalyst.analyses == 1, "one analysis per symbol per cycle, always"
+    # M10b-2: the prompt version now comes from this market's config rather than from
+    # the provider's own default. Crypto must still resolve to `fable_v1`, whose bytes
+    # the prompt golden pins — a config that lost the field would otherwise change
+    # what the live market is asked, with nothing to notice it by.
+    assert CountingAnalyst.last_prompt_version == "fable_v1"
     assert len(store.reports) == 1, "and one analyst_reports row, not one per user"
     assert result.analyzed == 1
     assert len(published) == 4, "but four cards, one per user"

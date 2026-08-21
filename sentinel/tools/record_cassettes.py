@@ -1,6 +1,8 @@
 """Record fixture payloads from the live public APIs — run manually, never in tests.
 
-    python -m sentinel.tools.record_cassettes
+    python -m sentinel.tools.record_cassettes                    # everything
+    python -m sentinel.tools.record_cassettes --symbols DOGEUSDT # one symbol only
+    python -m sentinel.tools.record_cassettes --skip-http        # Binance only
 
 Writes ``tests/cassettes/*.json``. Every call here is public, read-only and
 keyless (CryptoPanic is the one exception and is skipped unless a key is present).
@@ -8,12 +10,21 @@ The test suite replays these files and never opens a socket.
 
 Candle series are trimmed to keep the fixtures small; the adapter's request
 parameters are asserted separately, so fixture length carries no meaning.
+
+**``--symbols`` exists because a re-record is destructive** (M10b-2). Every golden
+in this repo is computed from these files, so running the whole recorder to add one
+symbol would refresh the other two with fresh market data and move every golden
+fixture at once — a regeneration disguised as an addition. Narrowing the run is how
+a symbol gets *added*. ``--skip-http`` does the same for the shared non-Binance
+fixtures, which no per-symbol golden needs.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +32,15 @@ import ccxt.async_support as ccxt
 import httpx
 
 CASSETTE_DIR = Path(__file__).resolve().parents[2] / "tests" / "cassettes"
-SYMBOLS = {"BTCUSDT": "BTC/USDT:USDT", "SOLUSDT": "SOL/USDT:USDT"}
+#: Every symbol this repo has recorded, and the ccxt name it is fetched under.
+#: Three price magnitudes on purpose — see tests/golden/pipeline.py and
+#: journal/M10b_2_REPORT.md §4a: the chart golden pins one formatter branch per
+#: symbol, and BTCUSDT alone left two of the three unpinned.
+SYMBOLS = {
+    "BTCUSDT": "BTC/USDT:USDT",
+    "SOLUSDT": "SOL/USDT:USDT",
+    "DOGEUSDT": "DOGE/USDT:USDT",
+}
 TIMEFRAMES = ("15m", "1h", "4h", "1d")
 CANDLE_LIMIT = 60  # trimmed; production limits live in config.yaml
 
@@ -41,12 +60,12 @@ def _write(name: str, payload: Any) -> None:
     print(f"  wrote {path.relative_to(CASSETTE_DIR.parents[1])} ({path.stat().st_size:,} bytes)")
 
 
-async def record_binance() -> None:
+async def record_binance(symbols: Mapping[str, str] = SYMBOLS) -> None:
     """Record ccxt's *parsed* output — that is what the adapter actually consumes."""
     exchange = ccxt.binanceusdm({"enableRateLimit": True})
     try:
         await exchange.load_markets()
-        for plain, ccxt_symbol in SYMBOLS.items():
+        for plain, ccxt_symbol in symbols.items():
             print(f"binance {plain}")
             for timeframe in TIMEFRAMES:
                 candles = await exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=CANDLE_LIMIT)
@@ -93,12 +112,40 @@ async def record_http() -> None:
             print(f"  RSS unavailable ({exc}); keep the existing fixture")
 
 
-async def main() -> None:
-    await record_binance()
-    await record_http()
-    print(
-        "\nCryptoPanic is not recorded automatically (needs a key); see tests/cassettes/README.md"
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        choices=sorted(SYMBOLS),
+        help="record only these symbols. Omit to record all of them — which "
+        "REFRESHES the existing ones and will move every golden.",
     )
+    parser.add_argument(
+        "--skip-http",
+        action="store_true",
+        help="skip the shared non-Binance fixtures (sentiment, macro, FX, RSS).",
+    )
+    return parser.parse_args()
+
+
+async def main() -> None:
+    args = _parse_args()
+    selected = {name: SYMBOLS[name] for name in (args.symbols or SYMBOLS)}
+    if args.symbols:
+        print(f"recording {', '.join(sorted(selected))} only — other fixtures untouched\n")
+    else:
+        print(
+            "recording EVERY symbol and every shared fixture. This refreshes files the\n"
+            "goldens are computed from and will move them. Use --symbols to add one.\n"
+        )
+    await record_binance(selected)
+    if not args.skip_http:
+        await record_http()
+        print(
+            "\nCryptoPanic is not recorded automatically (needs a key); "
+            "see tests/cassettes/README.md"
+        )
 
 
 if __name__ == "__main__":

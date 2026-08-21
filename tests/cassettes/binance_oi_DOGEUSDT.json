@@ -1,0 +1,14 @@
+{
+  "baseVolume": 2891462541.0,
+  "datetime": "2026-08-21T13:12:06.592Z",
+  "info": {
+    "openInterest": "2891462541",
+    "symbol": "DOGEUSDT",
+    "time": 1787317926592
+  },
+  "openInterestAmount": 2891462541.0,
+  "openInterestValue": null,
+  "quoteVolume": null,
+  "symbol": "DOGE/USDT:USDT",
+  "timestamp": 1787317926592
+}

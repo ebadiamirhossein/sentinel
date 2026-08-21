@@ -149,6 +149,30 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
 9. **Owner communication:** simple English, no jargon, explicit next actions;
    he screenshots Claude Code questions here — answer with exact option numbers
    and text to paste. Farsi occasionally — answer in kind.
+10. **A golden pins the case it was built from, and nothing else.** The cycle
+    golden covered BTCUSDT alone — one symbol, one price magnitude, above 1000.
+    `charts/renderer._format_price` branches at 1000 and at 1, so a change to the
+    1-to-1000 branch would have silently moved the stored chart bytes of LINK,
+    AVAX and LTC — three live watchlist symbols — with the whole suite green.
+    Found in M10b-2 only because forex needed that formatter to behave
+    differently. Fixed by adding SOLUSDT (1..1000) and DOGEUSDT (<1) as second
+    and third golden symbols — an *addition*: the 23 existing fixtures were not
+    regenerated. Proved by perturbing each branch in turn and watching exactly
+    one golden fail each time, a different one each time. A structural test
+    asserts the three symbols still *partition* the branches, so the set cannot
+    collapse into covering one branch three times. **When adding a golden, ask
+    which branches of which functions the chosen case actually reaches —
+    coverage is of inputs, not of code, and one input reaches one branch.**
+    Note also that `record_cassettes` re-recorded every symbol on every run, so
+    adding one would have refreshed the others and moved every golden: it now
+    takes `--symbols`.
+11. **A milestone boundary is untested by construction.** M10b-1 shipped a Saxo
+    adapter whose output could not be drawn (`volume=True` against an all-NaN
+    column) and all 1777 tests passed: both halves were tested and the join
+    between them belonged to the next session. When a boundary splits a producer
+    from its consumer, the next milestone **composes them first and builds
+    second**. M10b-2 §12 names the four joins its own boundary with M10c leaves
+    untested for the same reason.
 
 ## 5. Boundaries that must survive any new feature
 

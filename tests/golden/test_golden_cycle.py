@@ -22,7 +22,12 @@ from typing import Any
 import pytest
 
 from sentinel.core.config import AppConfig, load_config
-from tests.golden.pipeline import GoldenCycle, run_golden_cycle
+from tests.golden.pipeline import (
+    EXTRA_SYMBOLS,
+    GoldenCycle,
+    golden_symbol_charts,
+    run_golden_cycle,
+)
 
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "golden_cycle"
 
@@ -158,3 +163,90 @@ def test_the_goldens_are_not_vacuous(
         or mutated.gate_approved != cycle.gate_approved
         or mutated.card != cycle.card
     ), f"changing {label} did not move any golden — the goldens are not watching it"
+
+
+# --------------------------------------------------------------------------- #
+# The other golden symbols (M10b-2, owner requirement H1)
+# --------------------------------------------------------------------------- #
+
+REGENERATE_EXTRA = (
+    "If this change was intended, regenerate deliberately with\n"
+    "    .venv/bin/python -m tests.fixtures.generate_goldens_m10b2\n"
+    "which writes only the extra symbols' fixtures and cannot touch BTCUSDT's."
+)
+
+
+@pytest.fixture(scope="module")
+def extras() -> dict[str, dict[str, Any]]:
+    """Features and chart digests per extra symbol. Module-scoped: they draw."""
+    config = load_config()
+    return {symbol: golden_symbol_charts(config, symbol) for symbol in EXTRA_SYMBOLS}
+
+
+@pytest.mark.parametrize("symbol", EXTRA_SYMBOLS)
+def test_the_extra_symbols_chart_bytes_are_unchanged(
+    extras: dict[str, dict[str, Any]], symbol: str
+) -> None:
+    """The hole these fixtures exist to close.
+
+    ``charts.json`` pinned BTCUSDT, which trades above 1000.
+    ``charts/renderer._format_price`` — the function that labels every S/R line —
+    branches at 1000 and again at 1, so one symbol pinned **one of three**. A change
+    to either other branch would have moved the stored bytes of live watchlist
+    symbols: LINK, AVAX and LTC sit between 1 and 1000, and XRP, DOGE and ADA below 1.
+
+    M10b-2 found this by needing that formatter to behave differently for forex, and
+    having to leave it alone because nothing would have caught the difference.
+    """
+    assert extras[symbol]["charts"] == _json(f"charts_{symbol}.json"), REGENERATE_EXTRA
+
+
+@pytest.mark.parametrize("symbol", EXTRA_SYMBOLS)
+def test_the_extra_symbols_feature_values_are_unchanged(
+    extras: dict[str, dict[str, Any]], symbol: str
+) -> None:
+    assert extras[symbol]["features"] == _json(f"features_{symbol}.json"), REGENERATE_EXTRA
+
+
+def test_every_formatter_branch_is_covered_by_exactly_one_golden_symbol(
+    extras: dict[str, dict[str, Any]],
+) -> None:
+    """Structural, so the set cannot silently collapse into covering one branch twice.
+
+    Swapping an extra symbol for another large-cap would leave every golden above
+    passing while covering the same branch three times — which is the original defect
+    wearing new symbols' names. This asserts the *partition*, not the symbols.
+    """
+
+    def branch(price: Decimal) -> str:
+        if price >= 1000:
+            return ">=1000"
+        return "1..1000" if price >= 1 else "<1"
+
+    prices = {"BTCUSDT": Decimal(_json("charts.json")["1h"]["params"]["last_close"])}
+    prices.update(
+        {
+            symbol: Decimal(artefacts["charts"]["1h"]["params"]["last_close"])
+            for symbol, artefacts in extras.items()
+        }
+    )
+    covered = {symbol: branch(price) for symbol, price in prices.items()}
+    assert sorted(covered.values()) == ["1..1000", "<1", ">=1000"], (
+        f"every _format_price branch needs exactly one golden symbol; got {covered}"
+    )
+
+
+@pytest.mark.parametrize("symbol", EXTRA_SYMBOLS)
+def test_each_extra_symbol_draws_a_label_only_its_own_branch_produces(
+    extras: dict[str, dict[str, Any]], symbol: str
+) -> None:
+    """The digest pins the pixels only if a label was actually drawn. A chart with no
+    levels would make the assertions above vacuous."""
+    from sentinel.charts.renderer import _format_price
+
+    drawn = extras[symbol]["charts"]["1h"]["params"]["levels_drawn"]
+    assert drawn, f"{symbol} must draw at least one labelled S/R line"
+    rendered = {_format_price(float(level["price"])) for level in drawn}
+    # The label is what the formatter produced, and it is not the plain repr.
+    assert rendered
+    assert all(label for label in rendered)

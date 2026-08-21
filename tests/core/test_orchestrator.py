@@ -271,6 +271,11 @@ class _LLMCalls:
         """
         return SpendTotals(day_usd=self._store.spend_day, month_usd=self._store.spend_day)
 
+    async def day_spend_by_market(self, **_: object) -> dict[Market, Decimal]:
+        """M10b-2's reserved-floor input. One market in this fake, so the breakdown is
+        the same figure once more — and crypto's floor never reserves against crypto."""
+        return {Market.CRYPTO: self._store.spend_day}
+
 
 async def _spend_states(store: CycleStore, settings: Settings) -> CycleResult:
     result = CycleResult(cycle_id=uuid4())

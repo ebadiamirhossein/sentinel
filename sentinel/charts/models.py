@@ -10,9 +10,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 #: Bumped whenever a change alters rendered pixels, so a stored chart's bytes
 #: can be explained by the renderer that produced them.
@@ -53,6 +60,63 @@ class DrawnLevel(Frozen):
     timeframe: str
 
 
+class AnnotationKind(StrEnum):
+    """Market-structure marks that are not S/R levels (FOREX.md §6).
+
+    Deliberately not folded into :class:`DrawnLevel`: that model carries a ``touches``
+    count, and a prior-day high has no touch count. Putting a zero there would be the
+    fabricated number §2.1 exists to forbid, and the same defect class as trying to
+    carry a forex plan in a crypto ``TradePlan`` (spec defect #12).
+    """
+
+    PRIOR_DAY_HIGH = "prior_day_high"
+    PRIOR_DAY_LOW = "prior_day_low"
+    PRIOR_WEEK_HIGH = "prior_week_high"
+    PRIOR_WEEK_LOW = "prior_week_low"
+    DAILY_OPEN = "daily_open"
+    WEEKLY_OPEN = "weekly_open"
+    SESSION_BAND = "session_band"
+
+    @property
+    def is_band(self) -> bool:
+        return self is AnnotationKind.SESSION_BAND
+
+
+class ChartAnnotation(Frozen):
+    """One mark on the chart: a horizontal reference line, or a shaded time band.
+
+    A line carries a price and no interval; a band carries an interval and no price.
+    Neither ever carries a zero for the other — the validator below makes that
+    unrepresentable rather than merely discouraged.
+
+    This is both the **input** to :func:`sentinel.charts.renderer.render` and the
+    **record** of what it drew, which is what keeps the two from drifting: the params
+    report the annotations actually rendered, not the ones that were requested.
+    """
+
+    kind: AnnotationKind
+    label: str
+    price: Decimal | None = None
+    from_at: datetime | None = None
+    to_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _carries_exactly_what_its_kind_has(self) -> ChartAnnotation:
+        if self.kind.is_band:
+            if self.price is not None:
+                raise ValueError(f"{self.kind.value} is a time band and has no price")
+            if self.from_at is None or self.to_at is None:
+                raise ValueError(f"{self.kind.value} needs both ends of its interval")
+            if self.to_at <= self.from_at:
+                raise ValueError(f"{self.kind.value} ends at or before it starts")
+        else:
+            if self.price is None:
+                raise ValueError(f"{self.kind.value} is a price line and needs a price")
+            if self.from_at is not None or self.to_at is not None:
+                raise ValueError(f"{self.kind.value} is a price line and has no interval")
+        return self
+
+
 class ChartRenderParams(Frozen):
     """Everything needed to re-render this exact image."""
 
@@ -72,11 +136,37 @@ class ChartRenderParams(Frozen):
     emas_drawn: tuple[int, ...] = ()
     levels_drawn: tuple[DrawnLevel, ...] = ()
 
+    #: Market-structure marks actually drawn (M10b-2). Empty for crypto, which has
+    #: none of them — and when it is empty the key is **omitted entirely** by the
+    #: serializer below rather than rendered as ``[]``.
+    annotations: tuple[ChartAnnotation, ...] = ()
+
     data_quality: str = "OK"
     degraded_fields: tuple[str, ...] = ()
 
     #: sha256 of the PNG produced from these params.
     image_sha256: str = ""
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_annotations(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Serialise ``annotations`` only when there are some (M10b-2, owner ruling G1).
+
+        The reconstruction record has to be complete — a chart that draws a line
+        nothing in the database explains breaks the property M3 exists for. But this
+        model is dumped whole into the crypto chart golden, and a new key would move
+        bytes for a market that has no annotations at all.
+
+        Both hold if the field is conditional: crypto's ``to_json_dict()`` is
+        byte-identical to what it was before this field existed, and forex's carries
+        every line and band it drew. ``mode="wrap"`` rather than editing
+        :meth:`to_json_dict`, so **every** serialisation path is covered — including a
+        nested dump of the enclosing :class:`ChartImage`, which is not one anybody
+        writes today and is exactly the sort that appears later.
+        """
+        data: dict[str, Any] = handler(self)
+        if not self.annotations:
+            data.pop("annotations", None)
+        return data
 
     def to_json_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

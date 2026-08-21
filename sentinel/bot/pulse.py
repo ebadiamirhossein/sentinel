@@ -188,7 +188,7 @@ APPROVED_WORDING = "a plan was approved and sent"
 #: then fails a test instead of rendering as a blank line.
 #:
 #: **The stored ``detail`` is never rendered**, and it costs nothing to drop: every
-#: one of the seven either restates its own key ("a signal is already open for this
+#: one of the nine either restates its own key ("a signal is already open for this
 #: symbol", "spend limit reached") or appends a raw ISO timestamp — and two of those
 #: timestamps, the cooldown expiry and the last analysis, are a clock reading off
 #: somebody's last trade. It stays in the column for M9, which groups on the key and
@@ -201,6 +201,11 @@ SKIP_WORDING: dict[str, str] = {
     "NO_FUNDED_USER": "nobody is set up to receive a signal",
     "PAUSED": "the system is paused",
     "SPEND_LIMIT": "the daily analysis budget is spent",
+    # M10b-2. Both are forex-only today and unreachable while it is disabled, but the
+    # wording map is asserted complete against SkipReason, so they are written now
+    # rather than discovered missing on switch-on day.
+    "MARKET_CLOSED": "the market is closed",
+    "NO_DATA": "no usable market data arrived for it",
 }
 
 #: The three whose wording is derived from somebody's book rather than from the
