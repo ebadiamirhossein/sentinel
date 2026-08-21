@@ -1,0 +1,48 @@
+{
+  "_note": "M10c demo fixture — a coherent EURUSD long. Prices are invented and say so: nothing here is evidence about the market, only about whether the gate composes. Levels are BID-side (FOREX.md §7.5); the spread is charged as a cost, never shifted into them.",
+  "instrument": {
+    "symbol": "EURUSD",
+    "uic": 21,
+    "decimals": 4,
+    "pip": "0.0001",
+    "tick_size": "0.00001",
+    "min_trade_size": "1000",
+    "amount_decimals": 2,
+    "base_currency": "EUR",
+    "quote_currency": "USD",
+    "resolved_at": "2026-08-12T12:00:00Z"
+  },
+  "market": {
+    "last_price": "1.16850",
+    "atr_1h": "0.00150",
+    "current_spread_pips": "1.1",
+    "spread_median_pips": "1.1",
+    "spread_samples": 1180
+  },
+  "account": {
+    "capital_eur": "10000",
+    "risk_per_trade_pct": "0.75",
+    "eur_quote_rate": "1.169"
+  },
+  "report": {
+    "symbol": "EURUSD",
+    "candidate_status": "CANDIDATE",
+    "setup_type": "trend_pullback",
+    "direction": "long",
+    "timeframe_label": "intraday",
+    "thesis": "4h uptrend intact; 1h pullback into the prior-day open at 1.1670 during the London-New York overlap. Spread is at its normal median for this hour.",
+    "evidence": [
+      {"claim": "prior-day open holds", "source_field": "forex.prior_day.open"},
+      {"claim": "London-NY overlap", "source_field": "forex.session_now"}
+    ],
+    "counter_thesis": "All three pairs cross the dollar and the USD strength index is rising — this may be a dollar view rather than a EURUSD one.",
+    "entry_zone": {"low": "1.16700", "high": "1.16800"},
+    "stop": "1.16400",
+    "targets": ["1.17600", "1.18100", "1.18800"],
+    "invalidation_price": "1.16350",
+    "invalidation_text": "1h close below 1.1635",
+    "confidence": 78,
+    "prompt_version": "fable_forex_v1",
+    "model": "claude-fable-5"
+  }
+}
