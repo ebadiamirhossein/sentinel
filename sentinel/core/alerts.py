@@ -46,6 +46,12 @@ class AlertKind(StrEnum):
     SPEND_WARN = "SPEND_WARN"
     #: The guard reaching the daily limit — new deep analysis is now suspended.
     SPEND_LIMIT = "SPEND_LIMIT"
+    #: M10b. The Saxo refresh chain is dead and only a manual browser login can
+    #: restore it (specs/FOREX.md §3.1). Its own kind, not a generic "forex paused",
+    #: because the two call for completely different owner actions: one is a data
+    #: problem to investigate and the other is a two-minute login. An alert that does
+    #: not say which sends the owner looking in the wrong place at the worst time.
+    FOREX_REAUTH_REQUIRED = "FOREX_REAUTH_REQUIRED"
 
 
 @dataclass(frozen=True)
@@ -160,6 +166,31 @@ def cycle_alert(
     return Alert(kind=AlertKind.CYCLE_RECOVERED, failures=previous, since=decided[0].started_at)
 
 
+def reauth_alert(*, authorize_url: str, detail: str, since: datetime | None = None) -> Alert:
+    """The forex re-authentication alert (specs/FOREX.md §3.1).
+
+    Saxo's access token lives ~20 minutes and its refresh token ~1 hour, and the
+    refresh token rotates on every use. Together that gives the credential chain a
+    **one-hour memory**: routine operation is fine, a deploy or a restart inside the
+    hour survives, and any outage longer than that kills the chain outright. There is
+    no unattended credential at this account tier — Certificate Based Authentication
+    is the only server-to-server option Saxo documents and it is partners-only — so
+    this is a standing operational cost of the provider, not a bug to fix.
+
+    Which is exactly why the alert must **name re-authentication as the action and
+    carry the URL**. The owner reading it has a two-minute browser login to do; a
+    message saying only "forex paused" would send them hunting a data problem.
+
+    ``authorize_url`` is a configured endpoint, never a value read from a response.
+    """
+    return Alert(
+        kind=AlertKind.FOREX_REAUTH_REQUIRED,
+        detail=detail,
+        since=since,
+        last_error=authorize_url,
+    )
+
+
 __all__ = [
     "DEFAULT_THRESHOLD",
     "Alert",
@@ -167,4 +198,5 @@ __all__ = [
     "CycleOutcome",
     "consecutive_failures",
     "cycle_alert",
+    "reauth_alert",
 ]

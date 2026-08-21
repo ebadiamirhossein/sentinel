@@ -10,10 +10,16 @@ class IngestionError(Exception):
 class SourceUnavailable(IngestionError):
     """A data source failed after its retries. The caller degrades explicitly."""
 
-    def __init__(self, source: str, reason: str) -> None:
+    def __init__(self, source: str, reason: str, *, status_code: int | None = None) -> None:
         super().__init__(f"{source} unavailable: {reason}")
         self.source = source
         self.reason = reason
+        #: The HTTP status when the failure was one, ``None`` for a transport error.
+        #: Added in M10b so a caller can tell "the vendor is down, retry later" from
+        #: "this credential is spent, a human must log in again" — two failures that
+        #: look identical from the reason string and call for opposite responses
+        #: (specs/FOREX.md §3.1).
+        self.status_code = status_code
 
 
 class CoreDataMissing(IngestionError):

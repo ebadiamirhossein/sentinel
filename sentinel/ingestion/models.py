@@ -8,13 +8,16 @@ pandas boundary (:meth:`OHLCVSeries.to_frame`), which the feature engine needs.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+
+from sentinel.core.markets import LEGACY_MARKET, Market
 
 if TYPE_CHECKING:  # pragma: no cover — import cost lands on the feature engine
     import pandas as pd
@@ -56,18 +59,65 @@ class Stamped(Frozen):
 
 
 class Candle(Frozen):
+    """One bar. ``volume`` is optional **because forex has none** (M10b).
+
+    specs/FOREX.md §2.1: where an input does not exist the feature is absent — not
+    zero, not a placeholder. Saxo publishes no volume field of any kind, not even
+    tick counts, and a zero standing in for "no data" reads to a model as "no
+    activity" and yields a confident answer built on nothing.
+
+    Optional is therefore right, and it is also dangerous: "nullable" quietly
+    becoming "sometimes missing" for **crypto** would corrupt relative volume with
+    nothing to notice it by. So the permission is granted per market and policed —
+    see :func:`assert_volume_matches_market`, which :class:`OHLCVSeries` applies on
+    construction so a mismatched candle cannot exist in the first place.
+    """
+
     open_time: datetime
     open: Money
     high: Money
     low: Money
     close: Money
-    volume: Money
+    volume: Money | None = None
+
+
+def assert_volume_matches_market(candles: Sequence[Candle], market: Market) -> None:
+    """Volume is required for crypto and forbidden for forex (M10b, owner R-b).
+
+    Both directions, deliberately. Only checking the forex side would let a crypto
+    candle arrive with a null volume and silently disable relative volume; only
+    checking the crypto side would let a forex adapter invent a zero, which is the
+    exact substitution §2.1 forbids.
+    """
+    for candle in candles:
+        if market is Market.FOREX:
+            if candle.volume is not None:
+                raise ValueError(
+                    f"forex candle at {candle.open_time.isoformat()} carries volume "
+                    f"{candle.volume} — this market has no volume of any kind, and a "
+                    f"number here would be a fabricated one (specs/FOREX.md §2.1)"
+                )
+        elif candle.volume is None:
+            raise ValueError(
+                f"{market.value} candle at {candle.open_time.isoformat()} has no volume — "
+                f"volume is optional only because forex has none, never because a "
+                f"{market.value} fetch came back short"
+            )
 
 
 class OHLCVSeries(Stamped):
     symbol: str
     timeframe: str
     candles: tuple[Candle, ...]
+    #: Which market these candles belong to (M10b). Carried on the series rather
+    #: than passed alongside it, so the volume invariant above can be enforced at
+    #: construction and there is no path that builds a series without deciding.
+    market: Market = LEGACY_MARKET
+
+    @model_validator(mode="after")
+    def _volume_matches_market(self) -> OHLCVSeries:
+        assert_volume_matches_market(self.candles, self.market)
+        return self
 
     @property
     def last(self) -> Candle:
@@ -92,7 +142,12 @@ class OHLCVSeries(Stamped):
                 "high": [float(c.high) for c in self.candles],
                 "low": [float(c.low) for c in self.candles],
                 "close": [float(c.close) for c in self.candles],
-                "volume": [float(c.volume) for c in self.candles],
+                # NaN, never 0.0, when the market has no volume: a zero would be
+                # indistinguishable from a genuinely silent bar to every indicator
+                # downstream (specs/FOREX.md §2.1).
+                "volume": [
+                    float("nan") if c.volume is None else float(c.volume) for c in self.candles
+                ],
             }
         )
         return frame.set_index("open_time")

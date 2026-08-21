@@ -99,9 +99,16 @@ def compute_timeframe(
         if len(window) >= config.volatility_min_observations:
             atr_pct_percentile = indicators.percentile_rank(window, atr_pct)
 
+    # Absent, never a number, when the market publishes no volume (M10b).
+    # specs/FOREX.md §2.1: a zero — or a NaN that later formats as one — reads to a
+    # model as "no activity" rather than "no data", and it would be indistinguishable
+    # from a genuinely silent bar. Forex has no volume of any kind, so the feature is
+    # simply not computed. Crypto always carries volume, so this branch never fires
+    # for it and its features are unchanged.
+    has_volume = bool(volume.notna().any())
     rel_volume = (
         _last(indicators.relative_volume(volume, config.relative_volume_lookback))
-        if len(frame) >= config.relative_volume_lookback + 1
+        if has_volume and len(frame) >= config.relative_volume_lookback + 1
         else None
     )
 

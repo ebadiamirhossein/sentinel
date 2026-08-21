@@ -81,7 +81,11 @@ project_network() {
 }
 
 #: The revision this milestone adds, and the one below it.
-TARGET_REVISION="0010_market_dimension"
+# M10b-1 moves the target to 0011 and deliberately leaves PREVIOUS at 0009, so the
+# round trip runs BOTH downgrades and BOTH upgrades. 0010's assertions all describe
+# state at head and stay valid: 0011 adds two empty tables and relaxes one column,
+# and touches nothing 0010 wrote.
+TARGET_REVISION="0011_forex_spine"
 PREVIOUS_REVISION="0009_watchlist_requests"
 
 #: Every table migration 0010 adds ``market`` to.
@@ -229,6 +233,45 @@ assert_backfilled() {
   log "backfill OK — every row in ${#MARKET_TABLES[@]} tables is 'crypto'"
 }
 
+#: 0011's tables. Additive and empty by construction, which is what makes the
+#: round trip below clean.
+FOREX_TABLES=(forex_instruments saxo_oauth_tokens)
+
+assert_volume_relaxed() {
+  # Migration 0011, and the owner's requirement R-a: the column becomes nullable and
+  # NOTHING ELSE HAPPENS. No backfill, no rewrite, and above all no crypto row that
+  # quietly loses its volume — "nullable" becoming "sometimes missing" for crypto
+  # would disable relative volume with nothing to notice it by.
+  local nullable nulls table
+  nullable="$(psql_scratch "SELECT is_nullable FROM information_schema.columns
+                            WHERE table_name = 'ohlcv_candles' AND column_name = 'volume'" | tr -d '[:space:]')"
+  [[ "$nullable" == "YES" ]] ||
+    fail "ohlcv_candles.volume is still NOT NULL after the upgrade — forex has no volume and needs somewhere to say so"
+
+  nulls="$(psql_scratch "SELECT count(*) FROM ohlcv_candles WHERE market = 'crypto' AND volume IS NULL")"
+  [[ "$nulls" == "0" ]] ||
+    fail "$nulls crypto candle(s) acquired a NULL volume — 0011 must relax the column and touch no row"
+
+  for table in "${FOREX_TABLES[@]}"; do
+    [[ "$(psql_scratch "SELECT count(*) FROM information_schema.tables WHERE table_name = '${table}'")" == "1" ]] ||
+      fail "0011 did not create $table"
+    [[ "$(psql_scratch "SELECT count(*) FROM ${table}")" == "0" ]] ||
+      fail "$table is not empty after the upgrade — it should be created and left alone"
+  done
+  log "0011 OK — volume is nullable, no crypto row lost one, ${FOREX_TABLES[*]} created empty"
+}
+
+assert_forex_tables_absent() {
+  local table
+  for table in "${FOREX_TABLES[@]}"; do
+    [[ "$(psql_scratch "SELECT count(*) FROM information_schema.tables WHERE table_name = '${table}'")" == "0" ]] ||
+      fail "downgrade left $table behind — the 0011 downgrade is not real"
+  done
+  [[ "$(psql_scratch "SELECT is_nullable FROM information_schema.columns
+                      WHERE table_name = 'ohlcv_candles' AND column_name = 'volume'" | tr -d '[:space:]')" == "NO" ]] ||
+    fail "downgrade left ohlcv_candles.volume nullable — the 0011 downgrade is not real"
+}
+
 assert_column_absent() {
   local present
   present="$(psql_scratch "SELECT count(*) FROM information_schema.columns
@@ -343,6 +386,7 @@ main() {
   [[ "$(revision_now)" == "$TARGET_REVISION" ]] || fail "expected $TARGET_REVISION after the upgrade, found $(revision_now)"
 
   assert_backfilled
+  assert_volume_relaxed
   after="$(counts_now)"
   [[ "$before" == "$after" ]] || fail "row counts changed across the upgrade:
   before: $before
@@ -370,6 +414,7 @@ main() {
   alembic_scratch downgrade "$PREVIOUS_REVISION" || fail "the downgrade failed"
   [[ "$(revision_now)" == "$PREVIOUS_REVISION" ]] || fail "expected $PREVIOUS_REVISION after the downgrade, found $(revision_now)"
   assert_column_absent
+  assert_forex_tables_absent
 
   after="$(counts_now)"
   [[ "$before" == "$after" ]] || fail "row counts changed across the downgrade:
@@ -381,6 +426,7 @@ main() {
   alembic_scratch upgrade head || fail "the second upgrade failed"
   [[ "$(revision_now)" == "$TARGET_REVISION" ]] || fail "expected $TARGET_REVISION after the second upgrade"
   assert_backfilled
+  assert_volume_relaxed
 
   after="$(counts_now)"
   [[ "$before" == "$after" ]] || fail "row counts changed across the round trip:

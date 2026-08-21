@@ -85,6 +85,25 @@ class Secrets(BaseSettings):
     telegram_allowed_user_ids: str = ""
     cryptopanic_api_key: SecretStr | None = None
 
+    # ── Saxo Bank OpenAPI (M10b, specs/FOREX.md §3) ──────────────────────────
+    #
+    # Read-only market data. The app registration was created with the trading
+    # checkbox unchecked, so this credential cannot place an order even if something
+    # tried to — the same structural guarantee the keyless ccxt client gives crypto.
+    #
+    # ``saxo_refresh_token`` is a BOOTSTRAP value only. It seeds an empty token store
+    # after a manual browser login and is never written back to: the refresh token
+    # rotates on every use and lives in Postgres from then on. A redeploy that let
+    # this variable win over the stored value would rewind the chain to a single-use
+    # token that has already been spent (specs/FOREX.md §3 requirement 1).
+    saxo_app_key: SecretStr | None = None
+    saxo_app_secret: SecretStr | None = None
+    saxo_refresh_token: SecretStr | None = None
+    #: Where the authorization code lands during a manual login. ``localhost`` on the
+    #: owner's own Mac, deliberately: it keeps the deployment's zero-inbound-ports
+    #: property intact (§3.1).
+    saxo_redirect_uri: str = "https://localhost:8080/callback"
+
     @property
     def allowed_user_ids(self) -> tuple[int, ...]:
         """The pre-M8.1 allowlist. **Bootstrap only** from M8.1 onwards.
@@ -456,9 +475,216 @@ class TelegramConfig(_Strict):
     parse_mode: str = "HTML"
 
 
-#: The adapter name M10a ships. ``forex_saxo`` is a placeholder that no registry
-#: resolves — see ``core/wiring.py``, which refuses it loudly rather than running a
-#: market that would quietly ingest nothing.
+#: How Saxo names each timeframe on ``/chart/v3/charts`` (docs/specs/FOREX.md §4.4).
+#: Every value we need — 1, 15, 60, 240, 1440 — is in Saxo's allowed ``Horizon`` enum,
+#: verified live in journal/M10b_SPIKE.md §E3.
+SAXO_HORIZONS: dict[str, int] = {"1m": 1, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+
+
+class ForexConfig(_Strict):
+    """Everything the forex market needs that crypto has no equivalent of (M10b).
+
+    A **top-level block**, not fields on :class:`MarketConfig`. `MarketConfig` holds
+    what two markets would *disagree* about; this holds what only one of them has at
+    all — a pip grace period, a rollover hour, a swap table, a spread threshold. Put
+    on `MarketConfig` they would sit on crypto as dead keys inviting somebody to give
+    them meaning.
+
+    Nothing here is reachable while ``markets.forex.enabled`` is false.
+    """
+
+    #: LIVE. SIM is deliberately absent: journal/M10b_SPIKE.md found SIM's spread is a
+    #: constant 2.0 pips bolted onto a mid series, so a SIM run would measure a
+    #: fiction — and every cost number in §7 rests on the spread being real.
+    base_url: str = "https://gateway.saxobank.com/openapi"
+    token_url: str = "https://live.logonvalidation.net/token"
+    authorize_url: str = "https://live.logonvalidation.net/authorize"
+
+    #: Tail lengths, in candles, per timeframe. Same +1 convention as crypto: the
+    #: newest bar is still forming and is dropped, so 321 requested is 320 closed.
+    #:
+    #: **1h asks for 1200, not 321** (owner correction, 2026-08-21). Features use the
+    #: most recent 321 of that tail exactly as before; the extra history exists for
+    #: the hour-of-day spread profile, where 321 bars is ~13 days and leaves ~10
+    #: samples per hour after weekends. A median over 10 noisy samples is not a
+    #: baseline, least of all in the tail hours where it decides whether a signal is
+    #: emitted. 1200 is ~50 days and ~35 samples per hour — what the spike measured —
+    #: and it is still **one** request, sitting exactly at the ceiling rather than
+    #: over it.
+    timeframes: tuple[TimeframeSpec, ...] = (
+        TimeframeSpec(timeframe="15m", candles=321),
+        TimeframeSpec(timeframe="1h", candles=1200),
+        TimeframeSpec(timeframe="4h", candles=321),
+        TimeframeSpec(timeframe="1d", candles=101),
+    )
+    #: How many of the 1h tail the feature engine sees. Keeping this equal to crypto's
+    #: 321 is what makes "the 1h tail got longer" a spread-profile change and not a
+    #: feature change.
+    feature_candles_1h: int = Field(default=321, ge=2)
+
+    #: Saxo's documented ``Count`` ceiling. Over-requesting **clamps silently** to it
+    #: (D-e), which is why every read asserts the count it got.
+    max_count: int = Field(default=1200, ge=1)
+
+    #: Seconds after a bar's nominal close before it is treated as closed (§4.1).
+    #: There is no closed flag, so this clock rule is the only thing standing between
+    #: a forming bar and every indicator on the newest candle. Measured publish lag
+    #: was 0-4 s across four rolls, with 5 s of poll pessimism on top: 9 s worst
+    #: observed, and 30 s is ~3x that. Being generous costs nothing against a
+    #: 60-minute bar; being tight poisons an indicator silently.
+    candle_grace_seconds: int = Field(default=30, ge=0)
+
+    #: How far back the hour-of-day spread profile looks, in 1h candles. Separate
+    #: from the tail length so the profile can be widened or narrowed without moving
+    #: what the feature engine sees.
+    spread_lookback_candles: int = Field(default=1200, ge=1)
+
+    #: How many times an instrument's **global** median spread the current spread may
+    #: reach before a new signal is refused (§5.3, owner correction C2, 2026-08-21).
+    #:
+    #: Global, not per-hour-of-day: a per-hour baseline makes GBPUSD's 12.0-pip 21:00
+    #: median "normal for that hour" and never fires at the one hour it exists for.
+    #: See sentinel/fx/spread.py.
+    #:
+    #: 3.0 is a **starting guess to be calibrated from DRY_RUN data**, not a derived
+    #: figure. Sanity-checked against journal/M10b_SPIKE.md §3: EURUSD's global median
+    #: of 1.1 gives a 3.3-pip threshold, not reached in normal London/New York hours
+    #: and exceeded at rollover; GBPUSD's 1.8 gives 5.4, which its 21:00 median of 12.0
+    #: fails. Every firing is logged with instrument, hour, spread and threshold,
+    #: because how often it fires is itself a measurement.
+    spread_max_multiple: Dec = Decimal("3.0")
+    #: Below this many samples the profile is not trusted and the clock backstop is
+    #: used instead. ~35 samples per hour-of-day come out of a 1200-bar tail.
+    spread_min_samples: int = Field(default=30, ge=1)
+
+    # ── the trading week (§5) ────────────────────────────────────────────────
+    #
+    # All UTC, and all **nominal**. The real boundary moves by an hour twice a year
+    # because the US and EU change daylight saving on different dates, so these are a
+    # sanity check against what the candles actually show, never the authority. See
+    # sentinel/fx/hours.py, which derives the week open from candle availability and
+    # logs any divergence from these.
+
+    #: Sunday. journal/M10b_SPIKE.md §6 confirms the last Friday bar is stamped
+    #: 20:00Z (covering 20:00-21:00), so the week closes at 21:00 UTC.
+    week_open_hour_utc: int = Field(default=21, ge=0, le=23)
+    week_close_hour_utc: int = Field(default=21, ge=0, le=23)
+
+    #: How long after the week opens before a signal may be emitted (§5.2). D-d
+    #: leaves the exact Sunday open ambiguous -- 19:00Z or 21:00Z depending on how
+    #: the question is asked -- and Sunday-evening liquidity is thin regardless, so
+    #: nothing is lost by staying quiet through the ambiguity.
+    week_open_quiet_hours: int = Field(default=3, ge=0)
+
+    #: No new signals after this hour on Friday (§5.4). A ladder placed later cannot
+    #: fill before the weekend, and a position that does fill carries gap risk
+    #: through it -- neither has any analogue in a 24/7 market.
+    friday_signal_cutoff_hour_utc: int = Field(default=19, ge=0, le=23)
+
+    # ── rollover (§5.3) ──────────────────────────────────────────────────────
+    #
+    # The primary rail is spread-triggered (see spread_max_multiple). This clock
+    # window is the **backstop** for when the measured spread series is unavailable.
+
+    #: Swap is charged here, and tripled on Wednesday.
+    rollover_hour_utc: int = Field(default=21, ge=0, le=23)
+    #: Half-open on bar stamps: 19 to 22 covers the bars stamped 19, 20 and 21, which
+    #: is wall-clock 19:00-22:00. journal/M10b_SPIKE.md §3 measures elevated spreads
+    #: across exactly those three bars (GBPUSD median 12.0 pips at 21:00) and normal
+    #: ones again at 22:00. v1's +/-15 minutes was far too narrow.
+    rollover_window_start_hour_utc: int = Field(default=19, ge=0, le=23)
+    rollover_window_end_hour_utc: int = Field(default=22, ge=1, le=24)
+
+    # ── authentication (§3) ──────────────────────────────────────────────────
+
+    #: How often the refresh job runs, in seconds. Measured access-token lifetime is
+    #: ~20 minutes (1070-1200 s observed, and it VARIES between responses), so five
+    #: minutes sits well inside it. The cadence is not really about the access token
+    #: though: every refresh resets the refresh token's one-hour life, and that hour
+    #: is the whole margin between a restart that survives and one that needs a human.
+    token_refresh_interval_seconds: int = Field(default=300, ge=30)
+    #: Refresh early if the access token is inside this margin of expiring, so a call
+    #: is never made with a token that dies mid-flight.
+    token_expiry_margin_seconds: int = Field(default=120, ge=0)
+
+    # ── the economic calendar (§8) ───────────────────────────────────────────
+    #
+    # There is NO reachable Saxo calendar: the feature flag says Calendar: true and
+    # all five probed paths 404 (journal/M10b_SPIKE.md §5). The hand-maintained YAML
+    # at sentinel/fx/data/calendar.yaml is not a backstop, it is the only source, and
+    # keeping it current is real recurring manual work.
+
+    #: Suppress new signals from this many minutes before a high-impact event...
+    blackout_before_minutes: int = Field(default=60, ge=0)
+    #: ...to this many minutes after it. Owner decision, 2026-08-21.
+    blackout_after_minutes: int = Field(default=30, ge=0)
+    #: Alert when the calendar's coverage runs out within this many days. It is a
+    #: warning, not a suppression -- suppression happens once coverage has actually
+    #: lapsed, and the point of the warning is that the owner hears about it before
+    #: that morning rather than on it.
+    calendar_warn_within_days: int = Field(default=14, ge=0)
+
+    # ── transaction costs (§7.3) ─────────────────────────────────────────────
+    #
+    # The spread is MEASURED, not configured -- it is the one thing forex has that
+    # crypto's order book was standing in for, and journal/M10b_SPIKE.md confirmed the
+    # chart spread against a firm dealable quote. Only the two things the chart cannot
+    # tell us live here.
+
+    #: Commission per 1,000,000 units of quote-currency notional, per leg. Saxo's
+    #: standard FX spot pricing is spread-only, so this is 0 -- a **configured** zero
+    #: for an account-specific fee, not a missing measurement standing in as one. Set
+    #: it if the account has a commission schedule.
+    commission_per_million_quote: Dec = Decimal("0")
+
+    #: Swap, in pips per night, per instrument per direction. Charged at
+    #: ``rollover_hour_utc`` Monday to Friday and TRIPLED on Wednesday, which is how
+    #: the market settles the coming weekend in advance.
+    #:
+    #: Empty by default and that is deliberate: swap rates are account- and
+    #: date-specific, they are published by the broker rather than derivable from the
+    #: chart, and a plausible-looking guess here would be a fabricated cost. An
+    #: instrument with no entry is charged nothing and the report says which.
+    swap_pips_per_night: dict[str, dict[str, Dec]] = {}
+
+    #: Whether a swap CREDIT may improve net RR. False means the gate charges
+    #: ``max(0, rollover)``: the credit is still shown, but it can never be the reason
+    #: a plan clears the threshold. Same rule and same reasoning as crypto's
+    #: ``credit_favourable_funding`` (specs/RISK_ENGINE.md §4.2).
+    credit_favourable_rollover: bool = False
+
+    # ── sizing and margin (§7.6) ─────────────────────────────────────────────
+
+    #: Maximum leverage, and it is an **assumption**, not a reading. Spike defect D-f:
+    #: the instrument details response carries no ``MarginRates`` and no
+    #: ``MarginTiers``, so FOREX.md v1's "read the venue's actual leverage figure" is
+    #: not satisfiable from that endpoint. 30:1 is the ESMA retail cap on major pairs.
+    #: sentinel/fx/sizing.py carries the words with the number, so a surface cannot
+    #: show the figure without the caveat.
+    max_leverage: int = Field(default=30, ge=1)
+    #: Ceiling on total forex margin as a share of equity (§7.6's rail).
+    max_margin_pct_of_equity: Dec = Decimal("20")
+    #: §9. One open forex position at a time for the first measurement window.
+    #: EURUSD, GBPUSD and USDJPY all cross the dollar, so long EURUSD plus short
+    #: USDJPY is one large short-dollar bet wearing two hats and the existing rails
+    #: would allow both. Crude, safe, and it makes the first numbers interpretable.
+    max_concurrent_positions: int = Field(default=1, ge=1)
+
+    #: How many timeframes old the newest closed candle may be **while the market is
+    #: open** before the symbol is skipped. Checked only when open: a weekend read is
+    #: hours stale by construction and that is not a fault. See journal/M10b_REPORT.md
+    #: on spec defect #14 -- FOREX.md §5.1 expected crypto's staleness rule to misfire
+    #: over the weekend, when in fact it compares ``fetched_at`` and would have
+    #: reported a frozen weekend snapshot as perfectly fresh.
+    max_candle_age_multiplier: int = Field(default=2, ge=1)
+
+
+#: The adapter name M10a ships. ``forex_saxo`` names
+#: :class:`~sentinel.ingestion.adapters.forex_saxo.SaxoForexAdapter` from M10b-1 —
+#: which exists, is tested, and is **not wired into a cycle**. The orchestrator still
+#: builds only the Binance adapter; M10b-2 adds the second path. So the name resolves
+#: to real code and to no behaviour, which is exactly what shipping behind
+#: ``enabled: false`` is supposed to mean.
 CRYPTO_ADAPTER = "crypto_binance"
 
 
@@ -618,6 +844,9 @@ class AppConfig(_Strict):
     llm: LLMConfig = LLMConfig()
     telegram: TelegramConfig = TelegramConfig()
     alerts: AlertsConfig = AlertsConfig()
+    #: M10b. Unreachable while ``markets.forex.enabled`` is false; present so the
+    #: shape is reviewable and testable before the market is switched on.
+    forex: ForexConfig = ForexConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -631,6 +860,41 @@ class AppConfig(_Strict):
         if not isinstance(data, dict):
             return data
         return normalise_markets(data)
+
+    @model_validator(mode="after")
+    def _symbols_are_disjoint_across_markets(self) -> AppConfig:
+        """No symbol may be watched by two markets (M10b, specs/FOREX.md §4.3).
+
+        ``ohlcv_candles`` keeps its ``(symbol, timeframe, open_time)`` primary key —
+        M10a deliberately did not widen it, because symbols are disjoint and
+        rebuilding the largest table in the schema for a query nobody makes is a poor
+        trade. ``bot/markets.market_of_symbol`` rests on the same assumption.
+
+        M10a left "does the key have to grow before two markets can share a symbol
+        string" as an open question for M10b. This is the answer: the assumption is
+        **asserted at load** rather than widened, so an overlap is found by a config
+        that refuses to load rather than by corrupted candles that upsert over each
+        other with no error and no way back.
+
+        Checked across **every configured market, enabled or not** — deliberately
+        wider than the failure it prevents. An overlap introduced while forex is
+        switched off is a trap set for the day it is switched on, and a config edit
+        is the cheapest possible moment to hear about it.
+        """
+        seen: dict[str, Market] = {}
+        for name, cfg in self.markets.items():
+            for symbol in cfg.watchlist:
+                owner = seen.get(symbol)
+                if owner is not None:
+                    raise ValueError(
+                        f"symbol {symbol!r} is watched by both {owner.value} and "
+                        f"{name.value}. Symbols must be disjoint across markets: "
+                        f"ohlcv_candles is keyed on (symbol, timeframe, open_time) "
+                        f"without the market, so two markets sharing one would upsert "
+                        f"over each other silently."
+                    )
+                seen[symbol] = name
+        return self
 
     def market(self, market: Market = LEGACY_MARKET) -> MarketConfig:
         """One market's settings.

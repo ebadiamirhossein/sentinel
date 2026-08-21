@@ -297,16 +297,48 @@ takes a populated production dump up, down and up again with row counts intact.
 **Exit criteria:** crypto output byte-identical, risk engine untouched (zero-line
 diff, 100% branch coverage unchanged), migration verified against a populated copy.
 
-## M10b — Forex adapter (spec pending — do not implement)
-The second market itself: a `MarketDataAdapter` for the Saxo Bank OpenAPI, market-hours
-awareness, economic-calendar blackouts (FOMC/CPI/NFP), DXY as the regime anchor, and
-an honest account of what forex does *not* have — no funding, no open interest, no
-true volume. **No specification exists yet.** M10a deliberately wrote none: the design
-belongs here, and guessing at it would have been the thing that made M10a too big.
-Open questions M10a recorded for this milestone: whether crypto keeps a reserved
-budget floor so a new unmeasured market cannot squeeze the measured one, and whether
-`ohlcv_candles` needs `market` in its primary key before two markets can share a
-symbol string.
+## M10b-1 — Forex data spine and sizing core ✅
+Build-order steps 1–6 of `docs/specs/FOREX.md` §14, shipped behind
+`markets.forex.enabled: false` so deploying it is a **no-op** for the running crypto
+system. What landed: a Saxo FxSpot `MarketDataAdapter` with the pip cross-checked
+against `TickSize × 10` and paging forbidden outright; market hours, where *closed* is
+a normal state with its own code and is checked before any staleness rule; the OAuth
+chain hardened for a single-use rotating credential with a one-hour memory; a new
+`sentinel/fx/` sizing module built test-first from hand-computed fixtures, with
+`sentinel/risk/` untouched; measured-spread costs and a corrected net-RR model; and the
+hand-maintained economic calendar with the staleness rail that stops an expired file
+reading as "no events today". Migration `0011` makes `ohlcv_candles.volume` nullable —
+forex has no volume of any kind, and §2.1 requires that to look missing rather than
+zero — and adds `forex_instruments` and `saxo_oauth_tokens`.
+
+Five further spec defects were found by checking FOREX.md against the code rather than
+against the API, and all five are recorded dated in its corrections log; two of them
+(#15's self-defeating spread baseline and #16's net-RR arithmetic) changed shipped
+behaviour. **Answering M10a's two open questions:** symbols stay disjoint and the
+`ohlcv_candles` primary key is **not** widened — the assumption is asserted at config
+load instead, so an overlap is a file that will not load rather than candles that
+silently interleave. Crypto's reserved budget floor lands with the wiring in M10b-2,
+because it only bites once forex can spend.
+**Exit criteria (met):** crypto goldens byte-identical, `git diff sentinel/risk/` empty,
+risk branch coverage unchanged at 100%, `make check` green.
+
+## M10b-2 — Forex features, charts and wiring (spec written — not implemented)
+Steps 7–8: the added features (prior-day and prior-week levels, session labels, a
+synthetic USD strength index, cross-pair correlation, the measured spread series), the
+chart variant with **no volume panel at all** rather than an empty one, the forex
+analyst prompt stating plainly which inputs are unavailable, and the orchestrator and
+tracker wiring — still behind `enabled: false`. Split out of M10b because these need
+visual checking, which is different work from the fixture-driven half and deserves its
+own attention rather than the tail of a long session.
+
+## M10c — Forex card, publishing and tracking (spec pending — do not implement)
+`TradePlan` is crypto-shaped and frozen, so a forex plan cannot travel as one (FOREX.md
+defect #12): `notional_usdt`, `suggested_leverage`, `liq_distance_pct` and
+`liq_buffer_ok` have no forex meaning, and §7.6 forbids faking the liquidation buffer.
+This milestone decides the plan model, the card renderer, the publisher branch and the
+tracker loop for a market whose margin is account-level. It is also where §11's
+**deliberate** regeneration of the golden surfaces happens, as a named step: switching
+forex on gives crypto cards their market tag, which changes their bytes.
 
 ## M11 — Ensemble shadow mode (1 day) (spec pending — do not implement)
 OpenAI GPT-5.6 Sol as second AnalystProvider per docs/specs/ENSEMBLE.md §3; parallel

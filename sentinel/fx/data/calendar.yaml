@@ -1,0 +1,61 @@
+# The economic calendar — docs/specs/FOREX.md §8.
+#
+# THIS IS THE ONLY SOURCE. It is not a backstop.
+#
+# FOREX.md v1 assumed Saxo's API would serve a calendar. journal/M10b_SPIKE.md §5
+# disproved it: /root/v1/features/availability reports `{"Feature":"Calendar",
+# "Available":true}` and every probed path 404s. The public reference docs list no
+# calendar service group at all. So this hand-maintained file is the whole of
+# Sentinel's knowledge of scheduled events, and keeping it current is real recurring
+# manual work that the spec should not pretend away.
+#
+# WHILE `events` IS EMPTY OR `coverage_until` HAS PASSED, FOREX EMITS NO SIGNALS.
+# That is deliberate (§8's staleness rail): an expired calendar must never silently
+# become "no events today", and with no second source to disagree with it, the only
+# safe reading of "I don't know" is "don't trade". Sentinel will alert rather than
+# trade blind.
+#
+# ---------------------------------------------------------------------------
+# SCHEMA
+#
+#   version:        1
+#   coverage_until: an ISO date. Events are believed complete UP TO AND INCLUDING
+#                   this date. `null` means no coverage is claimed, which is what
+#                   this file ships as — no dates are invented here, because a
+#                   plausible-looking wrong date is worse than an empty file.
+#   events:         a list of, at minimum, the high-impact scheduled releases:
+#                   central bank rate decisions, CPI, NFP, GDP, PMI.
+#
+#     - at:       ISO 8601 instant, UTC, with the trailing Z. Note that US releases
+#                 move with US daylight saving and EU ones with EU daylight saving,
+#                 and the two change on different dates — so a fixed local time is
+#                 NOT a fixed UTC time. Write the UTC instant, not a rule.
+#       currency: EUR | USD | GBP | JPY. Matched against BOTH sides of a pair, so a
+#                 USD event blacks out EURUSD, GBPUSD and USDJPY alike.
+#       impact:   HIGH | MEDIUM | LOW. Only HIGH suppresses anything (owner
+#                 decision, 2026-08-21). The others are carried for context.
+#       name:     free text, treated as UNTRUSTED — it is sanitised on load and, if
+#                 it ever reaches a prompt, it goes inside M5's untrusted-data
+#                 delimiters like any other external text.
+#
+# Example, commented out on purpose so that no date in this file can be mistaken for
+# one somebody verified:
+#
+#   coverage_until: 2026-12-31
+#   events:
+#     - at: 2026-09-10T12:15:00Z
+#       currency: EUR
+#       impact: HIGH
+#       name: ECB monetary policy decision
+#     - at: 2026-09-04T12:30:00Z
+#       currency: USD
+#       impact: HIGH
+#       name: US non-farm payrolls
+#
+# Central bank meeting dates are published about a year ahead, so most of the
+# recurring burden is the monthly data releases rather than the rate decisions.
+# ---------------------------------------------------------------------------
+
+version: 1
+coverage_until: null
+events: []

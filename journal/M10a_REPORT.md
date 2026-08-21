@@ -374,6 +374,22 @@ fail, and the failures do not name the cause.**
    to be pointed at the scratch database explicitly — exporting
    `SENTINEL_TEST_DATABASE_URL` alone migrates nothing.
 
+   **ASSERT THE UPGRADE HAPPENED. DO NOT MERELY CHECK THE EXIT CODE.** Added
+   2026-08-21, after `alembic upgrade head` ran against a stale image, reported an
+   older revision as head, **skipped a migration entirely and exited 0**. Nothing said
+   so — the only signal was the *absence* of a `Running upgrade …` line. Either grep
+   the output for `Running upgrade <previous> -> <target>`, or read it back:
+
+   ```
+   psql … -tAc 'SELECT version_num FROM alembic_version'
+   ```
+
+   and assert it is the revision you expected. An exit code is a proxy; the revision is
+   the thing. (`ops/verify-migration.sh` already asserts the revision after every
+   upgrade and downgrade — it is this hand-run recipe that had the gap.
+   journal/M10b_REPORT.md §3b has the full write-up, and it was the third instance of
+   the same pattern in one day.)
+
 3. Then run the suite. `tests/db_guard.py` refuses to run if
    `SENTINEL_TEST_DATABASE_URL` resolves to the same host and database as
    `DATABASE_URL`, so a scratch name distinct from `sentinel` is not optional:

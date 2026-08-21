@@ -35,7 +35,15 @@ class MarketDataAdapter(Protocol):
     async def orderbook_snapshot(self, symbol: str) -> BookSnapshot | None: ...
 
     #: Tick size, quantity step and min notional — consumed by the risk engine.
-    async def instrument_meta(self, symbol: str) -> InstrumentMeta: ...
+    #:
+    #: ``None`` from M10b, for a venue whose trading rules genuinely do not have this
+    #: shape. Forex has a pip and a minimum *trade size* in base units, not a tick, a
+    #: quantity step and a minimum notional; forcing those into these four fields
+    #: would put a units figure in ``min_notional`` and read as a money one. The
+    #: forex adapter answers ``None`` here and exposes a ``ForexInstrument`` instead.
+    #: ``MarketSnapshot.instrument`` has always been optional, and the assembler
+    #: already treats a missing one as a degraded secondary rather than a failure.
+    async def instrument_meta(self, symbol: str) -> InstrumentMeta | None: ...
 
     def market_hours(self) -> MarketHours: ...
 

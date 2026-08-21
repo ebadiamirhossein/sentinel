@@ -62,10 +62,14 @@ markets:
     llm_daily_budget_usd: 10
     llm_daily_warn_usd: 7
 
-  # NOT IMPLEMENTED. M10a adds the market dimension and no forex code whatsoever:
-  # no adapter is registered under `forex_saxo`, and core/wiring.py refuses to build
-  # one rather than running a market that would quietly ingest nothing. This block
-  # exists so the shape is reviewable — and testable — before M10b fills it in.
+  # STILL OFF, and deploying M10b-1 is a no-op for the running crypto system.
+  #
+  # M10a added the market dimension and no forex code at all. M10b-1 adds the data
+  # spine: a Saxo FxSpot adapter, market hours, the OAuth chain, sizing, costs and the
+  # calendar — all tested, none of it wired into a cycle. The orchestrator still has
+  # no forex path (M10b-2 does that), so nothing under `forex:` below is reachable
+  # while this is false, and a forex signal cannot be produced at all until M10c adds
+  # the card and the tracker.
   forex:
     enabled: false
     dry_run: true
@@ -360,3 +364,131 @@ telegram:
   card_chart_timeframes: [1h, 4h]
   poll_timeout_seconds: 30
   parse_mode: HTML
+
+# M10b-1 — the forex market's own settings. UNREACHABLE while
+# markets.forex.enabled is false, which is how this release ships: deploying M10b-1
+# is a no-op for the running crypto system.
+#
+# A top-level block rather than fields on markets.forex, because everything here is
+# something only ONE market has at all — a pip grace period, a rollover hour, a swap
+# table, a spread threshold. On MarketConfig they would sit on crypto as dead keys
+# inviting somebody to give them meaning.
+forex:
+  # LIVE only. SIM is deliberately absent: the spike found SIM's spread is a constant
+  # 2.0 pips bolted onto a mid series, so a SIM run would measure a fiction — and
+  # every cost number in §7 rests on the spread being real.
+  base_url: https://gateway.saxobank.com/openapi
+  token_url: https://live.logonvalidation.net/token
+  authorize_url: https://live.logonvalidation.net/authorize
+
+  # Same +1 convention as crypto: the newest bar is still forming and is dropped, so
+  # 321 requested is 320 closed.
+  #
+  # 1h asks for 1200, not 321 (owner correction C3, 2026-08-21). 321 bars is ~13 days,
+  # which after weekends leaves ~10 samples in each hour-of-day spread bucket, and a
+  # median over ten noisy samples is not a baseline — least of all in the tail hours
+  # where it decides whether a signal is emitted. 1200 is ~50 days and ~35 samples per
+  # bucket, which is what the spike actually measured, and it is still ONE request
+  # sitting exactly at the ceiling rather than over it. Features still use the most
+  # recent 321 of that tail, so this is a spread-profile change and not a feature one.
+  timeframes:
+    - { timeframe: 15m, candles: 321 }
+    - { timeframe: 1h, candles: 1200 }
+    - { timeframe: 4h, candles: 321 }
+    - { timeframe: 1d, candles: 101 }
+  feature_candles_1h: 321
+  # Saxo's documented Count ceiling. Over-requesting CLAMPS SILENTLY to it, which is
+  # why every read asserts the count it actually got (spike defect D-e).
+  max_count: 1200
+  spread_lookback_candles: 1200
+
+  # There is no closed-candle flag. A bar stamped T on horizon H is closed iff
+  # now >= T + H + grace, and without that rule a forming bar poisons RSI, ATR and the
+  # whole EMA stack on the newest candle — plausibly, with no error. Measured publish
+  # lag was 0-4s across four rolls, plus 5s of poll pessimism: 9s worst observed, and
+  # 30s is ~3x that. Being generous costs nothing against a 60-minute bar.
+  candle_grace_seconds: 30
+
+  # No new signal when the current spread exceeds this multiple of the instrument's
+  # GLOBAL median (spec defect #15, owner correction C2, 2026-08-21).
+  #
+  # Global, NOT per-hour-of-day. §5.3 said per-hour and that is self-defeating: at
+  # 21:00 GBPUSD's hour-of-day median IS 12.0 pips, so a 12-pip spread at 21:00 is
+  # "normal for that hour" and sails through — while costing 0.667R of an 18-pip stop.
+  # Against the global median, rollover hours fail naturally, which is what §5.3 was
+  # reaching for. The per-hour median is still what the COST model uses.
+  #
+  # 3.0 is a STARTING GUESS to be calibrated from DRY_RUN data, not a derived figure.
+  # Sanity check: EURUSD's global median of 1.1 gives a 3.3-pip threshold, GBPUSD's
+  # 1.8 gives 5.4 — and its 21:00 median of 12.0 fails that.
+  spread_max_multiple: 3.0
+  spread_min_samples: 30
+
+  # The trading week, in UTC and all NOMINAL. The real boundary moves by an hour twice
+  # a year because the US and EU change daylight saving on different dates, so these
+  # are a sanity check against what the candles show, never the authority.
+  week_open_hour_utc: 21
+  week_close_hour_utc: 21
+  # No signals in the first hours of the week. D-d leaves the Sunday open ambiguous
+  # (19:00Z or 21:00Z depending how you ask) and Sunday-evening liquidity is thin
+  # anyway, so nothing is lost by staying quiet through the ambiguity.
+  week_open_quiet_hours: 3
+  # No new signals after this hour on Friday: a ladder placed later cannot fill before
+  # the weekend, and one that does fill carries gap risk through it.
+  friday_signal_cutoff_hour_utc: 19
+
+  # Swap is charged here and TRIPLED on Wednesday. The 19-22 window is half-open on
+  # bar stamps, so it covers the bars stamped 19, 20 and 21 — wall-clock 19:00-22:00,
+  # which is exactly the three bars the spike measured as elevated. v1's +/-15 minutes
+  # was far too narrow. This clock window is the BACKSTOP; the spread trigger above is
+  # the primary rail.
+  rollover_hour_utc: 21
+  rollover_window_start_hour_utc: 19
+  rollover_window_end_hour_utc: 22
+
+  # The economic calendar (§8). There is NO reachable Saxo calendar — the feature flag
+  # says Calendar: true and all five probed paths 404 — so sentinel/fx/data/calendar.yaml
+  # is the ONLY source. It ships claiming no coverage, so forex emits nothing until it
+  # is populated: with one source, "I do not know" and "nothing is scheduled" are the
+  # same silence, and only one of them is safe to trade through.
+  blackout_before_minutes: 60
+  blackout_after_minutes: 30
+  calendar_warn_within_days: 14
+
+  # The spread is MEASURED, not configured. Only what the chart cannot tell us is here.
+  # Saxo's standard FX spot pricing is spread-only, so commission is a configured zero
+  # for an account-specific fee — not a missing measurement standing in as one.
+  commission_per_million_quote: 0
+  # Swap in pips per night, per instrument per direction. Empty on purpose: swap rates
+  # are account- and date-specific, published by the broker rather than derivable from
+  # the chart, and a plausible-looking guess here would be a fabricated cost.
+  swap_pips_per_night: {}
+  # false = the gate charges max(0, rollover), so a swap CREDIT is shown but can never
+  # be the reason a plan clears the threshold. Same rule as crypto's funding.
+  credit_favourable_rollover: false
+
+  # 30:1 is the ESMA retail cap and it is an ASSUMPTION, not a reading: the instrument
+  # details response carries no MarginRates and no MarginTiers (spike defect D-f), so
+  # v1's "read the venue's actual leverage figure" is not satisfiable. Every sized
+  # position carries those words with the number so a surface cannot show one without
+  # the other.
+  max_leverage: 30
+  max_margin_pct_of_equity: 20
+  # One open forex position at a time for the first measurement window (§9). EURUSD,
+  # GBPUSD and USDJPY all cross the dollar, so long EURUSD plus short USDJPY is one
+  # large short-dollar bet wearing two hats and the existing rails would allow both.
+  max_concurrent_positions: 1
+
+  # How many timeframes old the newest CLOSED candle may be while the market is OPEN.
+  # Checked only when open — a weekend read is hours stale by construction and that is
+  # not a fault. See spec defect #14: FOREX.md §5.1 expected crypto's staleness rule to
+  # misfire over the weekend when in fact it compares fetched_at and would have called
+  # a frozen weekend snapshot perfectly fresh.
+  max_candle_age_multiplier: 2
+
+  # The access token lives ~20 minutes, but the cadence is really about the REFRESH
+  # token: it lives ~1 hour and rotates on every use, and each refresh resets that
+  # hour. That hour is the whole margin between a restart that survives unattended and
+  # one that needs a browser login.
+  token_refresh_interval_seconds: 300
+  token_expiry_margin_seconds: 120

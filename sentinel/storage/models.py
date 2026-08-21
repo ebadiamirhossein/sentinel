@@ -149,6 +149,79 @@ class InstrumentMetaRow(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ForexInstrumentRow(Base):
+    """Resolved Saxo FxSpot instruments and their **cross-checked** pip (M10b).
+
+    A table of its own rather than rows in ``instrument_meta``, and that is a
+    correction to specs/FOREX.md §4.2 rather than a convenience. ``instrument_meta``
+    is a tick size, a quantity step, a minimum **notional** and a contract size —
+    Binance's shape. Forex has a Uic, a ``Format.Decimals``, a pip and a minimum
+    **trade size** in base units, and no lot rounding at all. Three of those have no
+    column here and one of them (a units figure landing in ``min_notional``) would
+    read as money. Same defect class as ``TradePlan`` not fitting a forex plan.
+
+    ``pip`` is stored even though it is derivable from ``decimals``, so the value the
+    system actually used is on the record. The whole of failure mode A is that a
+    plausible pip and a plausible ``decimals`` can disagree by a factor of ten
+    without anything saying so; a stored pip makes that auditable after the fact.
+    """
+
+    __tablename__ = "forex_instruments"
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    uic: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: ``Format.Decimals`` — the **pip** precision, not the quote precision.
+    decimals: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pip: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    tick_size: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    min_trade_size: Mapped[Decimal] = mapped_column(PRICE, nullable=False)
+    amount_decimals: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    base_currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    quote_currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SaxoTokenRow(Base):
+    """The rotating Saxo OAuth credential (M10b, specs/FOREX.md §3).
+
+    **One row, enforced by the schema.** ``id`` is fixed at 1: a second row would be
+    a second answer to "which refresh token is live", and since the refresh token is
+    single-use the wrong answer is not merely stale, it is spent.
+
+    In Postgres rather than a file because §3 requirement 6 needs it to survive a
+    restart *and* a redeploy, and because the rotated token must be written inside
+    the same transaction that used it.
+
+    Values are stored in the clear here for the same reason the database holds every
+    other operational secret it is given — the deployment's protection is that
+    Postgres publishes no host port at all. Nothing reads these columns into a log
+    line: :mod:`sentinel.ingestion.clients.saxo_auth` logs sha256 prefixes only.
+
+    Both expiries are **nullable**, and that is meaningful rather than lazy: a
+    bootstrap refresh token pasted in from a manual browser login has no lifetime we
+    were told, and inventing one would be exactly the "read every operational value,
+    never assume" failure that spike defect D-c is about. Unknown stays unknown until
+    the first refresh answers it.
+    """
+
+    __tablename__ = "saxo_oauth_tokens"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    access_token: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    access_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refresh_token: Mapped[str] = mapped_column(String(2048), nullable=False)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    obtained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: How many times the chain has rotated. Operational evidence, not a control:
+    #: a counter that stops climbing is the visible symptom of a persist that is
+    #: silently failing, which is the bug §3 requirement 2 exists to catch.
+    refresh_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
 class FxRateRow(Base):
     """Last-known-good FX rate, so a restart during an outage still has one (§2.4)."""
 

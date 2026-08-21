@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +35,15 @@ from sentinel.bot.models import (
 )
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
-from sentinel.ingestion.models import FxRate, InstrumentMeta, MarketSnapshot, Stamped
+from sentinel.fx.instruments import ForexInstrument
+from sentinel.fx.models import SaxoTokenBundle
+from sentinel.ingestion.models import (
+    FxRate,
+    InstrumentMeta,
+    MarketSnapshot,
+    Stamped,
+    assert_volume_matches_market,
+)
 from sentinel.llm.models import LLMCall, LLMCallKind, LLMCallStatus
 from sentinel.llm.spend import SpendTotals
 from sentinel.risk.models import GateDecision, GateStatus, PauseReason, PauseState, TradePlan
@@ -44,6 +52,7 @@ from sentinel.storage.models import (
     AnalystReportRow,
     ConfigChangeRow,
     CycleRow,
+    ForexInstrumentRow,
     FxRateRow,
     GateDecisionRow,
     IngestionFailureRow,
@@ -54,6 +63,7 @@ from sentinel.storage.models import (
     OhlcvCandleRow,
     RiskStateRow,
     RuntimeSettingRow,
+    SaxoTokenRow,
     SignalEventRow,
     SignalExitRow,
     SignalFillRow,
@@ -111,9 +121,23 @@ def snapshot_sources(snapshot: MarketSnapshot) -> dict[str, Any]:
 def candle_rows(
     snapshot: MarketSnapshot, *, market: Market = LEGACY_MARKET
 ) -> list[dict[str, Any]]:
-    """Flatten every timeframe's candles into upsertable row dicts."""
+    """Flatten every timeframe's candles into upsertable row dicts.
+
+    The volume invariant (M10b, owner R-b) is re-checked here as well as on
+    :class:`~sentinel.ingestion.models.OHLCVSeries`. Not belt-and-braces for its own
+    sake: this is the seam where a series meets a *repository's* market, and the two
+    can disagree — a forex series written through a crypto-scoped repository would
+    otherwise land as crypto rows with null volumes, which is precisely the "nullable
+    quietly becomes sometimes-missing" failure the invariant exists to prevent.
+    """
     rows: list[dict[str, Any]] = []
     for timeframe, series in snapshot.ohlcv.items():
+        if series.market is not market:
+            raise ValueError(
+                f"{snapshot.symbol} {timeframe}: candles are {series.market.value} but "
+                f"the repository is scoped to {market.value}"
+            )
+        assert_volume_matches_market(series.candles, market)
         rows.extend(
             {
                 "market": market.value,
@@ -278,6 +302,125 @@ class InstrumentMetaRepository(MarketScopedRepository):
             qty_step=row.qty_step,
             min_notional=row.min_notional,
             contract_size=row.contract_size,
+        )
+
+
+class ForexInstrumentRepository:
+    """Resolved Uics and their cross-checked pips (M10b).
+
+    Not market-scoped: the table *is* the forex market, so a ``market`` column would
+    be a constant.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def upsert(self, instrument: ForexInstrument) -> None:
+        statement = insert(ForexInstrumentRow).values(
+            symbol=instrument.symbol,
+            uic=instrument.uic,
+            decimals=instrument.decimals,
+            pip=instrument.pip,
+            tick_size=instrument.tick_size,
+            min_trade_size=instrument.min_trade_size,
+            amount_decimals=instrument.amount_decimals,
+            base_currency=instrument.base_currency,
+            quote_currency=instrument.quote_currency,
+            resolved_at=instrument.resolved_at,
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["symbol"],
+                set_={
+                    "uic": statement.excluded.uic,
+                    "decimals": statement.excluded.decimals,
+                    "pip": statement.excluded.pip,
+                    "tick_size": statement.excluded.tick_size,
+                    "min_trade_size": statement.excluded.min_trade_size,
+                    "amount_decimals": statement.excluded.amount_decimals,
+                    "base_currency": statement.excluded.base_currency,
+                    "quote_currency": statement.excluded.quote_currency,
+                    "resolved_at": statement.excluded.resolved_at,
+                },
+            )
+        )
+
+    async def get(self, symbol: str) -> ForexInstrument | None:
+        """Read one back. The pip is **re-validated** on the way out.
+
+        :class:`ForexInstrument` cross-checks ``pip`` against ``TickSize x 10`` on
+        construction, so a row that somehow acquired an inconsistent pair raises here
+        rather than silently sizing every position ten times wrong. Failure mode A
+        does not stop being dangerous once the value is in a database.
+        """
+        row = await self._session.get(ForexInstrumentRow, symbol)
+        if row is None:
+            return None
+        return ForexInstrument(
+            symbol=row.symbol,
+            uic=row.uic,
+            decimals=row.decimals,
+            pip=row.pip,
+            tick_size=row.tick_size,
+            min_trade_size=row.min_trade_size,
+            amount_decimals=row.amount_decimals,
+            base_currency=row.base_currency,
+            quote_currency=row.quote_currency,
+            resolved_at=row.resolved_at,
+        )
+
+
+class SaxoTokenRepository:
+    """The single-row Saxo OAuth credential (M10b, specs/FOREX.md §3).
+
+    ``save`` then ``load`` is the whole contract, and the caller is expected to use
+    both: a 2xx from the token endpoint is not proof the token was stored, and the
+    refresh token is single-use, so an unnoticed write failure does not degrade the
+    next call — it ends the chain.
+    """
+
+    #: Fixed. The check constraint refuses anything else, and the code never invents
+    #: a second row to hold a "candidate" credential.
+    ROW_ID = 1
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def save(self, bundle: SaxoTokenBundle) -> None:
+        statement = insert(SaxoTokenRow).values(
+            id=self.ROW_ID,
+            access_token=bundle.access_token_value,
+            access_expires_at=bundle.access_expires_at,
+            refresh_token=bundle.refresh_token_value,
+            refresh_expires_at=bundle.refresh_expires_at,
+            obtained_at=bundle.obtained_at,
+            refresh_count=bundle.refresh_count,
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["id"],
+                set_={
+                    "access_token": statement.excluded.access_token,
+                    "access_expires_at": statement.excluded.access_expires_at,
+                    "refresh_token": statement.excluded.refresh_token,
+                    "refresh_expires_at": statement.excluded.refresh_expires_at,
+                    "obtained_at": statement.excluded.obtained_at,
+                    "refresh_count": statement.excluded.refresh_count,
+                },
+            )
+        )
+
+    async def load(self) -> SaxoTokenBundle | None:
+        row = await self._session.get(SaxoTokenRow, self.ROW_ID)
+        if row is None:
+            return None
+        return SaxoTokenBundle(
+            access_token=None if row.access_token is None else SecretStr(row.access_token),
+            access_expires_at=row.access_expires_at,
+            refresh_token=SecretStr(row.refresh_token),
+            refresh_expires_at=row.refresh_expires_at,
+            obtained_at=row.obtained_at,
+            refresh_count=row.refresh_count,
         )
 
 
