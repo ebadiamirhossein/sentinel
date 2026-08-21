@@ -232,6 +232,31 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
     name one number. **`pandas` is still `>=2.2` and sits in exactly the same
     position** — its own decision, deliberately not taken in M10c.
 
+    > **Correction (2026-08-21, from the hygiene session) — pandas is now decided,
+    > and the measurement contradicted the assumption in the sentence above.**
+    > `pandas==3.0.5`, and `ccxt==4.5.75` with it. The text above is left as written
+    > because it is the record of what M10c chose to defer.
+    >
+    > It was **not** a repeat of the numpy story. `.venv` and the image *already
+    > agreed*, at 3.0.5, which is why `check_pins` never warned: a divergence is the
+    > only thing it can see, and two environments floating in step look exactly like
+    > two environments pinned. So the pin moved no version and could not move a
+    > golden — verified, 37/37 byte-identical — and what it bought was turning an
+    > accident into a decision.
+    >
+    > The assumption worth correcting is "still `>=2.2`". That is the *declaration*;
+    > the *resolution* on both sides had already crossed into **pandas 3.x** by
+    > ordinary upgrade, with nothing recording it. A floor of `>=2.2` under a stack
+    > running 3.0.5 is the same defect one level up from the one this item describes:
+    > the declaration stopped describing the software some time ago and nothing said
+    > so. That is the argument for pinning rather than for widening the floor.
+    >
+    > `uvicorn` is deliberately left unpinned and warning — it serves a loopback
+    > `/health` endpoint and touches no number the product produces, and one live
+    > divergence is what keeps `check_pins`' WARN branch observable in a real run
+    > instead of exercised only by its own unit tests. See
+    > journal/HYGIENE_2026-08-21.md §2.
+
     **`check-deps` cannot detect this class, and it should not be extended to.** It
     reads the *source tree* and asserts every third-party import is a declared
     dependency — a question about **declaration**, answered without resolving

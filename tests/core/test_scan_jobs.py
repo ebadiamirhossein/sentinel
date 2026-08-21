@@ -11,9 +11,12 @@ test just as well.
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from datetime import UTC
+from typing import Any
 
 import pytest
+import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from sentinel.core.app import AppState, _schedule_pipeline
@@ -31,6 +34,21 @@ def jobs_for(settings: Settings) -> dict[str, float]:
     )
     _schedule_pipeline(scheduler, state, settings, None)  # type: ignore[arg-type]
     return {job.id: job.trigger.interval.total_seconds() for job in scheduler.get_jobs()}
+
+
+def scheduled_log_for(settings: Settings) -> MutableMapping[str, Any]:
+    """The single ``scheduler.pipeline_scheduled`` event, as structlog saw it."""
+    scheduler = AsyncIOScheduler(timezone=UTC)
+    state = AppState(
+        settings=settings,
+        database=None,  # type: ignore[arg-type]
+        scheduler=scheduler,
+    )
+    with structlog.testing.capture_logs() as captured:
+        _schedule_pipeline(scheduler, state, settings, None)  # type: ignore[arg-type]
+    events = [e for e in captured if e["event"] == "scheduler.pipeline_scheduled"]
+    assert len(events) == 1, events
+    return events[0]
 
 
 def enable_forex(settings: Settings) -> Settings:
@@ -110,3 +128,55 @@ def test_the_crypto_tracker_keeps_the_bare_job_id_it_has_always_had(settings: Se
     """
     assert "tracker" in jobs_for(settings)
     assert "tracker:crypto" not in jobs_for(enable_forex(settings))
+
+
+# --------------------------------------------------------------------------- #
+# The ids, where a human on the box can read them
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("multi", [False, True])
+def test_the_boot_log_names_every_job_it_registered(settings: Settings, multi: bool) -> None:
+    """``job_ids`` must equal what was actually registered, in both shapes.
+
+    Added 2026-08-21 (hygiene session).
+    ``test_the_crypto_tracker_keeps_the_bare_job_id_it_has_always_had`` above pins the
+    id itself, but that assertion was checkable **only** from this
+    suite: APScheduler's own boot line logs the function name —
+    ``_schedule_pipeline.<locals>.track_for.<locals>.track`` — so the M10c deploy
+    could not confirm it from the server at all (journal/M10c_REPORT.md, Deployed
+    §2). This is what makes it readable there.
+
+    Asserted against ``scheduler.get_jobs()`` rather than against a literal, so the
+    log cannot drift from what was registered — a hand-written list would be a second
+    place for the ids to be wrong, which is the failure it exists to prevent. The
+    heartbeat job is deliberately absent: it is registered by the lifespan before this
+    function runs, and this field describes the pipeline.
+    """
+    target = enable_forex(settings) if multi else settings
+
+    logged = scheduled_log_for(target)
+    ids = logged["job_ids"]
+    assert isinstance(ids, list)
+
+    # Set equality plus a duplicate check, not list equality: the ORDER is pinned by
+    # the literal test below, and comparing lists here would couple this to
+    # APScheduler's `get_jobs()` ordering, which is its business and not ours.
+    assert sorted(ids) == sorted(jobs_for(target))
+    assert len(ids) == len(set(ids))
+
+
+def test_the_logged_ids_are_the_ones_switch_on_day_will_read(settings: Settings) -> None:
+    """The literal, once, because the relationship test above cannot see a rename.
+
+    If both the registration and the log moved together, the test above would still
+    pass. This is the one place the actual strings are written down, and the bare
+    ``tracker`` is the whole point of it.
+    """
+    assert scheduled_log_for(settings)["job_ids"] == ["scan:crypto", "tracker"]
+    assert scheduled_log_for(enable_forex(settings))["job_ids"] == [
+        "scan:crypto",
+        "scan:forex",
+        "tracker",
+        "tracker:forex",
+    ]

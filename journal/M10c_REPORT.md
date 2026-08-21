@@ -2,6 +2,13 @@
 
 ## State at handoff
 
+> **This section is a snapshot taken at handoff and is deliberately not updated.**
+> All three of its "next actions" have since been done: merged, deployed 2026-08-21 at
+> sha `82a49a5`, and confirmed. See "Deployed" below. Its step 2 is also wrong about
+> what the deploy needed — no `git checkout -- config.yaml` was required, because the
+> server's file had no local edits to collide with. Corrected in §14 and in
+> docs/DEPLOY.md §12.
+
 **Branch `m10c-forex-plan-card-publishing`, 11 commits, HEAD is the commit adding this
 section (last code commit `1ddb6e3`). `main` is at `940c5b6` — identical to
 `origin/main`, untouched, zero commits of its own. Nothing is pushed and nothing is
@@ -33,7 +40,9 @@ Do **not** enable forex. What that needs — `SAXO_APP_KEY`, a browser login, th
 ---
 
 
-**Date:** 2026-08-21. **Status:** complete, `make check` **exit 0**, **not deployed.**
+**Date:** 2026-08-21. **Status:** complete, `make check` **exit 0**, **DEPLOYED
+2026-08-21 at sha `82a49a5`** — see "Deployed" immediately below, which supersedes the
+"not deployed" statements in this line's original wording and in §14.
 
 The milestone that answers spec defect #12. `TradePlan` lives in the frozen
 `sentinel/risk/` and is crypto-shaped, so M10b had to stop a forex cycle at a stored
@@ -45,6 +54,59 @@ that rests on.
 
 **Read §3 and §5 first.** One is a live defect on a card the owner reads today; the
 other is a defect in the milestone brief itself.
+
+---
+
+## Deployed — 2026-08-21 (added by the hygiene session)
+
+**This section is an addition, not an edit.** Everything below §1 was written before
+the deploy and says "not deployed"; that text is left standing, because a report that
+quietly updates its own conclusion cannot be checked against what it claimed at the
+time. This says what actually happened.
+
+| | |
+|---|---|
+| Date | 2026-08-21 |
+| sha | `82a49a5` (the merge commit of this milestone) |
+| Migration | **none** — schema still at `0011_forex_spine`, as §11 predicted |
+| numpy in the running image | **2.2.6** — the M10c pin, confirmed inside the container |
+| Boot log | `markets: ["crypto"]`, `dry_run {"crypto": false}` |
+| `/status` | capital **€200.00**, risk per trade **0.75%** |
+| Forex | still `enabled: false`. Nothing was switched on. |
+
+### What is weaker than §11 and §14 intended, said plainly
+
+**1. The `/status` BEFORE-picture was never captured.** §14 promised the only
+user-visible change would be `€200.00` and `0.75%` where eighteen decimal places used
+to print, and that **nothing else on either card may differ**. That was checked by the
+owner reading the new card against **memory**, not by comparing two captured texts.
+
+There is no before-text to diff, so "no third line moved" is an unverified claim, not
+a verified one. It is very probably true — `tests/golden` pins every surface byte for
+byte and none of them moved — but the golden suite proves the *renderer* did not
+change, not that the *live card* the owner saw is identical to the one they saw the
+day before. Those are different claims and only the first was actually tested. This
+report should not imply a check that was not performed.
+
+The cheap fix for next time, recorded so it is not rediscovered: capture `/status`
+verbatim into a file **before** the restart, and diff it after.
+
+**2. §11's bare `tracker` job id could not be confirmed from the server at all.**
+APScheduler logs the *function* name, not the id:
+
+```
+Added job "_schedule_pipeline.<locals>.track_for.<locals>.track"
+```
+
+so nothing in the deploy logs distinguishes `tracker` from `tracker:crypto`. The
+assertion in §11 rests entirely on `tests/core/test_scan_jobs.py`. What *was* verified
+on the box is weaker and worth naming for what it is: the track job has executed
+successfully every 60 seconds since boot, which shows a tracker is running — not
+which id it was registered under.
+
+The hygiene session closes that gap: `scheduler.pipeline_scheduled` now carries a
+`job_ids` field, so the ids are readable from the box. On switch-on day there will be
+two tracker jobs and the difference between `tracker` and `tracker:crypto` will matter.
 
 ---
 
@@ -534,6 +596,26 @@ The rule from M10b-2 §2, applied to myself. Switch-on day should compose these 
 ---
 
 ## 14. Deploying this
+
+> **Correction (2026-08-21, from the hygiene session).** Two claims below are false and
+> this one is forward-looking operational instruction rather than a historical finding,
+> so it must not be left standing uncorrected. The original text is kept beneath.
+>
+> 1. **"Not deployed"** — it was deployed the same day, at sha `82a49a5`. See the
+>    "Deployed" section at the top of this report.
+> 2. **"The server's `config.yaml` predates `markets:` entirely"** — it does not.
+>    Verified on the live box 2026-08-21: `git diff config.yaml` is empty and the file
+>    carries `markets:` at line 21 with `llm_reserved_floor_usd: 8` at line 72. Some
+>    earlier deploy rewrote it, because there was nothing local to collide with.
+>
+> **So forex CAN be enabled by flipping a flag, and the floor is already in with the
+> block.** Switch-on day is one line: `markets.forex.enabled: false` → `true`,
+> committed and deployed. docs/DEPLOY.md §13b now opens with the same correction.
+>
+> A third thing that follows, and matters more than either: because the server file is
+> clean, `dry_run: false` is a **committed** value. The safeguard that used to force a
+> human to read the diff — `git pull --ff-only` failing on a locally-edited config — is
+> gone precisely because the file is clean. docs/DEPLOY.md §12 carries that hazard now.
 
 **Not deployed.** When you are ready, `docs/DEPLOY.md` §13b is unchanged and is still the
 procedure — the server's `config.yaml` predates `markets:` entirely, so forex cannot be
