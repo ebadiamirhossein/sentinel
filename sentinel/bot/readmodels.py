@@ -18,6 +18,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sentinel.bot.models import UserAccount, UserStatus
+from sentinel.bot.plans import AnyPlan, eur_quote_rate_of, leverage_of, rungs_of
 from sentinel.bot.views import (
     AlertView,
     PositionView,
@@ -32,7 +33,6 @@ from sentinel.core.alerts import Alert, AlertKind
 from sentinel.core.config import LLMConfig, MarketConfig
 from sentinel.llm.spend import SpendTotals, evaluate_spend
 from sentinel.risk.accounting import Exit, Fill, unrealized_r
-from sentinel.risk.models import TradePlan
 from sentinel.risk.rounding import money, percent, ratio
 from sentinel.stats.models import Book, PerformanceStats, Population, StatsReport
 from sentinel.storage.models import SignalEventRow, SignalExitRow, SignalFillRow, SignalRow
@@ -50,17 +50,25 @@ POPULATION_NOTES = {
 
 def position_view(
     row: SignalRow,
-    plan: TradePlan,
+    plan: AnyPlan,
     fills: Sequence[SignalFillRow],
     exits: Sequence[SignalExitRow],
     *,
     mark_price: Decimal | None,
 ) -> PositionView:
-    """One ✅ Taken signal, marked to the tracker's last observed price."""
+    """One ✅ Taken signal, marked to the tracker's last observed price.
+
+    Market-blind from M10c. Everything it reads is a name both plans share (§16.2),
+    and the two that are spelled differently go through
+    :func:`sentinel.bot.plans.eur_quote_rate_of` and :func:`~sentinel.bot.plans.leverage_of`
+    — which is one branch each, in one place, with the reason attached.
+    """
     filled = tuple(Fill(price=fill.price, qty=fill.qty) for fill in fills)
     closed = tuple(Exit(price=exit_.price, qty=exit_.qty) for exit_ in exits if exit_.qty > 0)
-    planned_risk_usdt = plan.planned_risk_eur * plan.eurusd_rate
-    planned_qty = sum((rung.qty for rung in plan.entries), Decimal(0))
+    # Named ``_usdt`` by ``risk/accounting``; it is really "risk in the quote currency",
+    # which is USDT for crypto and USD or JPY for forex (§7.1).
+    planned_risk_quote = plan.planned_risk_eur * eur_quote_rate_of(plan)
+    planned_qty = sum((rung.qty for rung in rungs_of(plan)), Decimal(0))
 
     open_r: str | None = None
     open_eur: str | None = None
@@ -70,7 +78,7 @@ def position_view(
             fills=filled,
             exits=closed,
             mark_price=mark_price,
-            planned_risk_usdt=planned_risk_usdt,
+            planned_risk_usdt=planned_risk_quote,
         )
         open_r = str(ratio(r))
         open_eur = str(money(r * plan.planned_risk_eur))
@@ -87,7 +95,7 @@ def position_view(
         stop=str(row.stop_price_current if row.stop_price_current is not None else plan.stop),
         targets=tuple(str(target) for target in plan.targets),
         risk_eur=str(plan.risk_eur),
-        leverage=str(plan.suggested_leverage),
+        leverage=leverage_of(plan),
         expires_at=row.expires_at,
         filled_pct=str(
             percent(row.filled_qty / planned_qty * HUNDRED) if planned_qty > 0 else Decimal(0)

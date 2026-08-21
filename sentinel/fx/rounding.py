@@ -52,6 +52,21 @@ def cost_money(value: Decimal) -> Decimal:
     return value.quantize(COST_PLACES, rounding=ROUND_HALF_UP)
 
 
+def percent(value: Decimal) -> Decimal:
+    """2dp, trailing zeros trimmed, integral results re-quantized (M10c).
+
+    The trimming matters on a card: an untrimmed ``Decimal`` normalizes ``20.00`` to
+    ``2E+1``, which is a correct number nobody can read. Same behaviour as
+    ``sentinel/risk/rounding.percent``, and a copy for the same reason the rest of this
+    module is one — see the module docstring.
+    """
+    quantized = value.quantize(CENTS, rounding=ROUND_HALF_UP)
+    normalized = quantized.normalize()
+    if normalized == normalized.to_integral():
+        return normalized.quantize(Decimal(1))
+    return normalized
+
+
 def pip_value(value: Decimal) -> Decimal:
     """Quantize a per-pip amount finely enough that pips x value still reconciles."""
     return value.quantize(PIP_VALUE_PLACES, rounding=ROUND_HALF_UP).normalize()
@@ -64,5 +79,6 @@ __all__ = [
     "cost_money",
     "floor_to_decimals",
     "money",
+    "percent",
     "pip_value",
 ]

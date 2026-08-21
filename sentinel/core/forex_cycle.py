@@ -40,9 +40,16 @@ from sentinel.features import compute as compute_features
 from sentinel.features.engine import attach as attach_features
 from sentinel.features.models import SymbolFeatures
 from sentinel.fx.errors import DegradedRead, ForexError
-from sentinel.fx.features import ForexFeatures, SymbolTails, compute_cycle_features
+from sentinel.fx.features import (
+    ForexFeatures,
+    SymbolTails,
+    compute_cycle_features,
+    spread_profile_of,
+)
 from sentinel.fx.hours import MarketState, candles_are_stale, state_at
+from sentinel.fx.instruments import ForexInstrument
 from sentinel.fx.sessions import Session, session_bands
+from sentinel.fx.spread import SpreadProfile
 from sentinel.ingestion.adapters.forex_saxo import ForexTail, SaxoForexAdapter
 from sentinel.ingestion.models import DataQuality, MarketSnapshot
 
@@ -70,6 +77,16 @@ class ForexAssembly:
     features: dict[str, SymbolFeatures] = field(default_factory=dict)
     forex_features: dict[str, ForexFeatures] = field(default_factory=dict)
     annotations: dict[str, tuple[ChartAnnotation, ...]] = field(default_factory=dict)
+    #: The resolved instrument per symbol (M10c). The gate needs the pip, the minimum
+    #: trade size and the quote currency, and the cycle has already paid to resolve
+    #: them — re-resolving in the gate would be a second ``/ref`` round trip per symbol
+    #: per cycle for data that cannot have changed since the top of this function.
+    instruments: dict[str, ForexInstrument] = field(default_factory=dict)
+    #: The measured spread series per symbol (M10c). Carried whole rather than as the
+    #: :class:`SpreadView` on the features, because the gate and the cost model need
+    #: **different** baselines out of it — the global median and this hour-of-day's —
+    #: and a view flattened to one number cannot serve both (defect #15).
+    spread_profiles: dict[str, SpreadProfile | None] = field(default_factory=dict)
     #: Symbol -> why it was skipped. Never silent (§4.2, §12).
     skipped: dict[str, str] = field(default_factory=dict)
 
@@ -179,15 +196,24 @@ async def assemble_forex(
             ask={tf: tail.ask for tf, tail in tails.items()},
             alignment_hours_utc=_alignment_of(tails),
         )
+        assembly.instruments[symbol] = instrument
 
     if not tails_by_symbol:
         return assembly
 
+    # Built once and shared: the features need a view of the spread and the gate needs
+    # the whole profile, and computing it twice from the same 1200 bars would be work
+    # done for the second answer to agree with the first by construction.
+    assembly.spread_profiles = {
+        symbol: spread_profile_of(tail, lookback=config.forex.spread_lookback_candles)
+        for symbol, tail in tails_by_symbol.items()
+    }
     assembly.forex_features = compute_cycle_features(
         tails_by_symbol,
         now=now,
         feature_candles_1h=config.forex.feature_candles_1h,
         spread_lookback=config.forex.spread_lookback_candles,
+        profiles=assembly.spread_profiles,
     )
 
     for symbol, symbol_tails in tails_by_symbol.items():

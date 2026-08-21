@@ -174,6 +174,87 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
     second**. M10b-2 §12 names the four joins its own boundary with M10c leaves
     untested for the same reason.
 
+12. **A golden built from in-memory values cannot see a defect the database
+    round-trip introduces.** `tests/golden/pipeline.py` sizes against
+    `Decimal("10000")`, constructed in Python. The live system reads
+    `users.capital_eur` from a `Numeric(38, 18)` column and gets
+    `Decimal('200.000000000000000000')`. The two differ in **scale**, not in value,
+    so the card printed `capital €200.000000000000000000` for 54 cycles while the
+    golden stayed green — and no amount of *more* golden coverage would ever have
+    found it, because the blind spot is structural: the fixture cannot produce the
+    input that breaks. Found in M10c only because forex needed the same line.
+    **Which other goldens have this blind spot:** every value on the cycle golden
+    except two is quantized by `sentinel/risk/` before it reaches the card, so scale
+    is pinned upstream and the fixture's provenance does not matter.
+    `capital_eur` and `risk_per_trade_pct` were the exceptions — the only two
+    `TradePlan` fields assigned without `money()`/`percent()` — and both are fixed.
+    The **surfaces** goldens are the remaining exposure: `StatusView`,
+    `SettingsView` and `UserView` carry raw `Decimal`s straight from repository
+    rows, and `tests/golden/surfaces.py` builds those rows in memory too. Nothing
+    there is currently wrong, and nothing there would show it if it became wrong.
+    **When a surface renders a value that came from a `Numeric` column, assert on
+    its scale, not only on its value** — or render it through
+    `bot/formatting.money_eur`, which makes the scale the renderer's business
+    instead of the column's.
+
+13. **A test that looks like it is checking and is not is worse than no test.**
+    `test_no_arithmetic`'s layer 2 compared every rendered number to the plan's
+    numbers **as strings** — and `str(Decimal("200.000000000000000000"))` *is* what
+    the card printed, so the check passed with the defect in front of it. It
+    consumed the attention that would have found the gap: the file reads like a
+    thorough guard, it has a proof-of-teeth test, and it was blind to an entire
+    class of defect. It now compares by **value**, with an explicit third layer
+    stating the rule it was missing — *the renderer may fix a display scale; it may
+    never change a value.*
+    **The pattern worth copying is the proof of teeth, and specifically how it is
+    built:** when a check is loosened, the new test must break on the smallest thing
+    the check still has to catch. `test_the_scale_check_would_catch_a_changed_value`
+    perturbs €4570.30 to €4570.**31** — one digit, the same scale — so it fails
+    unless the value comparison genuinely works. A proof that mutated the number
+    beyond recognition would have passed against a check that had stopped working.
+
+
+14. **A dev extra must never constrain a production dependency's version.** It is
+    the same root cause as the `httpx` break, arriving from the opposite direction.
+    There, a dependency production needed was declared by nobody and arrived
+    transitively. Here, `pandas-ta` — a **test oracle**, in `[project.optional-
+    dependencies].dev` — pulls `numba`, which refuses NumPy above 2.2. So `.venv`
+    resolved **numpy 2.2.6** and a freshly built image resolved **2.5.2**, and the
+    suite had never once validated the numpy the container runs. numpy sits under
+    pinned matplotlib and mplfinance and under every RSI, ATR and EMA value, so the
+    thing being silently version-controlled by a test-only package was the numerical
+    core of the product.
+    **What makes this class invisible is that the constraint is invisible where it
+    matters.** Every check — tests, mypy, `check-deps`, even `check-wheel` — runs in
+    the environment the dev extra shapes. The image is the only place the constraint
+    is absent, and the image is the one place nothing was comparing versions.
+    Settled in M10c by pinning `numpy==2.2.6` so `.venv`, the image and the goldens
+    name one number. **`pandas` is still `>=2.2` and sits in exactly the same
+    position** — its own decision, deliberately not taken in M10c.
+
+    **`check-deps` cannot detect this class, and it should not be extended to.** It
+    reads the *source tree* and asserts every third-party import is a declared
+    dependency — a question about **declaration**, answered without resolving
+    anything. This is a question about **resolution**: whether two environments
+    resolve the same version of a shared package, which cannot be answered without
+    building both. Bolting it on would make a fast, hermetic check depend on a Docker
+    build, which is the thing `check-fast` exists to avoid.
+    **It belongs in `check-image`, which already builds the image and already imports
+    the app inside it — and it is now there** (`sentinel/tools/check_pins.py`, M10c).
+    For every *pinned* dependency it asserts the image's installed version equals
+    `.venv`'s and fails naming both; unpinned divergences **warn**, because a `>=`
+    declaration is an explicit statement that the version may move and failing on it
+    would make the gate lie about its own intent — but that warning is the form in
+    which this would have caught numpy *before* anybody pinned it.
+    One assertion covers this defect and M10b-1 §3's three-versions-of-`anthropic`
+    defect, at build time in a gate rather than at boot on the server. Proved by
+    skewing `matplotlib`'s pin, rebuilding the image and watching it exit 1 naming
+    both versions.
+    **On its first real run it found two more:** `ccxt` (the exchange client) and
+    `uvicorn` already differ between `.venv` and a fresh image. Both are unpinned, so
+    both warn — which is the check working, and `ccxt` is worth a decision.
+
+
 ## 5. Boundaries that must survive any new feature
 
 - No execution code / trade-capable keys. Ever. (v1 hard boundary; revisit only

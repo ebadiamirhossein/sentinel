@@ -581,6 +581,17 @@ class ForexConfig(_Strict):
     #: through it -- neither has any analogue in a 24/7 market.
     friday_signal_cutoff_hour_utc: int = Field(default=19, ge=0, le=23)
 
+    #: The hour on Friday at which every still-pending entry ladder **expires** (§5.4,
+    #: §16.10). A ladder cannot fill over a weekend and a rung that filled on the
+    #: Sunday open would fill against a gap nobody's stop was placed for, so a pending
+    #: ladder is expired with a reason the owner sees rather than paused.
+    #:
+    #: One hour before ``week_close_hour_utc`` rather than derived from it, because
+    #: the derivation would have to survive the DST shift §5.2 describes and an
+    #: explicit hour does not. It must stay **below** the close; a validator enforces
+    #: that rather than trusting two numbers to be edited together.
+    friday_ladder_expiry_hour_utc: int = Field(default=20, ge=0, le=23)
+
     # ── rollover (§5.3) ──────────────────────────────────────────────────────
     #
     # The primary rail is spread-triggered (see spread_max_multiple). This clock
@@ -670,6 +681,44 @@ class ForexConfig(_Strict):
     #: would allow both. Crude, safe, and it makes the first numbers interpretable.
     max_concurrent_positions: int = Field(default=1, ge=1)
 
+    # ── setup quality (§16.5 rows 5 and 6; spec defect #21) ──────────────────
+    #
+    # FOREX.md §7 and §9 name the sizing rails and the correlation cap and say
+    # nothing about setup QUALITY, so these had no home and the obvious move was to
+    # read crypto's `RiskConfig`. One of those numbers is actively wrong here:
+    # `risk.max_entry_distance_pct` is 3.0, and EURUSD moves about 0.5% in a day, so a
+    # 3% bound could essentially never fire. A rail that cannot fire is worse than an
+    # absent one, because it reads on a checklist as a rail.
+    #
+    # So forex gets its own, and crypto's `risk:` block is untouched. Every number
+    # below is a STARTING GUESS to be calibrated from DRY_RUN data, in exactly the
+    # same standing as `spread_max_multiple: 3.0` above — not a derived figure.
+
+    #: Minimum **net** reward-to-risk at TP1, after the measured spread, commission and
+    #: rollover. 1.5 matches crypto's, and it is the one number here with an argument
+    #: behind it rather than a guess: §7.4 computes what gross RR a forex setup needs
+    #: to clear a 1.5 net gate, and journal/M10b_REPORT.md §6 measured 1.65-1.76 at the
+    #: widest stop each pair can size at €200. Keeping the two markets' gates at the
+    #: same net level is what makes their statistics comparable at all.
+    min_rr_tp1: Dec = Decimal("1.5")
+    #: Below this, a candidate is DOWNGRADED to watchlist rather than rejected.
+    min_confidence: int = Field(default=60, ge=0, le=100)
+    #: How far either edge of the entry zone may sit from the last price. **0.5, not
+    #: crypto's 3.0** — see the note above; this is the number defect #21 is about.
+    max_entry_distance_pct: Dec = Decimal("0.5")
+    #: Stop distance bounds as multiples of ATR(1h), same shape as crypto's §2 rules
+    #: 3 and 4. Carried over unchanged because they are expressed in ATR, which is
+    #: already the instrument's own volatility — that is what makes them transferable
+    #: where a percentage is not.
+    stop_atr_min_multiple: Dec = Decimal("0.6")
+    stop_atr_max_multiple: Dec = Decimal("3.0")
+    #: How long a symbol stays quiet after a resolved signal.
+    signal_cooldown_hours: int = Field(default=4, ge=0)
+    #: Anti-spam cap. Three, not crypto's five, because there are three instruments:
+    #: a fourth forex signal in a day means the same dollar view arriving twice, which
+    #: is what §9's correlation cap exists to prevent one level down.
+    max_signals_per_day: int = Field(default=3, ge=1)
+
     #: How many timeframes old the newest closed candle may be **while the market is
     #: open** before the symbol is skipped. Checked only when open: a weekend read is
     #: hours stale by construction and that is not a fault. See journal/M10b_REPORT.md
@@ -677,6 +726,28 @@ class ForexConfig(_Strict):
     #: over the weekend, when in fact it compares ``fetched_at`` and would have
     #: reported a frozen weekend snapshot as perfectly fresh.
     max_candle_age_multiplier: int = Field(default=2, ge=1)
+
+    @model_validator(mode="after")
+    def _ladders_expire_before_the_week_closes(self) -> ForexConfig:
+        """§5.4 is a promise about *ordering*, so it is checked rather than trusted.
+
+        ``friday_ladder_expiry_hour_utc`` and ``week_close_hour_utc`` are two numbers a
+        person edits one at a time. Set the first at or after the second and the rail
+        silently stops existing: the market shuts, the tracker stops ticking, and the
+        ladder that was supposed to expire before the close is still pending on Sunday
+        evening — carrying exactly the gap risk §5.4 exists to remove, with no error
+        anywhere and nothing on any surface to say so.
+        """
+        if self.friday_ladder_expiry_hour_utc >= self.week_close_hour_utc:
+            raise ValueError(
+                f"forex.friday_ladder_expiry_hour_utc "
+                f"({self.friday_ladder_expiry_hour_utc}:00Z) must be BEFORE "
+                f"forex.week_close_hour_utc ({self.week_close_hour_utc}:00Z) — "
+                f"FOREX.md §5.4 requires every pending ladder to expire before the "
+                f"Friday close, and at or after it the ladder simply survives the "
+                f"weekend instead"
+            )
+        return self
 
 
 #: The adapter name M10a ships. ``forex_saxo`` names

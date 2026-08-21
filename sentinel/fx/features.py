@@ -467,18 +467,46 @@ def spread_view(profile: SpreadProfile | None, *, now: datetime) -> SpreadView |
     )
 
 
+def spread_profile_of(tail: SymbolTails, *, lookback: int | None = None) -> SpreadProfile | None:
+    """This instrument's measured spread series, from the tail the cycle already holds.
+
+    ``None`` rather than a zeroed profile when there is nothing to summarise: a zero
+    baseline would make every spread look enormous relative to it, or — worse,
+    depending which way the comparison went — make every spread acceptable.
+
+    Public from M10c because the **gate** needs the whole profile, not just the
+    :class:`SpreadView` the features carry. The gate compares the current spread to the
+    ``global_median_pips`` and the cost model prices it at ``expected_at(hour)``, and
+    those are two different numbers answering two different questions (defect #15).
+    """
+    hourly, hourly_ask = tail.bid.get("1h"), tail.ask.get("1h")
+    if hourly is None or hourly_ask is None:
+        return None
+    return build_profile(
+        spread_samples(hourly, hourly_ask, pip=tail.pip),
+        symbol=tail.symbol,
+        lookback=lookback,
+    )
+
+
 def compute_cycle_features(
     tails: Mapping[str, SymbolTails],
     *,
     now: datetime,
     feature_candles_1h: int,
     spread_lookback: int | None = None,
+    profiles: Mapping[str, SpreadProfile | None] | None = None,
 ) -> dict[str, ForexFeatures]:
     """Every symbol's forex features, including the two that need all three pairs.
 
     Cross-pair work happens **once per cycle**, here, rather than inside
     :func:`sentinel.features.engine.compute`, which is per-symbol and market-blind and
     stays that way — it is the module the crypto golden is computed from.
+
+    ``profiles`` lets a caller that already built the spread profiles — the cycle does,
+    because the gate needs them — hand them in rather than have them computed a second
+    time from the same 1200 bars. Omit it and they are computed here, which is what
+    every caller before M10c did.
     """
     hourly_closes: dict[str, list[Decimal]] = {}
     for symbol, tail in tails.items():
@@ -498,6 +526,7 @@ def compute_cycle_features(
             spread_lookback=spread_lookback,
             strength=strength,
             correlations=correlations,
+            profile=None if profiles is None else profiles.get(symbol),
         )
     return out
 
@@ -510,18 +539,13 @@ def _one_symbol(
     spread_lookback: int | None,
     strength: UsdStrength | None,
     correlations: tuple[PairCorrelation, ...],
+    profile: SpreadProfile | None = None,
 ) -> ForexFeatures:
     hourly = tail.bid.get("1h")
     daily = tail.bid.get("1d")
 
-    profile: SpreadProfile | None = None
-    hourly_ask = tail.ask.get("1h")
-    if hourly is not None and hourly_ask is not None:
-        profile = build_profile(
-            spread_samples(hourly, hourly_ask, pip=tail.pip),
-            symbol=tail.symbol,
-            lookback=spread_lookback,
-        )
+    if profile is None:
+        profile = spread_profile_of(tail, lookback=spread_lookback)
 
     features_hourly = (
         trim_to_feature_window(hourly, candles=feature_candles_1h) if hourly is not None else None
@@ -569,6 +593,7 @@ __all__ = [
     "daily_open",
     "prior_day_levels",
     "prior_week_levels",
+    "spread_profile_of",
     "spread_view",
     "trim_to_feature_window",
     "usd_strength_index",

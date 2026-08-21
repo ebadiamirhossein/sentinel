@@ -41,7 +41,7 @@ from sentinel.bot.cards import (
     welcome_card,
 )
 from sentinel.bot.context import BotContext
-from sentinel.bot.formatting import escape
+from sentinel.bot.formatting import escape, money_eur
 from sentinel.bot.keyboards import (
     AdminAction,
     AdminCallback,
@@ -59,6 +59,7 @@ from sentinel.bot.models import (
     WatchlistRequestStatus,
 )
 from sentinel.bot.outbound import SupportsBot
+from sentinel.bot.plans import plan_of
 from sentinel.bot.readmodels import spend_view, user_view
 from sentinel.bot.runtime import (
     Invalid,
@@ -73,7 +74,7 @@ from sentinel.bot.views import DataSourceView, SettingsView, StatusView
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET
 from sentinel.core.pauses import effective_pause
-from sentinel.risk.models import PauseReason, PauseState, TradePlan
+from sentinel.risk.models import PauseReason, PauseState
 from sentinel.risk.rails import open_risk_pct
 
 log = get_logger(__name__)
@@ -387,7 +388,8 @@ async def status(message: Message, command: CommandObject, ctx: BotContext, acto
         cycles_completed=completed,
         cycles_started=started,
         open_risk_pct=open_risk_pct(
-            [TradePlan.model_validate(row.plan).risk_per_trade_pct for row in open_taken]
+            # Dispatched on the market this card is reporting on (§16.7).
+            [plan_of(row.plan, market).risk_per_trade_pct for row in open_taken]
         ),
         max_open_risk_pct=config.risk.max_open_risk_pct,
         open_positions=len(open_taken),
@@ -634,7 +636,9 @@ async def settings(message: Message, ctx: BotContext, actor: Actor) -> None:
                 (
                     (
                         "capital_eur",
-                        "not set" if account.capital_eur is None else f"€{account.capital_eur}",
+                        "not set"
+                        if account.capital_eur is None
+                        else f"€{money_eur(account.capital_eur)}",
                         "you" if account.capital_eur is not None else "unset",
                     ),
                     (

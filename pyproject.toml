@@ -35,12 +35,36 @@ dependencies = [
   # dependency — nothing new is installed by declaring them — but each was one upstream
   # reorganisation away from being the next httpx.
   #
-  # NOT pinned, unlike anthropic and httpx: those two were pinned to versions with live
-  # production evidence behind them, and there is no such evidence to pin these to. See
-  # journal/M10b_REPORT.md §3 on numpy and chart/feature determinism, which is a real
-  # open question and deliberately not settled here.
-  "numpy>=2.0",
+  # `annotated-types` stays `>=`: it is a handful of dataclasses with no numerical
+  # behaviour, and there is nothing about it a version could change silently.
   "annotated-types>=0.7",
+  #
+  # `numpy` PINNED EXACTLY 2026-08-21 (M10c, owner ruling). journal/M10b_REPORT.md §3a
+  # left this open; it is settled here for the same reason matplotlib and mplfinance are
+  # pinned two lines down. numpy sits underneath both of those AND underneath every RSI,
+  # ATR and EMA value the feature engine computes, so an upstream change moves stored
+  # chart bytes and stored indicator values with no error anywhere — the failure mode
+  # this repository's goldens exist to catch and a floating dependency exists to hide.
+  #
+  # 2.2.6 is the version EVERY committed golden was produced under, which is the only
+  # evidence available. There is no live-cycle evidence for a numpy the way there was
+  # for `anthropic==0.125.0`, because nothing logs it.
+  #
+  # M10c FINDING — the pin CHANGES the image, and that is the point. Before it, a
+  # freshly built image resolved **numpy 2.5.2** while `.venv` resolved **2.2.6**, so
+  # the suite has never once validated the numpy the container runs. The cause is that
+  # `pandas-ta` (a test-only oracle) pulls `numba`, which refuses NumPy above 2.2 — a
+  # DEV-extra constraint silently holding the whole test environment two minor versions
+  # behind production. Exactly the shape of M10b-1 §3's three-versions-of-anthropic
+  # defect, and structurally invisible for the same reason: every check runs where the
+  # constraint applies.
+  #
+  # Verified before pinning, so this is a measurement and not a hope: the golden, chart
+  # and feature suites were run in a scratch venv at numpy 2.5.2 and **every golden was
+  # byte-identical**. The only failure was `pandas-ta` itself, which cannot import. So
+  # the two versions agree today, and the pin makes .venv, the image and the goldens
+  # name one number instead of three.
+  "numpy==2.2.6",
   # DECLARED 2026-08-21 (M10b-1), and it should have been from M1. Six modules
   # `import httpx` directly — ingestion/http.py, llm/client.py, core/wiring.py and
   # three tools — and it was in no dependency list at all. It arrived transitively

@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from sentinel.core.markets import LEGACY_MARKET, Market
+from sentinel.fx.plan import ForexPlan
 from sentinel.risk.models import PauseState, TradePlan
 
 
@@ -249,7 +250,20 @@ class SignalRecord(Frozen):
     #: decision, fill, realized R and statistic downstream is already partitioned
     #: by the time anything reads it.
     user_id: int
-    plan: TradePlan
+    #: The sized plan. A **union**, not a base class: ``TradePlan`` lives in the frozen
+    #: ``sentinel/risk/`` and is crypto-shaped, and :class:`ForexPlan` deliberately has
+    #: no field for a liquidation buffer or a funding rate (FOREX.md defect #12, §16.2).
+    #: Owner-approved contract change, 2026-08-21.
+    #:
+    #: **The hazard the union creates, and where it is answered.** ``ForexPlan`` mirrors
+    #: ``TradePlan``'s shared vocabulary on purpose — that is what lets one signals
+    #: table, one publisher and one tracker serve both markets — so two look-alike
+    #: models could be confused by a mis-dispatched rehydration, producing a *plausible
+    #: object* rather than an error. That is the pip derivation's shape exactly.
+    #: FOREX.md §16.7's rule: rehydration dispatches on ``market``, never on trying one
+    #: and falling back to the other. See :func:`sentinel.bot.plans.plan_of` and
+    #: ``tests/bot/test_plan_dispatch.py``, which proves both directions fail loudly.
+    plan: TradePlan | ForexPlan
     cycle_id: UUID | None = None
     status: SignalStatus = SignalStatus.PENDING_ENTRY
     decision: SignalDecision | None = None

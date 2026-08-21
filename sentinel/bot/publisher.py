@@ -1,6 +1,6 @@
 """Posting a signal, exactly once (specs/TELEGRAM_UX.md §1 and §6).
 
-This is the seam M7's cycle orchestrator calls: a gate-approved ``TradePlan`` and
+This is the seam M7's cycle orchestrator calls: a gate-approved plan and
 its charts in, a delivered card out, and nothing delivered twice.
 
 **Why the unit of work is split.** Repositories in this codebase never commit —
@@ -44,14 +44,15 @@ from uuid import UUID
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InputMediaPhoto
 
 from sentinel.bot.cards import signal_card
+from sentinel.bot.forex_cards import forex_signal_card
 from sentinel.bot.keyboards import decision_keyboard
 from sentinel.bot.models import MessageKind, PostedMessage, SignalRecord
+from sentinel.bot.plans import AnyPlan
 from sentinel.charts.models import ChartImage
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import TelegramConfig
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
-from sentinel.risk.models import TradePlan
 from sentinel.storage.db import Database
 from sentinel.storage.repositories import SignalRepository, TelegramMessageRepository
 
@@ -197,7 +198,7 @@ class SignalPublisher:
 
     async def publish(
         self,
-        plan: TradePlan,
+        plan: AnyPlan,
         charts: tuple[ChartImage, ...] = (),
         *,
         cycle_id: UUID | None = None,
@@ -273,7 +274,7 @@ class SignalPublisher:
         try:
             sent = await self._bot.send_message(
                 chat_id=chat_id,
-                text=signal_card(record, self._tz, show_market=self._show_market),
+                text=self._render(record),
                 parse_mode=self._telegram.parse_mode,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to,
@@ -291,6 +292,20 @@ class SignalPublisher:
             chat_id=chat_id,
         )
         return True
+
+    def _render(self, record: SignalRecord) -> str:
+        """Pick the renderer by **market**, never by inspecting the plan (§16.7).
+
+        The publisher is already bound to one market — it files that market's rows and
+        it was constructed for it — so the market is a fact it already holds, and asking
+        the plan what it is would be a second, weaker answer to a settled question. Both
+        renderers raise on the other's plan, so a publisher whose market and whose plan
+        disagree fails loudly rather than posting a card carrying three lines of another
+        market's vocabulary.
+        """
+        if self._market is Market.FOREX:
+            return forex_signal_card(record, self._tz, show_market=self._show_market)
+        return signal_card(record, self._tz, show_market=self._show_market)
 
     def _selected_charts(self, charts: tuple[ChartImage, ...]) -> list[ChartImage]:
         """§1 attaches the 1h and 4h charts; the 15m is a timing detail the entry

@@ -37,6 +37,7 @@ from sentinel.charts.models import ChartImage, ChartSpec
 from sentinel.charts.renderer import render_album
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import AppConfig
+from sentinel.core.markets import Market
 from sentinel.features import compute as compute_features
 from sentinel.features.models import SymbolFeatures
 from sentinel.ingestion.models import InstrumentMeta, MarketSnapshot
@@ -226,11 +227,28 @@ def golden_gate(
     )
 
 
-def golden_card(decision: GateDecision) -> str:
-    """The card as the owner reads it. ``number`` is fixed — Postgres assigns it."""
+def golden_card(decision: GateDecision, *, show_market: bool = False) -> str:
+    """The card as the owner reads it. ``number`` is fixed — Postgres assigns it.
+
+    ``show_market`` defaults to **off**, which is the form the shipped config renders
+    and the form ``card.txt`` pins. The tagged form is pinned separately, in
+    ``card_multi.txt``, so switch-on day is a config flip rather than a regeneration
+    (FOREX.md defect #23).
+    """
     assert decision.plan is not None
     record = SignalRecord(plan=decision.plan, user_id=7222549221, number=42)
-    return signal_card(record, TZ)
+    return signal_card(record, TZ, show_market=show_market)
+
+
+def multi_market(config: AppConfig) -> AppConfig:
+    """The shipped config with forex switched on — **in memory only**.
+
+    The same helper ``tests/bot/test_multi_market.py`` has had since M10a, here so the
+    multi-market goldens are produced from the config that will actually exist on
+    switch-on day rather than from a config invented for the fixture.
+    """
+    forex = config.market(Market.FOREX).model_copy(update={"enabled": True})
+    return config.model_copy(update={"markets": {**config.markets, Market.FOREX: forex}})
 
 
 @dataclass(frozen=True)

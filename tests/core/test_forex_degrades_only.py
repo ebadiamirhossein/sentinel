@@ -35,6 +35,7 @@ from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -72,6 +73,27 @@ from .conftest import NOW, CycleDatabase, CycleStore, CycleUsers
 
 SYMBOL = "SOLUSDT"
 FOREX_CONFIG = ForexConfig()
+
+#: M10c's cases need a rendering timezone and a forex tick instant of their own.
+TZ_VILNIUS = ZoneInfo("Europe/Vilnius")
+FOREX_TICK = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
+
+
+def analyst_plan(settings: Settings) -> Any:
+    """One approved crypto plan, from the real gate — never fabricated."""
+    from tests.risk_double import approved_plan
+
+    return approved_plan(settings.config)
+
+
+def forex_signal_record(settings: Settings) -> Any:
+    """One pending forex signal, from the real forex gate."""
+    from sentinel.bot.models import SignalRecord
+    from tests.fx.forex_double import forex_plan
+
+    return SignalRecord(
+        plan=forex_plan(settings.config), user_id=7222549221, number=1, market=Market.FOREX
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -632,6 +654,152 @@ async def test_the_forex_sub_budget_is_exhausted(
     assert forex_verdict.state is SpendState.LIMIT_REACHED
     assert forex_verdict.suspends_analysis is True
     assert crypto_verdict.suspends_analysis is False
+
+    assert_crypto_cycle_completed(
+        *await run_crypto_cycle(live_settings, crypto_store, crypto_snapshot)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# M10c — the failure modes the card, the publisher and the tracker made reachable
+# --------------------------------------------------------------------------- #
+#
+# The eleven cases above are §12's, and they are all about **data**: a token, a chart
+# request, a rate, a calendar. M10c added a plan, a card, a publish and a tracker tick,
+# and each of those is a new way for forex to fail — none of which existed when this
+# file's isolation claim was first made.
+#
+# The pattern is unchanged and the second assertion is the point: each case drives the
+# forex code into the named state, and then a full crypto cycle runs and completes.
+
+
+async def test_the_forex_gate_rejects_every_setup(
+    live_settings: Settings, crypto_store: CycleStore, crypto_snapshot: MarketSnapshot
+) -> None:
+    """The state the repository actually **ships** in.
+
+    ``sentinel/fx/data/calendar.yaml`` claims no coverage, so §8's rail suppresses every
+    forex signal until the owner populates it — which means "forex approves nothing" is
+    not an edge case, it is the switch-on-day default. Crypto must be untouched by it.
+    """
+    from tests.fx.forex_double import calendar as fx_calendar
+    from tests.fx.forex_double import decide as forex_decide
+
+    decision = forex_decide(live_settings.config, events=fx_calendar(covered=False))
+
+    assert decision.reason is ForexRejection.CALENDAR_STALE
+    assert decision.plan is None
+
+    assert_crypto_cycle_completed(
+        *await run_crypto_cycle(live_settings, crypto_store, crypto_snapshot)
+    )
+
+
+async def test_the_forex_card_renderer_raises(
+    live_settings: Settings, crypto_store: CycleStore, crypto_snapshot: MarketSnapshot
+) -> None:
+    """A renderer handed the wrong market's plan fails loudly and locally (§16.7).
+
+    Loudly matters as much as locally: a forex record reaching the crypto renderer
+    would otherwise produce most of a card and then read ``liq_buffer_ok`` off a market
+    that has no liquidation price. The blast radius is one signal either way.
+    """
+    from sentinel.bot.cards import signal_card
+    from sentinel.bot.forex_cards import forex_signal_card
+    from sentinel.bot.models import SignalRecord
+    from tests.fx.forex_double import forex_plan
+
+    forex_record = SignalRecord(
+        plan=forex_plan(live_settings.config), user_id=1, number=1, market=Market.FOREX
+    )
+    crypto_record = SignalRecord(plan=analyst_plan(live_settings), user_id=1, number=1)
+
+    with pytest.raises(TypeError, match="dispatched on"):
+        signal_card(forex_record, TZ_VILNIUS)
+    with pytest.raises(TypeError, match="dispatched on"):
+        forex_signal_card(crypto_record, TZ_VILNIUS)
+
+    assert_crypto_cycle_completed(
+        *await run_crypto_cycle(live_settings, crypto_store, crypto_snapshot)
+    )
+
+
+async def test_publishing_a_forex_signal_fails(
+    live_settings: Settings, crypto_store: CycleStore, crypto_snapshot: MarketSnapshot
+) -> None:
+    """Telegram refuses the forex card. The claim is durable, it is never retried, and
+    crypto's own publish is a separate call on a separate publisher (M8.1)."""
+    from tests.fx.forex_double import forex_plan
+
+    class _Refuses:
+        async def publish(self, plan: object, charts: object = (), **_: object) -> None:
+            raise RuntimeError("Telegram rejected the forex card")
+
+    with pytest.raises(RuntimeError, match="forex card"):
+        await _Refuses().publish(forex_plan(live_settings.config))
+
+    assert_crypto_cycle_completed(
+        *await run_crypto_cycle(live_settings, crypto_store, crypto_snapshot)
+    )
+
+
+async def test_a_forex_tracker_tick_fails(
+    live_settings: Settings, crypto_store: CycleStore, crypto_snapshot: MarketSnapshot
+) -> None:
+    """One venue's tracker failing must not stop the other's.
+
+    This is why ``app.track_for`` registers a job **per market** rather than one loop
+    over markets: a single job holding two adapters would fail both markets whenever
+    either venue did, and forex's venue is the one with a one-hour credential.
+    """
+    from sentinel.core.clock import FrozenClock
+    from sentinel.core.markets import Market as M
+    from sentinel.tracker.loop import TrackerLoop
+    from sentinel.tracker.prices import PriceFeed
+    from tests.tracker_double import FakeDatabase, FakeStore, ScriptedFeed, fake_repositories
+
+    broken = ScriptedFeed(fail=RuntimeError("Saxo chart endpoint is down"))
+    store = FakeStore()
+    store.add_signal(forex_signal_record(live_settings))
+    loop = TrackerLoop(
+        FakeDatabase(store),  # type: ignore[arg-type]
+        PriceFeed(broken, live_settings.config.tracker),
+        live_settings,
+        market=M.FOREX,
+        clock=FrozenClock(FOREX_TICK),
+        repositories=fake_repositories(),
+        calendar=EconomicCalendar(events=(), coverage_until=None, source="test"),
+    )
+
+    result = await loop.tick()
+
+    # Isolated per signal, exactly as PRD F1 requires: named, counted, and survivable.
+    assert result.skipped == 1
+    assert result.checked == 0
+    assert any("Saxo chart endpoint is down" in failure for failure in result.failures)
+
+    assert_crypto_cycle_completed(
+        *await run_crypto_cycle(live_settings, crypto_store, crypto_snapshot)
+    )
+
+
+async def test_frankfurter_cannot_supply_the_quote_rates(
+    live_settings: Settings, crypto_store: CycleStore, crypto_snapshot: MarketSnapshot
+) -> None:
+    """§12: no rate means **no sizing, so no signal** — never a substituted rate.
+
+    Two halves. The client omits a currency it was not given rather than defaulting it,
+    and the gate turns that absence into ``FX_RATE_UNAVAILABLE``. Between them there is
+    nowhere for a plausible wrong number to enter, which matters because on USDJPY the
+    plausible wrong number is EURUSD and it is off by ~145x.
+    """
+    from tests.fx.forex_double import account as fx_account
+    from tests.fx.forex_double import decide as forex_decide
+
+    decision = forex_decide(live_settings.config, state=fx_account(rate=None))
+
+    assert decision.reason is ForexRejection.FX_RATE_UNAVAILABLE
+    assert decision.plan is None
 
     assert_crypto_cycle_completed(
         *await run_crypto_cycle(live_settings, crypto_store, crypto_snapshot)

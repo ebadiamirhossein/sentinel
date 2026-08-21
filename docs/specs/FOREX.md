@@ -1,6 +1,8 @@
-# FOREX.md — the forex market (M10b)
+# FOREX.md — the forex market (M10b, M10c)
 
-Version 2, revised 2026-08-21 from the spike findings. Supersedes v1 (2026-08-20).
+Version 3, revised 2026-08-21. **§16 is new and was written at M10c, from the code** —
+the forex plan, the forex gate, the card, publishing and tracking. Version 2 revised v1
+(2026-08-20) from the spike findings.
 
 v1 was written from vendor documentation and one SIM API call. The spike tested it
 against the live API and found **eleven defects**, one of which would have made every
@@ -647,6 +649,211 @@ Crypto goldens run at every step. Nothing turns on until the owner says so.
 
 ---
 
+## §16 — the forex plan and the forex gate *(written at M10c, from the code)*
+
+M10b-1 stopped at a sizing result because defect #12 found that `TradePlan` could not
+carry a forex plan. §7 and §11 assumed one could. This section is the half that was
+missing, and it is written **from the code rather than ahead of it** — deliberately, and
+for the reason defect #12 exists: the first attempt to specify this part was wrong in a
+way only reading `sentinel/risk/models.py` revealed.
+
+### §16.1 — Why not a `TradePlan`, and why not a subclass
+
+`TradePlan` carries five fields forex has no meaning for — `notional_usdt`,
+`suggested_leverage`, `liq_distance_pct`, `liq_buffer_ok`, `instrument: InstrumentMeta` —
+and its `PlanCosts` carries six more under `funding_*`. Filling them for forex means
+either a lie (`liq_buffer_ok=True` on a market with no per-position liquidation price) or
+a zero standing in for a measurement. §7.6 forbids the first outright and §2.1 forbids the
+second. `sentinel/risk/` may not be edited, so subclassing (which inherits the forbidden
+fields) and a shared base class (which requires editing `TradePlan`) are both out.
+
+**Ruling: a parallel, independently-defined model.** `ForexPlan` in
+`sentinel/fx/plan.py`, holding the same rule `ForexSizing` and `ForexCosts` are already
+held to — *if a concept does not exist in this market, there is no field to put it in* —
+asserted by a test rather than left to habit.
+
+### §16.2 — `ForexPlan`, in three groups
+
+**Group 1 — mirrored from `TradePlan`, identical spelling and identical meaning.**
+`schema_version`, `plan_id`, `created_at`, `symbol`, `direction`, `setup_type`,
+`timeframe_label`, `confidence`, `report`, `entries`, `avg_entry`, `avg_fill_price`,
+`stop`, `targets`, `rr_targets` (gross), `rr_targets_net`, `target_distances_pct`,
+`costs`, `stop_distance_pct`, `last_price`, `planned_risk_eur`, `risk_eur`,
+`notional_eur`, `margin_eur`, `management_plan`, `expires_at`, `capital_eur`,
+`risk_per_trade_pct`, `gate_status`.
+
+The mirroring is **load-bearing, not cosmetic**: `storage.repositories.signal_row()`,
+`bot/publisher.py`, `tracker/loop.py` and every `/positions`, `/journal` and `/stats`
+reader address a plan by these names. Matching them is what lets one signals table, one
+publisher and one tracker serve both markets with no translation layer — and §16.7 is the
+guard that keeps the resemblance from becoming a hazard.
+
+**Group 2 — forex-only, because these are real here.** `quote_currency`,
+`notional_quote`, `pip`, `pip_value_eur`, `stop_distance_pips`, `eur_quote_rate`,
+`max_leverage`, `leverage_basis`, `margin_pct_of_equity`, `expiry_basis`,
+`weekend_gap_warning`, `instrument: ForexInstrument`.
+
+Three of those need their reason stated:
+
+* **`eur_quote_rate`, not `eurusd_rate`.** §7.1: USDJPY sizes through **EURJPY**. A field
+  named `eurusd_rate` holding an EURJPY figure is a fabricated label on a correct number,
+  and the ~145× error it invites sizes a position to roughly nothing while looking like an
+  unremarkable rejection.
+* **`max_leverage` with `leverage_basis`, not `suggested_leverage`.** Crypto *derives* a
+  leverage from the liquidation buffer. Forex has no per-position liquidation price
+  (§7.6), so there is nothing to derive: 30:1 is a **configured cap** resting on the ESMA
+  retail assumption, and the words travel with the number so no renderer can show one
+  without the other. Two different concepts must not share a field name.
+* **`expiry_basis`**, in words — `"12h intraday TTL"` or `"Friday close"` — because §5.4
+  gives a ladder two possible reasons to die and a bare timestamp cannot say which.
+
+**Group 3 — absent, and asserted absent.** No `notional_usdt`, no `suggested_leverage`,
+no `liq_distance_pct`, no `liq_buffer_ok`, no `eurusd_rate`, no `InstrumentMeta`, and
+nothing named `funding_*`. `costs` is a `ForexCosts`, whose swap is `rollover_*`.
+
+### §16.3 — `ForexEntryRung` and the ladder
+
+`ForexEntryRung` mirrors `EntryRung` with **`units`** where crypto has `qty`, keeps
+`price`, `weight_pct`, `notional_eur` and the signed `distance_pct`, and has no
+`notional_usdt`.
+
+`sentinel/fx/ladder.py` follows §3's rules exactly — zone width below
+`0.5 × ATR(1h)` gives one rung at the midpoint, otherwise three at 40/35/25 of the **risk
+budget** — with one substitution: the collapse trigger is `MinimumTradeSize` (1000 units,
+§7.2) instead of a minimum notional, and the collapse walks 3 → 2 → 1 exactly as
+`risk/ladder.py` does.
+
+**A consequence §7.2 implies but never states.** At €200 capital a 40% rung is roughly
+400 units against a 1000-unit minimum, so **every forex ladder collapses to a single
+rung** at this account size. That is not a bug and it is not worked around: it is the
+`BELOW_MIN_TICKET` edge §7.2 asks to have measured, arriving one level earlier than
+expected. The rung count is therefore itself a reading on whether €200 is a viable size.
+
+### §16.4 — `ForexGateStatus` and `ForexGateDecision`
+
+`ForexGateStatus` is a **new** StrEnum carrying the same three wire values as
+`GateStatus` — `APPROVED_FOR_HUMAN`, `REJECTED`, `DOWNGRADED_WATCHLIST` — so
+`gate_decisions.status` and every `/pulse` and `/stats` aggregation group both markets
+identically without either enum importing the other. A test asserts the two vocabularies
+still agree, so a divergence is a failure rather than a quietly split histogram.
+
+It does **not** import `GateStatus`. `sentinel/fx/` depends on nothing in
+`sentinel/risk/` — the precedent `fx/rounding.py` set, and for its stated reason: new-market
+arithmetic must not be coupled to a module nobody is allowed to touch.
+
+`ForexGateDecision` mirrors `GateDecision` with `reason: ForexRejection | None` and
+`plan: ForexPlan | None`.
+
+### §16.5 — The gate is a composition, in a fixed order
+
+Every rail already exists in `sentinel/fx/` as a pure verdict function. `fx/gate.py` runs
+them in the order `risk/engine.py` established — most specific first, net RR **last**, so
+the harder blocker always wins and a rejection names the thing that actually stopped it:
+
+| # | check | implementation | codes |
+|---|---|---|---|
+| 1 | preconditions | new | `NOT_A_CANDIDATE`, `MISSING_PLAN_FIELDS`, `NO_CAPITAL`, `FX_RATE_UNAVAILABLE`, `INSTRUMENT_UNRESOLVED`, `ATR_UNAVAILABLE` |
+| 2 | the clock (§5) | `fx.hours.clock_verdict` | `MARKET_CLOSED`, `WEEK_OPEN_QUIET`, `FRIDAY_CUTOFF` |
+| 3 | the calendar (§8) | `EconomicCalendar.blackout` | `CALENDAR_STALE`, `EVENT_BLACKOUT` |
+| 4 | the spread (§5.3) | `fx.spread.spread_gate` | `SPREAD_TOO_WIDE`, `ROLLOVER_WINDOW` |
+| 5 | geometry and quality | new `fx/coherence.py` | `ENTRY_ZONE_INVALID`, `STOP_SIDE`, `TARGET_ORDER`, `ENTRY_TOO_FAR`, `STOP_TOO_TIGHT`, `STOP_TOO_WIDE`, `RR_TOO_LOW`; `LOW_CONFIDENCE` **downgrades** rather than rejects |
+| 6 | rails (§9) | new `fx/rails.py` | `PAUSED`, `MAX_CONCURRENT_POSITIONS`, `SYMBOL_COOLDOWN`, `DAILY_SIGNAL_CAP` |
+| 7 | ladder and sizing (§7.1, §7.2) | `fx/ladder.py` + `fx.sizing.size_position` | `BELOW_MIN_TICKET` |
+| 8 | margin (§7.6) | new | `MARGIN_ABOVE_EQUITY_SHARE` |
+| 9 | costs and **net** RR (§7.3, §7.4) | `fx.costs.estimate_costs` + `net_rr` | `NET_RR_TOO_LOW` |
+
+Rows 2, 3 and 4 sit **before** the expensive work on purpose: a shut market, a blackout
+and a rollover spread are all cheap to establish and all of them make the rest moot.
+
+Row 9's cost model uses the **per-hour-of-day** median (§5.3 as corrected by defect #15)
+while row 4's gate used the **global** one. Two baselines answering two different
+questions, and the gate would never fire at the one hour it was written for if they were
+the same number.
+
+### §16.6 — The new rejection codes
+
+`ForexRejection` gains sixteen members for rows 1, 5, 6 and 8. Where a concept is
+genuinely the same as crypto's the **name is the same**, so a `/pulse` rejection histogram
+reads alike across markets; where it is not, the name says so. `MARGIN_ABOVE_EQUITY_SHARE`
+is the one deliberate divergence from crypto's `MARGIN_BUDGET_EXCEEDED`: crypto budgets
+margin per position, forex's margin is account-level, and one name over two meanings is
+how §7.6's warning gets forgotten.
+
+A meta-test asserts every member has user-facing wording, mirroring the guard that already
+covers `SkipReason`.
+
+### §16.7 — Where a forex signal lives, and the rule that keeps it distinguishable
+
+**In the existing `signals` table, with no migration.** `market` is already a column,
+`plan` and `chart_params` are already JSONB, and `signal_row()` reads only the attribute
+names §16.2 group 1 mirrors. `SignalRecord.plan` widens to `TradePlan | ForexPlan`
+(contract change, owner-approved 2026-08-21).
+
+**The hazard this creates, and the rule.** §16.2's mirroring means the two models look
+alike, and a mis-dispatched rehydration could produce a *plausible object* rather than an
+error — the same shape as the pip derivation, where the wrong reading gives believable
+numbers and no exception. So:
+
+1. Rehydration dispatches on **`row.market`**, never on trying one model and falling back
+   to the other. A fallback is precisely the mechanism that turns a mis-dispatch into a
+   plausible object.
+2. A test asserts both directions **fail loudly**: a forex row cannot validate as a
+   `TradePlan`, and a crypto row cannot validate as a `ForexPlan`.
+3. A structural test asserts **neither model's field set is a subset of the other's**, so
+   a future field addition cannot quietly make one plan validate as the other. That is the
+   property (2) actually rests on, and pinning the property rather than the two examples is
+   what keeps it true after the next edit.
+
+### §16.8 — The card
+
+`forex_signal_card` lives in a **new module**, `sentinel/bot/forex_cards.py`, not as a
+branch inside `cards.py`. Two reasons: the crypto renderer's diff stays empty, and the new
+module joins `RENDERING_MODULES` so the AST no-arithmetic scan and the
+every-number-came-from-the-plan check cover it from its first line rather than from
+whenever somebody remembers.
+
+Beyond §1's shape it carries what this market has and crypto's card has no room for:
+distances in **pips** beside percentages, the measured spread with its basis, the rollover
+nights, the ESMA words with the leverage, the §7.6 sentence stating plainly that stop-out
+risk is account-level rather than per-position, and §5.4's weekend gap warning. It carries
+the market tag under §11's `multi_market` condition, exactly as the crypto card does.
+
+### §16.9 — Publishing
+
+Unchanged mechanism. `SignalPublisher` already claims on `plan_id` and on
+`(signal_id, kind, chat_id)`, and neither key knows or cares what shape the plan is. The
+publisher picks the renderer by `record.market`. The double-press no-op is **proven for
+forex by its own test**, not inherited by argument.
+
+### §16.10 — The tracker in a market that is shut 49 hours a week
+
+Four changes, and the first is the one with no crypto analogue at all:
+
+1. **Closed is not a stall.** The loop skips detection while `fx.hours.state_at` reports
+   CLOSED. A frozen price over a weekend is not a signal about anything, and reading it as
+   one would resolve outcomes against a market that was not trading.
+2. **Closed hours do not count against a TTL.** A twelve-hour ladder placed on Friday
+   afternoon has not had twelve hours to fill by Sunday evening.
+3. **Every pending ladder expires before the Friday close** (§5.4), at
+   `friday_ladder_expiry_hour_utc`, with `expiry_basis` saying so. Expired with a reason
+   the owner sees — never paused.
+4. **A currency-matched high-impact event cancels pending ladders** (§8), through
+   `EconomicCalendar.affected_symbols`. Open positions are annotated, never closed:
+   Sentinel informs and does not instruct.
+
+`prices.PriceFeed`'s candle ceiling becomes the adapter's own rather than Binance's
+hard-coded 1000 — Saxo's is 1200, and it is already `ForexConfig.max_count`.
+
+### §16.11 — What this section does not settle
+
+Every threshold it introduces is a **starting guess to be calibrated from DRY_RUN**, in
+the same standing as `spread_max_multiple: 3.0`. The swap table is still empty and
+commission is still a configured zero, so any net-RR figure prices the spread and nothing
+else. And no live forex cycle has ever run: everything here is exercised against a
+synthetic venue.
+
+---
+
 ## Corrections log
 
 **2026-08-20**
@@ -811,6 +1018,63 @@ code that has to implement it. Owner rulings on all four are dated the same day.
   is empty. Crypto's `to_json_dict()` is byte-identical to what it was before the field
   existed; forex's carries every line and band it drew. Both halves are tested, and the
   test that the key is *absent* has a sibling proving it is not absent always.
+
+**2026-08-21 — from the M10c build**
+
+Three more, found the same way the last nine were: by reading this document against the
+code that has to implement it. One of them is a defect in the **milestone instruction**
+rather than in this spec, and it is recorded here because that is where somebody would
+look for it. Owner rulings on all three are dated the same day.
+
+- **#21 §7/§9 — the forex gate has no quality thresholds, and crypto's do not transfer.**
+  §7 and §9 name the sizing rails and the correlation cap and say nothing about setup
+  *quality*: no minimum net RR, no minimum confidence, no entry-distance bound, no
+  ATR bounds on the stop, no cooldown, no daily cap. `ForexConfig` accordingly has none,
+  so the obvious move is to read crypto's `RiskConfig` — and one of those numbers is
+  actively wrong here. `max_entry_distance_pct: 3.0` bounds how far an entry may sit from
+  the last price; EURUSD moves about **0.5% in a day**, so a 3% bound can essentially
+  never fire. A rail that cannot fire is worse than an absent one, because it reads on a
+  checklist as a rail. **Ruling: forex gets its own thresholds in `ForexConfig`** —
+  `min_rr_tp1`, `min_confidence`, `max_entry_distance_pct`, `stop_atr_min_multiple`,
+  `stop_atr_max_multiple`, `signal_cooldown_hours`, `max_signals_per_day` — each a
+  starting guess to be calibrated from DRY_RUN, in the same standing as
+  `spread_max_multiple: 3.0`, and crypto's `risk:` block untouched.
+
+- **#22 §11 — capital renders at eighteen decimal places, and no golden could see it.**
+  §11 says M10a did the surface work and M10b consumes it. Consuming it surfaced a live
+  defect in the crypto card: `capital_eur` and `risk_per_trade_pct` are the only two
+  `TradePlan` fields assigned without `money()` or `percent()` (`risk/engine.py`), and
+  both originate in `Numeric(38, 18)` columns, so Postgres hands back
+  `Decimal('200.000000000000000000')` and the card prints it. The golden cannot catch it
+  because the golden's capital is an in-process `Decimal("10000")` — scale 0, never
+  round-tripped through the database — so `card.txt` reads `capital €10000` and stays
+  green with the bug present. This is the same class as the `$10` → `$10.0` regression
+  `tests/golden/test_golden_surfaces.py` already names: a `Decimal` **scale** difference
+  where equality says the two agree and the rendered text does not.
+  **Ruling: fix it at the render seam, not at the source.** The architecturally correct
+  place is `risk/engine.py`; that package is frozen for the live measurement window, and a
+  display-scale fix is not worth spending the freeze on. `bot/formatting` gains a money
+  formatter, and the no-arithmetic guard gains a **numeric** rather than string comparison
+  plus a new rule it can enforce: the renderer may fix a display *scale* and never a
+  *value*. That missing rule is why the defect lived.
+
+- **#23 §11 — "regenerate at switch-on" is unexecutable inside a milestone that keeps
+  forex off.** This is a correction to the **milestone instruction**, not to §11's
+  reasoning, and the distinction matters. §11 is right that switching forex on gives
+  crypto cards their market tag and changes their bytes. The M10c brief then required that
+  regeneration to happen "HERE, as an explicit numbered step" **and** required
+  `markets.forex.enabled: false` in the same breath. Both cannot hold: with one market
+  enabled `AppConfig.multi_market` is `False`, `section_header` returns `""`, and no
+  crypto card byte can move. There was nothing to regenerate.
+  **Ruling (owner, 2026-08-21): pin the tagged form as an ADDITION instead.** A
+  multi-market golden set is rendered now from the shipped config with forex flipped on in
+  memory, written by its own generator with its own hard write-allowlist, following
+  `generate_goldens_m10b2.py`. The 27 existing fixtures are not regenerated for the tag at
+  all. Switch-on day therefore becomes a config flip with **zero** golden churn, rather
+  than a regeneration performed on the one day there is least attention to spare for it —
+  and `test_the_deployed_config_renders_the_same_surface`, the strongest assertion in the
+  suite, keeps holding because the shipped config is still single-market.
+  The only bytes M10c regenerates are the two lines defect #22 fixes.
 
 ### The M10b boundary defect — a milestone boundary is untested by construction
 

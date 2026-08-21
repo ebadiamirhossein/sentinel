@@ -303,7 +303,10 @@ async def test_settings_shows_the_source_of_every_value(ctx: BotContext, store: 
     message = await run(admin.settings, ctx, store=store)
     # "you" rather than "db": it is no longer one setting for the whole system, and
     # a card that still said db would imply it applied to everybody.
-    assert "capital_eur: €10000 <i>[you]</i>" in message.last
+    # €10000.00, not €10000: money renders at cents from M10c (FOREX.md defect
+    # #22). On the live system this line read €200.000000000000000000, because
+    # ``users.capital_eur`` is a ``Numeric(38, 18)`` column.
+    assert "capital_eur: €10000.00 <i>[you]</i>" in message.last
     assert "max_leverage: 10x <i>[yaml]</i>" in message.last
     assert "min_rr_tp1: 1.5R (net of costs) <i>[yaml]</i>" in message.last
 

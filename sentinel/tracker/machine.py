@@ -35,6 +35,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from sentinel.bot.models import TERMINAL_STATUSES, SignalStatus
+from sentinel.bot.plans import eur_quote_rate_of, qty_step_of
 from sentinel.core.config import ManagementConfig
 from sentinel.risk.accounting import realized_r
 from sentinel.risk.rounding import floor_to_step, money, ratio
@@ -73,7 +74,7 @@ def target_close_qty(
         return open_qty
 
     share = (management.tp1_close_pct if target_index == 0 else management.tp2_close_pct) / HUNDRED
-    step = tracking.plan.instrument.qty_step
+    step = qty_step_of(tracking.plan)
     wanted = floor_to_step(tracking.filled_qty * share, step)
     return min(wanted, open_qty)
 
@@ -86,7 +87,9 @@ def _realized(tracking: SignalTracking, extra: LegExit | None = None) -> tuple[D
     says a rung-1-only stop-out is -0.40R.
     """
     plan = tracking.plan
-    planned_risk_usdt = plan.planned_risk_eur * plan.eurusd_rate
+    # ``eur_quote_rate_of`` rather than ``plan.eurusd_rate``: on USDJPY the rate is
+    # EURJPY, and reaching for EURUSD there is a ~145x error (§7.1).
+    planned_risk_quote = plan.planned_risk_eur * eur_quote_rate_of(plan)
     exits = tuple(exit_.as_exit() for exit_ in tracking.exits)
     if extra is not None:
         exits = (*exits, extra.as_exit())
@@ -95,7 +98,7 @@ def _realized(tracking: SignalTracking, extra: LegExit | None = None) -> tuple[D
         direction=plan.direction,
         fills=tuple(fill.as_fill() for fill in tracking.fills),
         exits=exits,
-        planned_risk_usdt=planned_risk_usdt,
+        planned_risk_usdt=planned_risk_quote,
     )
     return ratio(r), money(r * plan.planned_risk_eur)
 
@@ -330,8 +333,11 @@ def _expired(tracking: SignalTracking, event: MarketEvent) -> Transition:
             to_status=SignalStatus.EXPIRED,
             realized_r=Decimal(0),
             realized_eur=Decimal(0),
-            detail="Expired unfilled",
-            payload={"expires_at": tracking.plan.expires_at.isoformat()},
+            detail=f"Expired unfilled — {event.cause}" if event.cause else "Expired unfilled",
+            payload={
+                "expires_at": tracking.plan.expires_at.isoformat(),
+                **({"cause": event.cause} if event.cause else {}),
+            },
         ),
     )
 

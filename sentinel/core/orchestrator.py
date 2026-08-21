@@ -53,6 +53,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,9 +61,11 @@ from sentinel.analyst.history import build_history_block
 from sentinel.analyst.models import AnalystReport, CandidateStatus
 from sentinel.analyst.providers.anthropic_fable import AnthropicFableAnalyst
 from sentinel.bot.cards import no_capital_card, signal_card
+from sentinel.bot.forex_cards import forex_signal_card
 from sentinel.bot.formatting import zone_info
 from sentinel.bot.models import SignalRecord, UserAccount
 from sentinel.bot.notices import UserNotifier, no_capital_key
+from sentinel.bot.plans import AnyPlan, plan_of
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.bot.runtime import account_state, effective_config
 from sentinel.charts.models import ChartImage, ChartSpec
@@ -73,8 +76,18 @@ from sentinel.core.forex_cycle import MARKET_CLOSED_REASON, ForexAssembly, assem
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.pauses import effective_pause
-from sentinel.core.wiring import assemble_with_features, forex_adapter, snapshot_assembler
+from sentinel.core.wiring import (
+    assemble_with_features,
+    forex_adapter,
+    forex_fx_client,
+    snapshot_assembler,
+)
 from sentinel.features.models import SymbolFeatures
+from sentinel.fx.calendar import EconomicCalendar, load_calendar
+from sentinel.fx.gate import ForexAccountState, ForexGate, ForexMarketContext
+from sentinel.fx.models import ForexGateStatus, ForexRejection
+from sentinel.fx.rails import ForexPortfolioState
+from sentinel.ingestion.clients.fx import FxClient
 from sentinel.ingestion.models import FxRate, MarketSnapshot
 from sentinel.llm.client import AnthropicClient
 from sentinel.llm.errors import AnalystUnavailable
@@ -94,7 +107,6 @@ from sentinel.risk.models import (
     MarketContext,
     PortfolioState,
     RejectionReason,
-    TradePlan,
 )
 from sentinel.risk.rails import cooldown_until, open_risk_pct
 from sentinel.screener.screener import Screener
@@ -296,6 +308,8 @@ class CycleOrchestrator:
         notices: UserNotifier | None = None,
         clock: Clock | None = None,
         repositories: CycleRepositories | None = None,
+        calendar: EconomicCalendar | None = None,
+        fx_client: FxClient | None = None,
     ) -> None:
         self._settings = settings
         self._database = database
@@ -313,6 +327,17 @@ class CycleOrchestrator:
         self._notices = notices
         self._clock = clock or SystemClock()
         self._repos = repositories or CycleRepositories()
+        #: The economic calendar (§8). Read once at construction: it is a shipped YAML
+        #: file that cannot change without a redeploy, so re-reading it per symbol per
+        #: user would be work for an answer that cannot move. Injectable so a test can
+        #: put an event in front of a signal. Loaded for every market because loading it
+        #: costs one file read and a crypto cycle simply never asks it anything.
+        self._calendar = calendar if calendar is not None else load_calendar()
+        #: EUR->quote rates for forex sizing (§7.1). ``None`` in production, where the
+        #: forex path opens its own short-lived client per cycle exactly as it opens
+        #: its own adapter — forex does not go through the snapshot assembler, so
+        #: there is no long-lived client of its own to borrow. Injected in tests.
+        self._fx_client = fx_client
 
     # ---- market-scoped repositories ----------------------------------------
     #
@@ -464,20 +489,18 @@ class CycleOrchestrator:
         stored: dict[str, object],
         started: datetime,
     ) -> None:
-        """Ingest, compute, render, ask the analyst — and stop there (FOREX.md §14).
+        """Ingest, compute, render, analyse, gate, publish (FOREX.md §14, §16).
 
-        **Where it stops, and why.** ``sentinel/risk/``'s gate produces a
-        ``TradePlan``, which is crypto-shaped: ``notional_usdt``,
-        ``suggested_leverage``, ``liq_distance_pct``, ``liq_buffer_ok`` and a
-        ``PlanCosts`` carrying a perpetual funding rate (spec defect #12). §7.6 forbids
-        faking the liquidation buffer and the frozen package may not be extended, so
-        there is nothing for a forex plan to travel in. The card, publishing and
-        tracking are M10c for the same reason.
+        **M10b stopped this function at an analyst report**, because ``TradePlan`` is
+        crypto-shaped and there was nothing for a forex plan to travel in (spec defect
+        #12). M10c gives it :class:`~sentinel.fx.plan.ForexPlan` and its own gate, and
+        the path now runs to a card.
 
-        So this records an analyst report and stops, with a log line saying so. It does
-        not fall through to ``_gate_and_publish``: that path would read a forex report
-        through crypto's sizing and produce numbers that are wrong in a way nothing
-        downstream could notice.
+        It still does **not** fall through to ``_gate_and_publish``. That path reads a
+        report through crypto's sizing, and every number it produced for forex would be
+        wrong in a way nothing downstream could notice. The forex fan-out is its own
+        function with its own gate, and the two meet only at the publisher — which
+        dispatches on market.
         """
         config = effective_config(self._settings, stored)
         key = self._settings.secrets.anthropic_api_key
@@ -531,12 +554,27 @@ class CycleOrchestrator:
             )
             return
 
+        recipients = await self._recipients(now=started)
+        if not recipients:
+            # Nobody eligible means nobody to size for, and the deep analyst is the
+            # ~$0.32 tier. Same rule the crypto path has followed since M8.1.
+            log.info("cycle.no_recipients", market=self._market.value, detail="analysis not run")
+            return
+
+        await self._refresh_forex_rates(assembly)
+
         client = AnthropicClient(config.llm, api_key=key.get_secret_value())
         calls: list[LLMCall] = []
         try:
             for snapshot in assembly.snapshots:
                 calls += await self._analyse_forex_symbol(
-                    result, snapshot=snapshot, assembly=assembly, config=config, client=client
+                    result,
+                    snapshot=snapshot,
+                    assembly=assembly,
+                    config=config,
+                    client=client,
+                    stored=stored,
+                    recipients=recipients,
                 )
         finally:
             await client.aclose()
@@ -559,8 +597,11 @@ class CycleOrchestrator:
         assembly: ForexAssembly,
         config: AppConfig,
         client: AnthropicClient,
+        stored: dict[str, object],
+        recipients: Sequence[UserAccount],
     ) -> list[LLMCall]:
-        """One symbol: charts with §6's marks, one analyst call, one stored report."""
+        """One symbol: charts with §6's marks, one analyst call, one stored report,
+        then the per-user gate fan-out (§16.5)."""
         charts = list(
             render_album(
                 snapshot,
@@ -604,16 +645,138 @@ class CycleOrchestrator:
 
         if report.candidate_status is CandidateStatus.CANDIDATE:
             result.candidates += 1
-        # The named stopping point. Not a fall-through: crypto's gate would read this
-        # report through crypto's sizing (defect #12), and M10c is where a forex plan
-        # gets a shape to travel in.
-        log.info(
-            "cycle.forex_stops_at_report",
-            symbol=snapshot.symbol,
-            status=report.candidate_status.value,
-            detail="sizing, gate, card and tracking are M10c",
+
+        # M10b stopped here, because TradePlan could not carry a forex plan (defect
+        # #12). M10c gives it one. This is still **not** a fall-through into the crypto
+        # path: it is the forex gate, over forex inputs, producing a ForexPlan.
+        await self._forex_gate_and_publish(
+            result,
+            report=report,
+            snapshot=snapshot,
+            assembly=assembly,
+            charts=charts,
+            stored=stored,
+            recipients=recipients,
         )
         return list(analyst.calls)
+
+    async def _forex_gate_and_publish(
+        self,
+        result: CycleResult,
+        *,
+        report: AnalystReport,
+        snapshot: MarketSnapshot,
+        assembly: ForexAssembly,
+        charts: list[ChartImage],
+        stored: dict[str, object],
+        recipients: Sequence[UserAccount],
+    ) -> None:
+        """Step 5 for forex — the same fan-out shape, a different gate (§16.5).
+
+        The report, the charts and the spread profile above are shared and already paid
+        for. Everything from here is personal: the capital, the risk %, the rails, the
+        plan, the card and the row it is stored in — exactly as M8.1 established for
+        crypto, because the reason for it has nothing to do with which market it is.
+        """
+        symbol = snapshot.symbol
+        instrument = assembly.instruments.get(symbol)
+        forex_features = assembly.forex_features.get(symbol)
+        # The **assembly's** computed features, not ``SymbolFeatures.model_validate(
+        # snapshot.features)`` — which is what the crypto path does and what this did
+        # first. It raises here: M10b-2 merged the forex block *into* that dict (so a
+        # new top-level snapshot field would not move the crypto prompt golden), and
+        # ``SymbolFeatures`` is ``extra="forbid"``. Caught by the end-to-end cycle test
+        # in tests/core/test_forex_signal_path.py, which is the join a unit test on
+        # either side would have missed — again.
+        computed = assembly.features.get(symbol)
+        hourly = None if computed is None else computed.timeframes.get("1h")
+        market = ForexMarketContext(
+            symbol=symbol,
+            last_price=snapshot.last_price,
+            atr_1h=None if hourly is None else hourly.atr14,
+            instrument=instrument,
+            spread_profile=assembly.spread_profiles.get(symbol),
+            current_spread_pips=(
+                None
+                if forex_features is None or forex_features.spread is None
+                else forex_features.spread.current_pips
+            ),
+        )
+        for user in recipients:
+            await self._forex_gate_for(
+                result,
+                user=user,
+                report=report,
+                market=market,
+                charts=charts,
+                stored=stored,
+            )
+
+    async def _forex_gate_for(
+        self,
+        result: CycleResult,
+        *,
+        user: UserAccount,
+        report: AnalystReport,
+        market: ForexMarketContext,
+        charts: list[ChartImage],
+        stored: dict[str, object],
+    ) -> None:
+        config = effective_config(self._settings, stored)
+        account, portfolio, dedup = await self._forex_gate_inputs(
+            user, stored=stored, market=market
+        )
+        if dedup is not None:
+            log.info(
+                "cycle.user_skipped",
+                symbol=market.symbol,
+                user_id=user.telegram_user_id,
+                reason=dedup.reason.value,
+                detail=dedup.detail,
+            )
+            return
+
+        decision = ForexGate(config, calendar=self._calendar, clock=self._clock).evaluate(
+            report=report, market=market, account=account, portfolio=portfolio
+        )
+
+        async with self._database.session() as session:
+            await self._gate_decisions(session).record(
+                decision, cycle_id=result.cycle_id, user_id=user.telegram_user_id
+            )
+            await session.commit()
+
+        if decision.status is not ForexGateStatus.APPROVED_FOR_HUMAN or decision.plan is None:
+            log.info(
+                "cycle.not_approved",
+                symbol=market.symbol,
+                user_id=user.telegram_user_id,
+                status=decision.status.value,
+                reason=None if decision.reason is None else decision.reason.value,
+            )
+            if decision.reason is ForexRejection.NO_CAPITAL:
+                await self._say_no_capital(user)
+            return
+
+        result.approved += 1
+        if self._market_config(config).dry_run:
+            await self._record_dry_run(result, decision.plan, charts, user_id=user.telegram_user_id)
+            return
+
+        if self._publisher_factory is None:
+            log.warning(
+                "cycle.no_publisher",
+                symbol=market.symbol,
+                user_id=user.telegram_user_id,
+                detail="plan approved but no Telegram bot is configured — it is stored, not sent",
+            )
+            return
+
+        published = await self._publisher_factory(user.telegram_user_id).publish(
+            decision.plan, tuple(charts), cycle_id=result.cycle_id
+        )
+        if published.published:
+            result.published += 1
 
     async def _analyse(
         self,
@@ -920,7 +1083,7 @@ class CycleOrchestrator:
         )
 
     async def _record_dry_run(
-        self, result: CycleResult, plan: TradePlan, charts: list[ChartImage], *, user_id: int
+        self, result: CycleResult, plan: AnyPlan, charts: list[ChartImage], *, user_id: int
     ) -> None:
         """Store the signal and log the card that would have been sent.
 
@@ -956,8 +1119,21 @@ class CycleOrchestrator:
             user_id=user_id,
             number=claimed.number,
             detail="not sent — dry_run is on",
-            card=signal_card(claimed, tz, show_market=self._settings.config.multi_market),
+            card=self._card(claimed, tz),
         )
+
+    def _card(self, record: SignalRecord, tz: ZoneInfo) -> str:
+        """The card this record would have been published as.
+
+        The **same** function the publisher calls, dispatched the same way — on market,
+        never on the plan (§16.7). A rehearsal that logged a differently-rendered card
+        would be rehearsing something the owner will never see, which is the one thing
+        a dry run must not do.
+        """
+        show = self._settings.config.multi_market
+        if self._market is Market.FOREX:
+            return forex_signal_card(record, tz, show_market=show)
+        return signal_card(record, tz, show_market=show)
 
     # ---- guards ------------------------------------------------------------
 
@@ -1210,7 +1386,7 @@ class CycleOrchestrator:
 
         cooldowns = cooldown_until(resolutions, hours=risk.signal_cooldown_hours)
         account = account_state(user, config, fx.rate if fx is not None else Decimal("1"))
-        plans = [TradePlan.model_validate(row.plan) for row in open_taken]
+        plans = [plan_of(row.plan, self._market) for row in open_taken]
         portfolio = PortfolioState(
             open_risk_pct=open_risk_pct([plan.risk_per_trade_pct for plan in plans]),
             open_positions=len(plans),
@@ -1239,6 +1415,114 @@ class CycleOrchestrator:
             now=now,
         )
         return account, portfolio, skipped.get(symbol)
+
+    async def _forex_gate_inputs(
+        self, user: UserAccount, *, stored: dict[str, object], market: ForexMarketContext
+    ) -> tuple[ForexAccountState, ForexPortfolioState, Skip | None]:
+        """The forex twin of :meth:`_gate_inputs` — same shape, three real differences.
+
+        **The euro rate is per instrument.** ``account_state`` hands crypto a single
+        EURUSD figure because USDT is its only quote currency. Forex needs
+        EUR->*quote*: EURUSD for the majors and **EURJPY** for USDJPY (§7.1). It is read
+        from ``fx_rates`` by pair, and a missing pair yields ``None`` rather than a
+        substitute, so the gate rejects with ``FX_RATE_UNAVAILABLE`` — §12's "no
+        sizing, so no signal" — instead of sizing at a rate 145x wrong.
+
+        **Open positions are counted across the whole market, not per user.** §9's cap
+        is about correlation: EURUSD, GBPUSD and USDJPY all cross the dollar, and one
+        person holding two of them is one large dollar bet however many books it spans.
+
+        **The rails are forex's own** (spec defect #21) — its cooldown and its daily
+        cap, not crypto's.
+        """
+        config = effective_config(self._settings, stored)
+        forex = config.forex
+        now = self._clock.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        uid = user.telegram_user_id
+        quote = None if market.instrument is None else market.instrument.quote_currency
+
+        async with self._database.session() as session:
+            rate = None if quote is None else await self._repos.fx(session).get(f"EUR{quote}")
+            global_pause = await self._repos.risk_state(session).load()
+            market_pause = await self._repos.market_pause(session, market=self._market).load()
+            user_market_pause = await self._repos.user_market_pause(
+                session, market=self._market
+            ).load(uid)
+            signals = self._signals(session)
+            open_symbols_all = await signals.open_symbols_by_user()
+            open_symbols = await signals.open_symbols(user_id=uid)
+            resolutions = await signals.resolutions_since(
+                now - timedelta(hours=forex.signal_cooldown_hours), user_id=uid
+            )
+            today = await signals.published_since(day_start, user_id=uid)
+
+        cooldowns = cooldown_until(resolutions, hours=forex.signal_cooldown_hours)
+        pause = effective_pause(
+            global_pause=global_pause,
+            market_pause=market_pause,
+            user_pause=user.pause,
+            user_market_pause=user_market_pause,
+            market=self._market,
+            now=now,
+        )
+        account = ForexAccountState(
+            capital_eur=user.capital_eur,
+            risk_per_trade_pct=user.risk_per_trade_pct or config.risk.risk_per_trade_pct,
+            eur_quote_rate=None if rate is None else rate.rate,
+        )
+        portfolio = ForexPortfolioState(
+            open_positions=sum(len(symbols) for symbols in open_symbols_all.values()),
+            signals_today=today,
+            cooldown_until=cooldowns,
+            paused=pause.state.is_active(now),
+            pause_detail=pause.scope.value,
+        )
+        _, skipped = select_symbols(
+            {market.symbol},
+            open_symbols=open_symbols,
+            cooldowns=cooldowns,
+            published_today=today,
+            max_per_day=forex.max_signals_per_day,
+            now=now,
+        )
+        return account, portfolio, skipped.get(market.symbol)
+
+    async def _refresh_forex_rates(self, assembly: ForexAssembly) -> None:
+        """Fetch and persist EUR->quote for every instrument this cycle resolved (§7.1).
+
+        One request for every quote currency in play, before the analyst runs, so the
+        gate's rate is from this cycle rather than from whenever a crypto cycle last
+        asked. A failure here is **not** fatal to the cycle: the stored rate stays
+        whatever it was, the gate reads it, and if there is none at all the instrument
+        is rejected with ``FX_RATE_UNAVAILABLE`` rather than sized on a guess.
+        """
+        quotes = tuple(
+            sorted({instrument.quote_currency for instrument in assembly.instruments.values()})
+        )
+        if not quotes:
+            return
+        try:
+            if self._fx_client is not None:
+                rates = await self._fx_client.fetch_quotes(quotes)
+            else:
+                async with forex_fx_client(self._settings) as client:
+                    rates = await client.fetch_quotes(quotes)
+        except Exception as exc:
+            log.warning(
+                "cycle.forex_rates_unavailable",
+                quotes=list(quotes),
+                error=str(exc),
+                error_type=type(exc).__name__,
+                detail="sizing falls back to the stored rate, or to no signal",
+            )
+            return
+        async with self._database.session() as session:
+            repo = self._repos.fx(session)
+            for rate in rates.values():
+                await repo.upsert(rate)
+            await session.commit()
+        log.info("cycle.forex_rates", pairs=sorted(rates))
 
     async def _history_block(self, symbol: str, *, owner_id: int | None) -> str:
         """specs/PROMPTS.md §3 — and from M7 both halves are real.

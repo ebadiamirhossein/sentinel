@@ -52,7 +52,7 @@ from sentinel.bot.cards import (
 )
 from sentinel.bot.context import BotContext
 from sentinel.bot.export import journal_filename, journal_workbook
-from sentinel.bot.formatting import escape
+from sentinel.bot.formatting import escape, money_eur
 from sentinel.bot.handlers.guard import answers_on_failure
 from sentinel.bot.keyboards import watchlist_request_keyboard
 from sentinel.bot.markets import (
@@ -63,6 +63,7 @@ from sentinel.bot.markets import (
 )
 from sentinel.bot.models import SignalDecision
 from sentinel.bot.outbound import SupportsBot
+from sentinel.bot.plans import plan_of
 from sentinel.bot.pulse import pulse_day_view, pulse_view, symbol_pulse_view
 from sentinel.bot.readmodels import position_view, spend_view, stats_view
 from sentinel.bot.runtime import (
@@ -78,7 +79,6 @@ from sentinel.bot.snapshot import snapshot_view
 from sentinel.bot.views import SpendView
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
-from sentinel.risk.models import TradePlan
 from sentinel.stats.journal import JournalBook, build_journal
 from sentinel.stats.queries import WINDOWS, build_report, parse_window, window_start
 
@@ -98,7 +98,7 @@ async def capital(message: Message, command: CommandObject, ctx: BotContext, act
     account = actor.known()
     if not command.args:
         await message.answer(
-            f"Your capital: €{account.capital_eur}"
+            f"Your capital: €{money_eur(account.capital_eur)}"
             if account.capital_eur is not None
             else "Your capital is not set, so no signal can be sized for you and none "
             "will be sent.\nSet it with: /capital 10000"
@@ -188,7 +188,8 @@ async def positions(message: Message, ctx: BotContext, actor: Actor) -> None:
             views = [
                 position_view(
                     row,
-                    TradePlan.model_validate(row.plan),
+                    # On the market being iterated, never on the payload (§16.7).
+                    plan_of(row.plan, market),
                     fills.get(row.id, []),
                     exits.get(row.id, []),
                     mark_price=marks.get(row.symbol),

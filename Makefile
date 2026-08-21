@@ -111,6 +111,22 @@ check-image: ## Build the image AND import the app inside it
 		 cal = load_calendar(); \
 		 assert cal.source.endswith('calendar.yaml'), 'the forex calendar is not in the wheel'; \
 		 print(f'image imports, prompts ship ({\", \".join(names)}), calendar ships, config loads')"
+	@# M10c. Building and importing proves the image WORKS; it says nothing about
+	@# whether it is the same software the suite validated. Twice now it was not:
+	@# anthropic resolved 0.122 in .venv, 0.125 on the server and 1.0.0 in a fresh
+	@# image (M10b-1 §3), and numpy resolved 2.2.6 in .venv against 2.5.2 in the
+	@# image because pandas-ta -- a DEV EXTRA -- pulls numba, which caps NumPy at 2.2
+	@# (M10c §12). Both were found by accident, late.
+	@#
+	@# check-deps cannot see this: it reads the source tree and asks about
+	@# DECLARATION, hermetically. This is a question about RESOLUTION, and it needs
+	@# both environments built -- which is exactly what this target already has.
+	@#
+	@# Pinned dependencies FAIL; unpinned ones WARN, because that warning is the form
+	@# in which this would have caught numpy before anybody pinned it.
+	@docker run --rm --entrypoint python sentinel:check -c \
+		"$$($(BIN)/python -c 'from sentinel.tools.check_pins import PROBE; print(PROBE)')" \
+		| $(BIN)/python -m sentinel.tools.check_pins -
 
 check-fast: test lint typecheck coverage-risk check-deps check-ops ## The gate without the image build
 check: check-fast check-wheel check-image ## Everything the milestone gate requires

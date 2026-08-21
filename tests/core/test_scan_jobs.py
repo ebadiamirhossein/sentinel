@@ -80,3 +80,33 @@ def test_a_markets_scan_interval_is_its_own(settings: Settings, market: Market) 
     config.markets[market] = config.markets[market].model_copy(update={"scan_interval_minutes": 17})
     tweaked = settings.model_copy(update={"config": config})
     assert jobs_for(tweaked)[f"scan:{market.value}"] == 17 * 60.0
+
+
+# --------------------------------------------------------------------------- #
+# One tracker per enabled market (M10c)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_second_enabled_market_gets_its_own_tracker_loop(settings: Settings) -> None:
+    """The gap ``app.track`` named as M10c's, closed.
+
+    A job per market rather than one loop over markets, and for the reason
+    ``TrackerLoop`` takes a market at all: a ``PriceFeed`` wraps exactly one venue's
+    adapter, so a loop can only follow signals it can price. One job doing both would
+    hold two adapters open on a 60-second timer and fail both markets whenever either
+    venue did.
+    """
+    registered = jobs_for(enable_forex(settings))
+    trackers = {name: seconds for name, seconds in registered.items() if name.startswith("tracker")}
+
+    assert trackers == {"tracker": 60.0, "tracker:forex": 60.0}
+
+
+def test_the_crypto_tracker_keeps_the_bare_job_id_it_has_always_had(settings: Settings) -> None:
+    """APScheduler keys on the id, and the running deployment's job is ``tracker``.
+
+    Renaming it to ``tracker:crypto`` for symmetry would be a live-system change made
+    for tidiness — the kind this milestone exists not to make.
+    """
+    assert "tracker" in jobs_for(settings)
+    assert "tracker:crypto" not in jobs_for(enable_forex(settings))

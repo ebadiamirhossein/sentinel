@@ -61,6 +61,8 @@ class FakeSignalRow:
     user_id: int = OWNER_ID
     #: M10a — which market, and therefore which per-market loss rail it feeds.
     market: Market = LEGACY_MARKET
+    #: M3 §7 / M10c join 2 — the ChartRenderParams record per attached chart.
+    chart_params: list[Any] = field(default_factory=list)
     status: str = SignalStatus.PENDING_ENTRY.value
     decision: str | None = None
     dry_run: bool = False
@@ -107,6 +109,7 @@ class FakeStore:
             dry_run=record.dry_run,
             created_at=record.plan.created_at,
             expires_at=record.plan.expires_at,
+            chart_params=list(record.chart_params),
         )
         for key, value in overrides.items():
             setattr(row, key, value)

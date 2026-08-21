@@ -461,6 +461,14 @@ forex:
   # No new signals after this hour on Friday: a ladder placed later cannot fill before
   # the weekend, and one that does fill carries gap risk through it.
   friday_signal_cutoff_hour_utc: 19
+  # The hour on Friday at which every still-pending entry ladder EXPIRES (§5.4, §16.10).
+  # Expired with a reason the owner sees, never paused: a rung that filled on the Sunday
+  # open would fill against a gap nobody's stop was placed for. One hour before the close
+  # rather than derived from it, because a derivation would have to survive the DST shift
+  # §5.2 describes and an explicit hour does not. Config load REFUSES a value at or after
+  # week_close_hour_utc — at or after it the ladder simply survives the weekend and the
+  # rail silently stops existing.
+  friday_ladder_expiry_hour_utc: 20
 
   # Swap is charged here and TRIPLED on Wednesday. The 19-22 window is half-open on
   # bar stamps, so it covers the bars stamped 19, 20 and 21 — wall-clock 19:00-22:00,
@@ -503,6 +511,38 @@ forex:
   # GBPUSD and USDJPY all cross the dollar, so long EURUSD plus short USDJPY is one
   # large short-dollar bet wearing two hats and the existing rails would allow both.
   max_concurrent_positions: 1
+
+  # ── setup quality (M10c, §16.5; spec defect #21) ───────────────────────────────
+  #
+  # §7 and §9 name the sizing rails and the correlation cap and say nothing about setup
+  # QUALITY, so these had no home and the obvious move was to read crypto's `risk:` block.
+  # One of those numbers is actively wrong here: risk.max_entry_distance_pct is 3.0, and
+  # EURUSD moves about 0.5% in a DAY, so a 3% bound could essentially never fire. A rail
+  # that cannot fire is worse than an absent one, because it reads on a checklist as a
+  # rail. So forex gets its own and crypto's `risk:` block is untouched.
+  #
+  # Every number here is a STARTING GUESS to be calibrated from DRY_RUN, in the same
+  # standing as spread_max_multiple above — not a derived figure.
+  #
+  # min_rr_tp1 is the exception and is deliberately the SAME 1.5 crypto gates on: §7.4
+  # computes what gross RR a forex setup needs to clear a 1.5 net gate, and
+  # journal/M10b_REPORT.md §6 measured 1.65-1.76 at the widest stop each pair can size at
+  # €200. Two markets gated at the same NET level is what makes their statistics
+  # comparable at all.
+  min_rr_tp1: 1.5
+  min_confidence: 60
+  # 0.5, not crypto's 3.0. This is the number defect #21 is about.
+  max_entry_distance_pct: 0.5
+  # Carried over from crypto unchanged, because they are expressed in ATR — the
+  # instrument's own volatility — which is what makes them transferable where a
+  # percentage is not.
+  stop_atr_min_multiple: 0.6
+  stop_atr_max_multiple: 3.0
+  signal_cooldown_hours: 4
+  # Three, not crypto's five, because there are three instruments: a fourth forex signal
+  # in a day means the same dollar view arriving twice, which is what §9's correlation
+  # cap exists to prevent one level down.
+  max_signals_per_day: 3
 
   # How many timeframes old the newest CLOSED candle may be while the market is OPEN.
   # Checked only when open — a weekend read is hours stale by construction and that is

@@ -33,10 +33,12 @@ from sentinel.bot.models import (
     WatchlistRequest,
     WatchlistRequestStatus,
 )
+from sentinel.bot.plans import AnyPlan
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.fx.instruments import ForexInstrument
 from sentinel.fx.models import SaxoTokenBundle
+from sentinel.fx.plan import ForexGateDecision
 from sentinel.ingestion.models import (
     FxRate,
     InstrumentMeta,
@@ -46,7 +48,7 @@ from sentinel.ingestion.models import (
 )
 from sentinel.llm.models import LLMCall, LLMCallKind, LLMCallStatus
 from sentinel.llm.spend import SpendTotals
-from sentinel.risk.models import GateDecision, GateStatus, PauseReason, PauseState, TradePlan
+from sentinel.risk.models import GateDecision, GateStatus, PauseReason, PauseState
 from sentinel.screener.models import ScreenerVerdict
 from sentinel.storage.models import (
     AnalystReportRow,
@@ -458,12 +460,19 @@ class FxRateRepository:
         )
 
 
+#: Either market's gate verdict. A union rather than a protocol because the two are
+#: genuinely parallel types and the storage layer reads them by name — see
+#: ``sentinel/bot/plans.py`` for the same decision one level down, and for the rule
+#: that keeps the two from being confused on the way back out.
+AnyGateDecision = GateDecision | ForexGateDecision
+
+
 class GateDecisionRepository(MarketScopedRepository):
     """Audit trail for every risk-gate verdict (PRD F10; M9's rejection stats)."""
 
     @staticmethod
     def to_row(
-        decision: GateDecision,
+        decision: AnyGateDecision,
         cycle_id: UUID | None = None,
         *,
         user_id: int,
@@ -478,6 +487,12 @@ class GateDecisionRepository(MarketScopedRepository):
         ``market`` is a parameter here and an instance attribute on the repository
         because this stays a **pure** function — the M4 tools serialize a decision
         without a session at all.
+
+        ``decision`` is ``GateDecision | ForexGateDecision`` from M10c, and **the body
+        did not change**. Every field read below is a name the two share, and the two
+        ``gate_status`` vocabularies are asserted to agree on the wire (FOREX.md §16.4)
+        precisely so ``/pulse`` and ``/stats`` can group this column across markets
+        without knowing which gate wrote a row.
         """
         return {
             "cycle_id": cycle_id,
@@ -493,7 +508,7 @@ class GateDecisionRepository(MarketScopedRepository):
         }
 
     async def record(
-        self, decision: GateDecision, cycle_id: UUID | None = None, *, user_id: int
+        self, decision: AnyGateDecision, cycle_id: UUID | None = None, *, user_id: int
     ) -> None:
         self._session.add(
             GateDecisionRow(**self.to_row(decision, cycle_id, user_id=user_id, market=self._market))
@@ -1304,8 +1319,17 @@ _COOLDOWN_ARMING = (
 )
 
 
-def signal_row(record: SignalRecord, plan: TradePlan) -> dict[str, Any]:
-    """Pure: a ``SignalRecord`` as column values. Testable without a database."""
+def signal_row(record: SignalRecord, plan: AnyPlan) -> dict[str, Any]:
+    """Pure: a ``SignalRecord`` as column values. Testable without a database.
+
+    ``plan`` is the ``TradePlan | ForexPlan`` union (M10c). **The body did not change**
+    when forex arrived, and that is the whole point of FOREX.md §16.2's mirroring:
+    every attribute read below — ``plan_id``, ``symbol``, ``direction``, ``setup_type``,
+    ``report.prompt_version``, ``confidence``, ``created_at``, ``expires_at`` — is a name
+    the two models share deliberately, so one table takes both without a translation
+    layer. ``record.market`` is what tells them apart on the way back out
+    (:func:`sentinel.bot.plans.plan_of`).
+    """
     return {
         "id": record.signal_id,
         "plan_id": plan.plan_id,

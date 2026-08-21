@@ -44,6 +44,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sentinel.analyst.models import Direction
+from sentinel.bot.plans import rungs_of
 from sentinel.ingestion.models import Candle
 from sentinel.tracker.models import EventKind, MarketEvent, SignalTracking
 
@@ -112,7 +113,7 @@ def observe(
         if stopped:
             break
 
-        for index, rung in enumerate(plan.entries):
+        for index, rung in enumerate(rungs_of(plan)):
             if index in seen_rungs:
                 continue
             if _touched(direction, candle, rung.price, below=True):
