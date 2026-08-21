@@ -214,6 +214,40 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
     beyond recognition would have passed against a check that had stopped working.
 
 
+14. **A dev extra must never constrain a production dependency's version.** It is
+    the same root cause as the `httpx` break, arriving from the opposite direction.
+    There, a dependency production needed was declared by nobody and arrived
+    transitively. Here, `pandas-ta` — a **test oracle**, in `[project.optional-
+    dependencies].dev` — pulls `numba`, which refuses NumPy above 2.2. So `.venv`
+    resolved **numpy 2.2.6** and a freshly built image resolved **2.5.2**, and the
+    suite had never once validated the numpy the container runs. numpy sits under
+    pinned matplotlib and mplfinance and under every RSI, ATR and EMA value, so the
+    thing being silently version-controlled by a test-only package was the numerical
+    core of the product.
+    **What makes this class invisible is that the constraint is invisible where it
+    matters.** Every check — tests, mypy, `check-deps`, even `check-wheel` — runs in
+    the environment the dev extra shapes. The image is the only place the constraint
+    is absent, and the image is the one place nothing was comparing versions.
+    Settled in M10c by pinning `numpy==2.2.6` so `.venv`, the image and the goldens
+    name one number. **`pandas` is still `>=2.2` and sits in exactly the same
+    position** — its own decision, deliberately not taken in M10c.
+
+    **`check-deps` cannot detect this class, and it should not be extended to.** It
+    reads the *source tree* and asserts every third-party import is a declared
+    dependency — a question about **declaration**, answered without resolving
+    anything. This is a question about **resolution**: whether two environments
+    resolve the same version of a shared package, which cannot be answered without
+    building both. Bolting it on would make a fast, hermetic check depend on a Docker
+    build, which is the thing `check-fast` exists to avoid.
+    **It belongs in `check-image`, which already builds the image and already imports
+    the app inside it.** The check is cheap and mechanical: for every *pinned*
+    dependency, assert the version installed in the image equals the version
+    installed in `.venv`, and fail naming both. That catches this defect and the
+    `anthropic` 0.122/0.125/1.0.0 defect from M10b-1 §3 with one assertion, and it
+    catches them **at build time in a gate** rather than at boot on the server. Not
+    built in M10c — named here so it is a decision rather than an oversight.
+
+
 ## 5. Boundaries that must survive any new feature
 
 - No execution code / trade-capable keys. Ever. (v1 hard boundary; revisit only

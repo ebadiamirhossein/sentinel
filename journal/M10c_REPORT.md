@@ -311,7 +311,11 @@ to expire a filled signal, rather than needing a second rule to say so.
 
 ## 10. Numbers
 
-* **2065 passed**, 60 skipped, 0 failed — up from 1902, **163 new tests**.
+* **2065 passed, 68 skipped**, 0 failed in the hermetic suite — up from 1902/60,
+  **171 new tests**. The 68 skips are the opt-in Postgres tests, and they were
+  **run**: with `SENTINEL_TEST_DATABASE_URL` set against `sentinel_test` at revision
+  `0011_forex_spine`, **2132 passed, 1 skipped, 0 failed** — the dev database
+  untouched and the test database cleaned up behind itself.
 
   | file | tests |
   |---|---|
@@ -324,6 +328,7 @@ to expire a filled signal, rather than needing a second rule to say so.
   | `tests/fx/test_config_thresholds.py` | 7 |
   | `tests/core/test_forex_degrades_only.py` | 16 (was 11) |
   | `tests/bot/test_no_arithmetic.py` | 10 (was 6) |
+  | `tests/storage/test_forex_signal_persistence.py` | 8 (opt-in, **run**) |
 
 * `make check` **exit 0**: tests, ruff, `mypy --strict` over **296 files**, 100% risk
   branch coverage, `check-deps`, `check-ops`, wheel build, image build and in-image
@@ -383,6 +388,28 @@ image after  the pin: numpy 2.2.6
 in the same position under the chart and indicator stack, and it was not in the brief.
 Its own decision.
 
+### The pattern, not the incident (owner requirement K2)
+
+This is the **same root cause as `httpx`, arriving from the opposite direction**. There,
+a dependency production needed was declared by nobody and arrived transitively. Here, a
+**test-only** package silently version-controls the numerical core of the product. The
+rule is now HANDOFF §4 item 14: *a dev extra must never constrain a production
+dependency's version.*
+
+**Can `check-deps` detect this class? No, and it should not be extended to.** It reads
+the *source tree* and asks a question about **declaration** — is every third-party import
+a declared dependency — which it answers without resolving anything, which is what makes
+it fast and hermetic. This is a question about **resolution**: do two environments
+resolve the same version of a shared package. That cannot be answered without building
+both, and bolting it on would make `check-fast` depend on a Docker build.
+
+**It belongs in `check-image`**, which already builds the image and already imports the
+app inside it. The check is cheap: for every *pinned* dependency, assert the version
+installed in the image equals the version installed in `.venv`, and fail naming both.
+That catches this defect **and** M10b-1 §3's three-versions-of-anthropic defect with one
+assertion, at build time in a gate rather than at boot on the server. **Not built in
+M10c** — named here and in HANDOFF so it is a decision rather than an oversight.
+
 ---
 
 ## 13. What is NOT verified — and what my own boundary leaves untested
@@ -395,11 +422,23 @@ compose. It is **not** evidence about the market.
 idempotent claim and its double-press no-op are proven against fakes and against real
 Postgres for the crypto path; the forex path has the fakes only.
 
-**No forex signal has ever been written to Postgres.** The round trip is proven through
-`FakeStore`. `signal_row` needed no change and the columns already exist, so there is
-nothing schema-shaped to be wrong — but "nothing to be wrong" is an argument, not a
-measurement. **The 60 opt-in Postgres tests should be run against a forex signal row
-before switch-on.**
+**A forex signal HAS now been written to Postgres — this gap is closed** (owner
+requirement K1, closed the same day). `tests/storage/test_forex_signal_persistence.py`
+writes a real `ForexPlan` through the real `SignalRepository` into a real `signals` row
+and reads it back through `plan_of`. Run against the local `sentinel_test` database at
+revision `0011_forex_spine`: **8 passed**, and the full opt-in suite is **2132 passed, 1
+skipped** with the dev database untouched.
+
+It asserts, in order of what would hurt most: the row is stamped `market='forex'`; it
+rehydrates as a **`ForexPlan`** and not as anything else; **every Decimal survives with
+its scale intact** — compared as strings, because `==` is exactly the comparison that
+could not see the capital defect; a crypto plan written beside it comes back a
+`TradePlan`; a market-scoped read never returns the other market's row (previously only
+ever tested against a table containing crypto rows, which is the condition under which a
+missing filter also passes); and a forex record handed to a crypto-scoped repository is
+refused before it reaches the table.
+
+That is HANDOFF §4 item 12 applied to forex **before** it ships rather than after.
 
 **The invented prices are still invented.** The correlations, the USD index and the
 ladder in these tests are facts about a generator, not about EURUSD.
@@ -423,8 +462,8 @@ the whole ticket is refused**. The rung count is itself a reading on account siz
 
 The rule from M10b-2 §2, applied to myself. Switch-on day should compose these **first**:
 
-1. **A forex signal has never been persisted by the real `SignalRepository`** — only by
-   a fake. `claim`'s market assertion and the `plan_id` unique index have never seen one.
+1. ~~A forex signal has never been persisted by the real `SignalRepository`.~~
+   **Closed** — see above.
 2. **A forex tracker tick has never priced a real Saxo 1m tail.** `PriceFeed` over
    `SaxoForexAdapter.ohlcv` satisfies the protocol and has never been run.
 3. **`/positions`, `/journal` and `/stats` have never rendered a forex row.** They are
