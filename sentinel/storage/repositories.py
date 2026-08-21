@@ -33,6 +33,7 @@ from sentinel.bot.models import (
     WatchlistRequest,
     WatchlistRequestStatus,
 )
+from sentinel.bot.plans import AnyPlan
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.fx.instruments import ForexInstrument
@@ -46,7 +47,7 @@ from sentinel.ingestion.models import (
 )
 from sentinel.llm.models import LLMCall, LLMCallKind, LLMCallStatus
 from sentinel.llm.spend import SpendTotals
-from sentinel.risk.models import GateDecision, GateStatus, PauseReason, PauseState, TradePlan
+from sentinel.risk.models import GateDecision, GateStatus, PauseReason, PauseState
 from sentinel.screener.models import ScreenerVerdict
 from sentinel.storage.models import (
     AnalystReportRow,
@@ -1304,8 +1305,17 @@ _COOLDOWN_ARMING = (
 )
 
 
-def signal_row(record: SignalRecord, plan: TradePlan) -> dict[str, Any]:
-    """Pure: a ``SignalRecord`` as column values. Testable without a database."""
+def signal_row(record: SignalRecord, plan: AnyPlan) -> dict[str, Any]:
+    """Pure: a ``SignalRecord`` as column values. Testable without a database.
+
+    ``plan`` is the ``TradePlan | ForexPlan`` union (M10c). **The body did not change**
+    when forex arrived, and that is the whole point of FOREX.md §16.2's mirroring:
+    every attribute read below — ``plan_id``, ``symbol``, ``direction``, ``setup_type``,
+    ``report.prompt_version``, ``confidence``, ``created_at``, ``expires_at`` — is a name
+    the two models share deliberately, so one table takes both without a translation
+    layer. ``record.market`` is what tells them apart on the way back out
+    (:func:`sentinel.bot.plans.plan_of`).
+    """
     return {
         "id": record.signal_id,
         "plan_id": plan.plan_id,

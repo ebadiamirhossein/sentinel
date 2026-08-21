@@ -22,8 +22,8 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from sentinel.bot.models import SignalStatus
+from sentinel.bot.plans import AnyPlan
 from sentinel.risk.accounting import Exit, Fill
-from sentinel.risk.models import TradePlan
 
 
 class Frozen(BaseModel):
@@ -104,7 +104,13 @@ class SignalTracking(Frozen):
     and the reason a crash needs no recovery routine.
     """
 
-    plan: TradePlan
+    #: ``TradePlan`` or ``ForexPlan`` — the union ``SignalRecord.plan`` carries.
+    #: Everything the tracker reads off a plan is a name the two share on purpose
+    #: (FOREX.md §16.2): ``entries[].price``/``.qty``, ``stop``, ``targets``,
+    #: ``expires_at``, ``avg_fill_price``, ``planned_risk_eur``, ``direction`` and
+    #: ``report.invalidation_price``. That shared vocabulary is exactly what lets
+    #: one detection path and one state machine serve both markets.
+    plan: AnyPlan
     status: SignalStatus
     fills: tuple[RungFill, ...] = ()
     exits: tuple[LegExit, ...] = ()

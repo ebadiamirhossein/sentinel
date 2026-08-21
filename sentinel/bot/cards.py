@@ -80,6 +80,16 @@ def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False
     for byte.
     """
     plan = record.plan
+    if not isinstance(plan, TradePlan):
+        # The symmetric half of ``forex_cards.forex_signal_card``'s guard, and it
+        # exists for FOREX.md §16.7's reason: ``ForexPlan`` mirrors this plan's
+        # vocabulary, so a mis-dispatched record would render most of a card and then
+        # read ``liq_buffer_ok`` off a market that has no liquidation price. Loud here,
+        # rather than a plausible card with three wrong lines in it.
+        raise TypeError(
+            f"signal_card was handed a {type(plan).__name__}. Plans are dispatched on "
+            f"SignalRecord.market; see sentinel/bot/plans.py."
+        )
     report = plan.report
     tag = f"{record.market.value.upper()} · " if show_market else ""
     lines = [

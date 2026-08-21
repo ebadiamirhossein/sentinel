@@ -34,6 +34,7 @@ import pytest
 from sentinel.bot.cards import signal_card
 from sentinel.bot.formatting import escape
 from sentinel.bot.models import SignalRecord
+from sentinel.risk.models import TradePlan
 
 #: Every module that turns plan data into owner-facing text.
 RENDERING_MODULES = (
@@ -194,6 +195,7 @@ def test_the_card_shows_the_engine_figures_verbatim(record: SignalRecord, tz: Zo
     """Spot-check the quantized values arrive unrounded and unreformatted."""
     card = signal_card(record, tz)
     plan = record.plan
+    assert isinstance(plan, TradePlan)  # this fixture is a crypto record, by construction
     for value in (
         plan.risk_eur,
         plan.notional_eur,

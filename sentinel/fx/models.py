@@ -80,6 +80,85 @@ class ForexRejection(StrEnum):
     #: §9's hard cap of one open forex position for the first measurement window.
     MAX_CONCURRENT_POSITIONS = "MAX_CONCURRENT_POSITIONS"
 
+    # ── M10c: the gate rows §16.5 added ─────────────────────────────────────
+    #
+    # Where the concept is genuinely the same as crypto's, the NAME is the same, so a
+    # /pulse rejection histogram reads alike across two markets. Where it is not, the
+    # name says so — see MARGIN_ABOVE_EQUITY_SHARE.
+
+    # Preconditions (§16.5 row 1).
+    #: The analyst did not put forward a candidate. Not a fault.
+    NOT_A_CANDIDATE = "NOT_A_CANDIDATE"
+    #: A CANDIDATE arrived without an entry zone, a stop or a target.
+    MISSING_PLAN_FIELDS = "MISSING_PLAN_FIELDS"
+    #: The Uic never resolved, so there is no pip and no minimum trade size. Skipped
+    #: with a named reason, never silently (§4.2).
+    INSTRUMENT_UNRESOLVED = "INSTRUMENT_UNRESOLVED"
+    #: No ATR(1h), so the stop-distance bounds cannot be checked. Refused rather than
+    #: checked against nothing: an unbounded stop is how a 40-pip idea becomes a
+    #: 400-pip one with no symptom.
+    ATR_UNAVAILABLE = "ATR_UNAVAILABLE"
+
+    # Geometry and quality (§16.5 row 5).
+    #: low >= high, or a zone the last price is nowhere near.
+    ENTRY_ZONE_INVALID = "ENTRY_ZONE_INVALID"
+    #: The stop is on the wrong side of the entry for the stated direction.
+    STOP_SIDE = "STOP_SIDE"
+    #: Targets are not ordered away from the entry.
+    TARGET_ORDER = "TARGET_ORDER"
+    #: An edge of the entry zone sits further from the last price than
+    #: ``ForexConfig.max_entry_distance_pct``. **0.5%, not crypto's 3%** — spec
+    #: defect #21: EURUSD moves about 0.5% in a day, so crypto's bound could never
+    #: fire here and a rail that cannot fire reads on a checklist as a rail.
+    ENTRY_TOO_FAR = "ENTRY_TOO_FAR"
+    #: Stop closer to the entry than ``stop_atr_min_multiple`` x ATR(1h) — noise.
+    STOP_TOO_TIGHT = "STOP_TOO_TIGHT"
+    #: Stop further than ``stop_atr_max_multiple`` x ATR(1h).
+    STOP_TOO_WIDE = "STOP_TOO_WIDE"
+    #: Reward-to-risk **before** costs. Distinct from NET_RR_TOO_LOW on purpose, and
+    #: for the reason crypto keeps them distinct: "the analyst proposed a poor RR" and
+    #: "the setup was fine and the spread ate it" call for different actions.
+    RR_TOO_LOW = "RR_TOO_LOW"
+    #: Below ``min_confidence``. **Downgrades to watchlist**, never rejects.
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"
+
+    # Rails (§16.5 row 6).
+    #: A pause is active — global, per market, per user or per (user, market). The
+    #: forex gate is handed the composed verdict, never the four rails.
+    PAUSED = "PAUSED"
+    #: This symbol resolved a signal recently and is still quiet.
+    SYMBOL_COOLDOWN = "SYMBOL_COOLDOWN"
+    #: ``ForexConfig.max_signals_per_day``. Three, not crypto's five: there are three
+    #: instruments and they all cross the dollar.
+    DAILY_SIGNAL_CAP = "DAILY_SIGNAL_CAP"
+
+    # Margin (§16.5 row 8).
+    #: Required margin exceeds ``max_margin_pct_of_equity``. Deliberately **not**
+    #: crypto's ``MARGIN_BUDGET_EXCEEDED``: crypto budgets margin per position and
+    #: forex margin is account-level (§7.6), and one name over two meanings is how
+    #: that distinction gets forgotten.
+    MARGIN_ABOVE_EQUITY_SHARE = "MARGIN_ABOVE_EQUITY_SHARE"
+
+
+class ForexGateStatus(StrEnum):
+    """The forex gate's verdict. Its own enum, with crypto's **wire values**.
+
+    Not an import of :class:`sentinel.risk.models.GateStatus`, for the reason
+    ``sentinel/fx/rounding.py`` is not an import of ``sentinel/risk/rounding.py``:
+    this package depends on nothing in the frozen one, so new-market code is never
+    coupled to a module nobody is allowed to touch.
+
+    But the three **strings** are deliberately identical, because they are written to
+    ``gate_decisions.status`` and read back by ``/pulse`` and ``/stats``, which group
+    across markets. Two vocabularies that disagreed would split one histogram in half
+    with nothing to say so. ``tests/fx/test_gate.py`` asserts the two still agree, so
+    a divergence is a failing test rather than a quietly wrong count.
+    """
+
+    APPROVED_FOR_HUMAN = "APPROVED_FOR_HUMAN"
+    REJECTED = "REJECTED"
+    DOWNGRADED_WATCHLIST = "DOWNGRADED_WATCHLIST"
+
 
 def fingerprint(secret: SecretStr | None) -> str:
     """A token's sha256 prefix, which is the only form one may ever be logged in.
@@ -159,4 +238,4 @@ class SaxoTokenBundle(BaseModel):
         return now >= self.refresh_expires_at
 
 
-__all__ = ["ForexRejection", "SaxoTokenBundle", "fingerprint"]
+__all__ = ["ForexGateStatus", "ForexRejection", "SaxoTokenBundle", "fingerprint"]
