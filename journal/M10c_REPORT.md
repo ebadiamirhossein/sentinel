@@ -311,10 +311,10 @@ to expire a filled signal, rather than needing a second rule to say so.
 
 ## 10. Numbers
 
-* **2065 passed, 68 skipped**, 0 failed in the hermetic suite — up from 1902/60,
-  **171 new tests**. The 68 skips are the opt-in Postgres tests, and they were
+* **2076 passed, 68 skipped**, 0 failed in the hermetic suite — up from 1902/60,
+  **182 new tests**. The 68 skips are the opt-in Postgres tests, and they were
   **run**: with `SENTINEL_TEST_DATABASE_URL` set against `sentinel_test` at revision
-  `0011_forex_spine`, **2132 passed, 1 skipped, 0 failed** — the dev database
+  `0011_forex_spine`, **2143 passed, 1 skipped, 0 failed** — the dev database
   untouched and the test database cleaned up behind itself.
 
   | file | tests |
@@ -329,10 +329,12 @@ to expire a filled signal, rather than needing a second rule to say so.
   | `tests/core/test_forex_degrades_only.py` | 16 (was 11) |
   | `tests/bot/test_no_arithmetic.py` | 10 (was 6) |
   | `tests/storage/test_forex_signal_persistence.py` | 8 (opt-in, **run**) |
+  | `tests/test_pins.py` | 11 |
 
-* `make check` **exit 0**: tests, ruff, `mypy --strict` over **296 files**, 100% risk
-  branch coverage, `check-deps`, `check-ops`, wheel build, image build and in-image
-  import — which confirms **both** analyst prompts and the calendar ship.
+* `make check` **exit 0**: tests, ruff, `mypy --strict` over **301 files**, 100% risk
+  branch coverage, `check-deps`, `check-ops`, wheel build, image build, in-image
+  import — which confirms both analyst prompts and the calendar ship — and, new in
+  M10c, the **pinned-version comparison between `.venv` and the image**.
 * `sentinel/risk/` and the three crypto prompts: **zero-line diff.**
 * Goldens: **27 → 2 deliberately regenerated, 25 byte-identical, 10 added.**
 * 70 files changed, ~7,070 insertions. **No migration.**
@@ -404,11 +406,36 @@ resolve the same version of a shared package. That cannot be answered without bu
 both, and bolting it on would make `check-fast` depend on a Docker build.
 
 **It belongs in `check-image`**, which already builds the image and already imports the
-app inside it. The check is cheap: for every *pinned* dependency, assert the version
-installed in the image equals the version installed in `.venv`, and fail naming both.
-That catches this defect **and** M10b-1 §3's three-versions-of-anthropic defect with one
-assertion, at build time in a gate rather than at boot on the server. **Not built in
-M10c** — named here and in HANDOFF so it is a decision rather than an oversight.
+app inside it — and it is **now built there** (owner requirement L1).
+`sentinel/tools/check_pins.py`, wired into `make check-image`: for every *pinned*
+dependency it asserts the image's installed version equals `.venv`'s and fails naming
+both. Unpinned divergences **warn** rather than fail, because a `>=` declaration is an
+explicit statement that the version may move — and that warning is precisely the form in
+which this check would have caught numpy *before* anybody pinned it.
+
+**Proved with teeth, not asserted.** `matplotlib`'s pin was temporarily skewed to
+3.10.7, the image rebuilt at it, and the check run for real:
+
+```
+PINNED DEPENDENCY VERSIONS DISAGREE BETWEEN .venv AND THE IMAGE:
+  matplotlib (pinned 3.10.7): .venv has 3.11.1, the image has 3.10.7
+EXIT: 1
+```
+
+The pin was restored and the check passes: `pins agree: 5 pinned dependencies identical
+in .venv and the image`.
+
+**On its first real run it found two more divergences.** `ccxt` — the exchange client —
+is 4.5.74 in `.venv` and 4.5.75 in a fresh image, and `uvicorn` is 0.52.3 against
+0.52.4. Both are unpinned, so both warn. Neither is a defect today; `ccxt` is the one
+worth a decision, because it is the library every candle the crypto measurement rests on
+arrives through.
+
+Eleven unit tests cover the comparison — the part most likely to be subtly wrong while
+still looking like a working gate — and two of them **reconstruct the defects this was
+written for**: anthropic 0.122 against 1.0.0 (pinned, fails) and numpy 2.2.6 against
+2.5.2 (unpinned, warns), plus the httpx shape of a package missing from the image
+entirely.
 
 ---
 

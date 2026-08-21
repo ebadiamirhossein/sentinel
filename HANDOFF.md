@@ -240,12 +240,19 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
     building both. Bolting it on would make a fast, hermetic check depend on a Docker
     build, which is the thing `check-fast` exists to avoid.
     **It belongs in `check-image`, which already builds the image and already imports
-    the app inside it.** The check is cheap and mechanical: for every *pinned*
-    dependency, assert the version installed in the image equals the version
-    installed in `.venv`, and fail naming both. That catches this defect and the
-    `anthropic` 0.122/0.125/1.0.0 defect from M10b-1 §3 with one assertion, and it
-    catches them **at build time in a gate** rather than at boot on the server. Not
-    built in M10c — named here so it is a decision rather than an oversight.
+    the app inside it — and it is now there** (`sentinel/tools/check_pins.py`, M10c).
+    For every *pinned* dependency it asserts the image's installed version equals
+    `.venv`'s and fails naming both; unpinned divergences **warn**, because a `>=`
+    declaration is an explicit statement that the version may move and failing on it
+    would make the gate lie about its own intent — but that warning is the form in
+    which this would have caught numpy *before* anybody pinned it.
+    One assertion covers this defect and M10b-1 §3's three-versions-of-`anthropic`
+    defect, at build time in a gate rather than at boot on the server. Proved by
+    skewing `matplotlib`'s pin, rebuilding the image and watching it exit 1 naming
+    both versions.
+    **On its first real run it found two more:** `ccxt` (the exchange client) and
+    `uvicorn` already differ between `.venv` and a fresh image. Both are unpinned, so
+    both warn — which is the check working, and `ccxt` is worth a decision.
 
 
 ## 5. Boundaries that must survive any new feature
