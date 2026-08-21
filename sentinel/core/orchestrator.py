@@ -68,7 +68,7 @@ from sentinel.bot.notices import UserNotifier, no_capital_key
 from sentinel.bot.plans import AnyPlan, plan_of
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.bot.runtime import account_state, effective_config
-from sentinel.charts.models import ChartImage, ChartSpec
+from sentinel.charts.models import ChartImage, ChartSpec, album_specs
 from sentinel.charts.renderer import render_album
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import AppConfig, MarketConfig, Settings
@@ -610,6 +610,14 @@ class CycleOrchestrator:
                 annotations=assembly.annotations.get(snapshot.symbol, ()),
             )
         )
+        # A **real** history block, not the ``""`` this passed until M10d. An empty text
+        # block is an HTTP 400 — "text content blocks must be non-empty" — so every
+        # forex analyst call would have failed, as an AnalystUnavailable that reads like
+        # an API problem. Nothing caught it because the forex prompt had never been sent
+        # (join 4). specs/PROMPTS.md §3's calibration block is market-scoped through
+        # `self._reports`, so forex builds its own history exactly as crypto does, and
+        # `build_history_block` states "nothing measured yet" in words while it is empty.
+        history = await self._history_block(snapshot.symbol, owner_id=await self._owner_id())
         analyst = AnthropicFableAnalyst(
             client,
             config,
@@ -617,7 +625,7 @@ class CycleOrchestrator:
             prompt_version=self._market_config(config).analyst_prompt_version,
         )
         try:
-            report = await analyst.analyze(snapshot, charts, "")
+            report = await analyst.analyze(snapshot, charts, history)
         except AnalystUnavailable as exc:
             log.warning(
                 "cycle.analyst_unavailable",
@@ -1548,21 +1556,7 @@ class CycleOrchestrator:
             return await self._repos.fx(session).get()
 
     def _chart_specs(self, symbol: str) -> tuple[ChartSpec, ...]:
-        charts = self._settings.config.charts
-        return tuple(
-            ChartSpec(
-                symbol=symbol,
-                timeframe=timeframe,
-                candle_window=charts.candle_window,
-                width_px=charts.width_px,
-                height_px=charts.height_px,
-                dpi=charts.dpi,
-                volume_panel_ratio=charts.volume_panel_ratio,
-                ema_periods=charts.ema_periods,
-                max_levels=charts.max_levels,
-            )
-            for timeframe in charts.timeframes
-        )
+        return album_specs(self._settings.config.charts, symbol)
 
     async def _close_cycle(self, result: CycleResult, *, status: str) -> None:
         async with self._database.session() as session:

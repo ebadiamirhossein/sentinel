@@ -19,8 +19,10 @@ from sentinel.bot.publisher import SignalPublisher
 from sentinel.charts.models import ChartImage
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import AppConfig
+from sentinel.core.markets import Market
 from sentinel.risk.models import TradePlan
 from tests.bot_double import FakeBot, FakeDatabase, FakeMessageStore, FakeSignalStore, FakeStore
+from tests.fx.forex_double import forex_plan
 from tests.market_double import chart_album
 
 CHAT_ID = 4242
@@ -228,3 +230,126 @@ async def test_charts_are_sent_by_reference_to_their_rendered_bytes(
     assert result.record is not None
     assert len(result.record.chart_params) == len(charts)
     assert all("image_sha256" in params for params in result.record.chart_params)
+
+
+# --------------------------------------------------------------------------- #
+# Forex — join 1 of journal/M10c_REPORT.md §13
+# --------------------------------------------------------------------------- #
+#
+# "No forex card has ever been sent to Telegram." §16.9 argues the mechanism is
+# unchanged — the publisher claims on ``plan_id`` and on ``(signal_id, kind, chat_id)``
+# and neither key knows what shape the plan is — and M10c proved the claim, the send and
+# the double-press no-op **for crypto only**, calling the forex half "inherited by
+# argument". Three milestones in a row have now found a defect exactly where a join was
+# inherited by argument rather than composed, so it is composed here.
+
+
+def forex_publisher(
+    database: FakeDatabase,
+    bot: FakeBot,
+    config: AppConfig,
+    tz: ZoneInfo,
+    clock: FrozenClock,
+    *,
+    show_market: bool = False,
+) -> SignalPublisher:
+    return SignalPublisher(
+        database,  # type: ignore[arg-type]
+        bot,
+        user_id=CHAT_ID,
+        chat_ids=(CHAT_ID,),
+        telegram=config.telegram,
+        tz=tz,
+        clock=clock,
+        market=Market.FOREX,
+        show_market=show_market,
+        signals=FakeSignalStore,
+        messages=FakeMessageStore,
+    )
+
+
+async def test_a_forex_plan_publishes_as_a_forex_card(
+    fake_database: FakeDatabase,
+    fake_bot: FakeBot,
+    bot_config: AppConfig,
+    tz: ZoneInfo,
+    clock: FrozenClock,
+) -> None:
+    """The publisher picks the renderer by ``record.market`` (§16.9).
+
+    Asserted on something only ``forex_signal_card`` produces — pips — rather than on
+    "a message was sent", because the crypto renderer raises ``TypeError`` on a
+    ``ForexPlan`` and a test that only counted messages would pass on either.
+    """
+    plan = forex_plan(bot_config)
+    result = await forex_publisher(fake_database, fake_bot, bot_config, tz, clock).publish(
+        plan, tuple(chart_album("EURUSD"))
+    )
+
+    assert result.published is True
+    assert [call.method for call in fake_bot.calls] == ["send_media_group", "send_message"]
+
+    card = fake_bot.of("send_message")[0].kwargs["text"]
+    assert "EURUSD" in card
+    assert "pip" in card.lower(), "this is not the forex renderer's output"
+    assert fake_bot.of("send_message")[0].kwargs["reply_markup"] is not None
+
+
+async def test_publishing_the_same_forex_plan_twice_posts_once(
+    fake_database: FakeDatabase,
+    fake_bot: FakeBot,
+    bot_config: AppConfig,
+    tz: ZoneInfo,
+    clock: FrozenClock,
+) -> None:
+    """§16.9's double-press no-op, **proven for forex** rather than inherited."""
+    plan = forex_plan(bot_config)
+    pub = forex_publisher(fake_database, fake_bot, bot_config, tz, clock)
+
+    first = await pub.publish(plan)
+    second = await pub.publish(plan)
+
+    assert first.published is True
+    assert second.published is False
+    assert second.reason == "plan already published"
+    assert len(fake_bot.of("send_message")) == 1
+
+
+async def test_a_forex_card_carries_its_market_tag_when_two_markets_are_enabled(
+    fake_database: FakeDatabase,
+    fake_bot: FakeBot,
+    bot_config: AppConfig,
+    tz: ZoneInfo,
+    clock: FrozenClock,
+) -> None:
+    """§11's ``multi_market`` condition, on the card switch-on day actually produces.
+
+    The sibling matters as much as the assertion: with one market the tag is absent, so
+    a renderer that tagged unconditionally would move crypto's card bytes the moment
+    forex shipped — which is the whole thing defect #23 was about.
+    """
+    plan = forex_plan(bot_config)
+    tagged = await forex_publisher(
+        fake_database, fake_bot, bot_config, tz, clock, show_market=True
+    ).publish(plan)
+    assert tagged.published is True
+    with_tag = fake_bot.of("send_message")[0].kwargs["text"]
+
+    other_bot, other_db = FakeBot(), FakeDatabase(FakeStore())
+    untagged_result = await forex_publisher(
+        other_db, other_bot, bot_config, tz, clock, show_market=False
+    ).publish(forex_plan(bot_config))
+    assert untagged_result.published is True
+    without_tag = other_bot.of("send_message")[0].kwargs["text"]
+
+    assert with_tag != without_tag
+    assert with_tag.startswith("🟢 LONG — FOREX · EURUSD")
+    # The relationship, not just the presence: the tag goes into the title and nothing
+    # else about the card moves. specs/TELEGRAM_UX.md §3e promises exactly that, and
+    # `tests/golden/test_golden_multi_market.py` pins the same property for crypto's
+    # surfaces — this is the forex card's half of it, and it is what makes switch-on a
+    # config flip rather than a card rewrite.
+    assert with_tag.replace("FOREX · ", "", 1) == without_tag, (
+        "the tagged card differs from the untagged one by more than its market tag "
+        "(specs/TELEGRAM_UX.md §3e)"
+    )

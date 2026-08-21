@@ -471,6 +471,10 @@ class _ForexAnalyst:
 
     name = "test-forex-analyst"
 
+    #: Every history block this analyst was handed, so the cycle test can assert on
+    #: what the model would actually have received (M10d, join 4).
+    histories: list[str] = []
+
     def __init__(
         self, client: Any, config: Any, *, cycle_id: Any = None, prompt_version: str = ""
     ) -> None:
@@ -478,6 +482,7 @@ class _ForexAnalyst:
         self.prompt_version = prompt_version
 
     async def analyze(self, snapshot: Any, charts: Any, history: str) -> AnalystReport:
+        _ForexAnalyst.histories.append(history)
         # ``snapshot.features`` carries the forex block merged in beside the per-
         # timeframe ones (M10b-2), so it is deliberately NOT a ``SymbolFeatures``
         # payload. Reading the ATR out of the raw dict is what a consumer of this
@@ -513,6 +518,11 @@ def _forex_settings(config: AppConfig) -> Settings:
         secrets=Secrets(_env_file=None, ANTHROPIC_API_KEY="test-key"),
         config=config.model_copy(update={"markets": markets}),
     )
+
+
+async def _no_setup_stats(*args: Any, **kwargs: Any) -> list[Any]:
+    """No resolved outcomes yet, which is what a fresh forex book actually has."""
+    return []
 
 
 async def run_forex_cycle(
@@ -557,9 +567,40 @@ async def run_forex_cycle(
     with (
         patch.object(orchestrator_module, "forex_adapter", _adapter),
         patch.object(orchestrator_module, "AnthropicFableAnalyst", _ForexAnalyst),
+        # specs/PROMPTS.md §3's calibration block, which the forex path started
+        # building at M10d — it passed a literal "" until then, and an empty text block
+        # is an HTTP 400 rather than an empty section (journal/M10d_REPORT.md, join 4).
+        # `setup_stats` runs a real SELECT, and this fake session answers every read
+        # with "no rows" rather than with a result object, exactly as
+        # tests/core/test_forex_degrades_only.py already patches it.
+        patch.object(orchestrator_module, "setup_stats", _no_setup_stats),
     ):
         result = await engine.run()
     return result, published, store, fx_client
+
+
+async def test_the_forex_analyst_is_never_handed_an_empty_history_block() -> None:
+    """The cycle-level half of journal/M10d_REPORT.md's join-4 defect.
+
+    ``user_blocks`` now drops an empty text block, so a ``""`` here would no longer
+    400 — it would silently send the analyst no calibration context at all, which is
+    the quieter and worse version of the same bug. specs/PROMPTS.md §3's block is the
+    model's only view of its own measured performance, and ``build_history_block``
+    states "nothing measured yet" **in words** rather than by saying nothing.
+
+    Asserted on what the analyst was handed rather than on the request, because the
+    request is where the 400 was and the point is that the input was wrong before it
+    ever got there.
+    """
+    _ForexAnalyst.histories = []
+    config = load_config()
+    now = SyntheticSaxo().now
+    await run_forex_cycle(config, calendar=calendar_covering(now))
+
+    assert _ForexAnalyst.histories, "no analyst call was made at all"
+    for history in _ForexAnalyst.histories:
+        assert history.strip(), "an empty history block is an HTTP 400, not an empty section"
+        assert "RECENT PIPELINE HISTORY" in history
 
 
 async def test_a_full_forex_cycle_reaches_a_published_card() -> None:
