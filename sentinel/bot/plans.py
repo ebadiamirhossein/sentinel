@@ -149,6 +149,30 @@ def leverage_of(plan: AnyPlan) -> str:
     return str(plan.suggested_leverage)
 
 
+def journal_leverage_of(plan: AnyPlan) -> int | None:
+    """The **per-position** leverage a journal row records, or ``None`` where there
+    is none — which is forex, always (M10d).
+
+    Not :func:`leverage_of`. That one returns a display string carrying the word
+    ``max``, and the journal's column is a number that a reader sorts and filters. The
+    two are different jobs and M10c gave them one function: ``JournalRow.leverage`` is
+    ``int | None``, ``str(suggested_leverage)`` coerced quietly for crypto, and
+    ``"30x max"`` raised a ``ValidationError`` the first time a forex row reached it —
+    which took ``/journal`` down for the **whole workbook**, every population, not just
+    the forex rows. Found by composing join 3 (journal/M10d_REPORT.md).
+
+    ``None`` for forex is the honest answer rather than the convenient one. §7.6: CFD
+    margin is **account-level**, there is no per-position liquidation price, and the
+    30:1 cap is a configured constant identical on every row — so a number here would
+    be a per-position figure this market does not have, which is exactly what §2.1 and
+    §16.2 group 3 forbid. The cap and its ESMA words still travel on the card, through
+    :func:`leverage_of`, where they mean something.
+    """
+    if isinstance(plan, ForexPlan):
+        return None
+    return plan.suggested_leverage
+
+
 def qty_step_of(plan: AnyPlan) -> Decimal:
     """The smallest quantity increment this venue accepts.
 
@@ -167,6 +191,7 @@ __all__ = [
     "AnyPlan",
     "Rung",
     "eur_quote_rate_of",
+    "journal_leverage_of",
     "leverage_of",
     "market_of",
     "plan_model_for",

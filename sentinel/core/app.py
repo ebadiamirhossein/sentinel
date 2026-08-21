@@ -42,11 +42,12 @@ from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging, get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.core.orchestrator import CycleOrchestrator
-from sentinel.core.wiring import market_adapter
+from sentinel.core.wiring import forex_adapter, market_adapter
+from sentinel.fx.pricing import ForexCandleSource
 from sentinel.storage.db import Database, SupportsPing
 from sentinel.storage.repositories import CycleRepository, UserRepository
 from sentinel.tracker.loop import TrackerLoop
-from sentinel.tracker.prices import DEFAULT_MAX_CANDLES, PriceFeed
+from sentinel.tracker.prices import DEFAULT_MAX_CANDLES, CandleSource, PriceFeed
 
 log = get_logger(__name__)
 
@@ -171,11 +172,11 @@ def _schedule_pipeline(
 
         async def track() -> None:
             try:
-                async with market_adapter(settings, market) as adapter:
+                async with _tracker_source(settings, database, market) as source:
                     loop = TrackerLoop(
                         database,
                         PriceFeed(
-                            adapter,
+                            source,
                             settings.config.tracker,
                             max_candles=_candle_ceiling(settings, market),
                         ),
@@ -254,6 +255,36 @@ def _schedule_pipeline(
             for market in settings.config.enabled_markets
         },
     )
+
+
+@asynccontextmanager
+async def _tracker_source(
+    settings: Settings, database: Database, market: Market
+) -> AsyncIterator[CandleSource]:
+    """The candles this market's tracker prices from, closed after use (M10d).
+
+    **This was the defect join 2 of journal/M10c_REPORT.md §13 existed to find.** Both
+    markets went through :func:`~sentinel.core.wiring.market_adapter`, which supplies
+    neither an HTTP fetcher nor an access-token provider — and ``wiring._saxo`` raises
+    ``UnknownAdapter`` without both, because the Saxo OAuth chain is stateful,
+    single-use and lives in Postgres (§3). Binance needs neither, so the crypto
+    tracker has been fine since M7 and the forex one could never have started: the
+    exception is swallowed by ``track()``'s own ``except Exception`` into a
+    ``scheduler.tick_failed`` line, so ``tracker:forex`` would have died on every tick
+    for ever while ``/health`` stayed green.
+
+    Forex also needs :class:`~sentinel.fx.pricing.ForexCandleSource` rather than the
+    adapter directly. That module says why; in one line, Saxo has no closed flag, so
+    §4.1's clock rule is applied by the adapter and ``PriceFeed``'s two questions —
+    "include the forming bar" for fills, "closed only" for invalidation — need
+    answering separately rather than by one filter that is wrong for both.
+    """
+    if market is not Market.FOREX:
+        async with market_adapter(settings, market) as adapter:
+            yield adapter
+        return
+    async with forex_adapter(settings, database) as adapter:
+        yield ForexCandleSource(adapter, settings.config.forex, settings.config.tracker)
 
 
 def _candle_ceiling(settings: Settings, market: Market) -> int:
