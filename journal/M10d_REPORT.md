@@ -10,7 +10,7 @@
 **Branch `m10d-forex-switch-on`, 8 commits off `main` at `90f905f`. `main` is untouched.
 Nothing is pushed and NOTHING IS DEPLOYED.**
 
-`make check` **exit 0**. 2132 passed, 68 skipped. `mypy --strict` over 310 files. Risk
+`make check` **exit 0**. 2134 passed, 68 skipped. `mypy --strict` over 310 files. Risk
 branch coverage **100%** — 604 statements, 152 branches, the same figures as M10a, M10b
 and M10c. `git diff main -- sentinel/risk/ sentinel/analyst/prompts/fable_v1.md
 sentinel/analyst/prompts/screener_v1.md screener_v2.md` **empty**.
@@ -354,7 +354,25 @@ public on the adapter because it has two callers and must never have two impleme
 — a private copy could disagree at the 30-second grace boundary, and the disagreement
 would invalidate a signal on an open bar.
 
-### 3d. And one in `/journal`
+### 3d. A sixth, found while writing the runbook itself
+
+**There was no supported way to get a bootstrap token onto the server.** `--login`
+exchanged the code, ran its checks and dropped the credential on exit — it never printed
+or stored the refresh token. The runbook step "put the refresh token it prints into the
+server's `.env`" could not be performed, and I only noticed because I read the tool
+before writing the step rather than after.
+
+`emit_bootstrap_token` writes it to `~/.sentinel/saxo_bootstrap_token` at mode **0600**
+and prints the **path and a fingerprint, never the value**. A file rather than stdout
+because HANDOFF §4 item 9 records that this owner screenshots his terminal, and a live
+credential in scrollback is a live credential in a screenshot.
+
+Its own test then found a weakness in that: `O_TRUNC` reuses an existing inode and its
+existing permissions, so a second login over a file somebody had loosened to 0644 would
+have stayed 0644 — with the mode passed to `os.open` silently doing nothing, because it
+applies only on creation. It unlinks first.
+
+### 3e. And one in `/journal`
 
 `JournalRow.leverage` is `int | None`, and M10c fed it `leverage_of`, whose forex answer
 is the **string** `"30x max"`. Crypto's `"5"` coerced silently; forex raised a
@@ -431,7 +449,7 @@ proved by making the alerter never fire: 7 of 8 fail, and the eighth is the
 
 ## 5. Numbers
 
-* **2132 passed, 68 skipped, 0 failed** — up from M10c's 2076/68, **56 new tests**.
+* **2134 passed, 68 skipped, 0 failed** — up from M10c's 2076/68, **58 new tests**.
 
   | file | tests |
   |---|---|
@@ -444,6 +462,7 @@ proved by making the alerter never fire: 7 of 8 fail, and the eighth is the
   | `tests/analyst/test_provider.py` | +2 |
   | `tests/fx/test_calendar.py` | +5 |
   | `tests/fx/test_spread.py` | +3 (defect #30) |
+  | `tests/ingestion/test_saxo_auth.py` | +2 (the bootstrap token file) |
 
 * `make check` **exit 0**: tests, ruff, `mypy --strict` over 310 files, 100% risk branch
   coverage (604 statements, 152 branches — unchanged since M10a), `check-deps`,
@@ -453,7 +472,7 @@ proved by making the alerter never fire: 7 of 8 fail, and the eighth is the
 * **`sentinel/risk/` and the three crypto prompts: zero-line diff.**
 * Goldens: **37 total, 33 byte-identical, 4 moved by one line each** (§2).
 * 52 files changed. **No migration.**
-* Eight commits, one per step.
+* Nine commits, one per step.
 * **Two real Anthropic calls were made**, both by `sentinel.tools.forex_prompt_cost`,
   ~$0.45 total. The first printed the wrong attribute name after a successful call and
   had to be repeated.

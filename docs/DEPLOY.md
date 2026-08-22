@@ -760,27 +760,36 @@ nothing mounted over them, so `docker compose restart` cannot apply any of this.
 
 ### 3. The browser login — the one manual step, and it is on your Mac
 
-The refresh token is single-use and lives about an hour, so this is a **single sitting**:
-from step 3.1 to step 3.5 you have roughly an hour before the token you copied expires.
-The owner's deploys take ~30 s, so that is comfortable — but do not start it and walk
-away.
+**One sitting.** The refresh token is single-use and lives about an hour, so from 3.1 to
+3.7 you have roughly that long. Your deploys take ~30 s, so it is comfortable — but do
+not start it and walk away.
+
+**The tool never prints the token.** It writes it to `~/.sentinel/saxo_bootstrap_token`
+with mode 0600 and prints the path and a fingerprint. That is deliberate: a live
+credential in terminal scrollback is a live credential in a screenshot.
 
 1. Put `SAXO_APP_KEY` and `SAXO_APP_SECRET` in your **local** `.env` as well as the
-   server's.
-2. On the Mac:
+   server's. (Same values. They are the app registration, not the session.)
+2. On the Mac, in the repo:
    ```bash
-   python -m sentinel.tools.saxo_record_fixtures --login
+   .venv/bin/python -m sentinel.tools.saxo_record_fixtures --login
    ```
-3. It prints an authorize URL. Open it, log in to Saxo, approve. **The browser will land
-   on `https://localhost:8080/callback` and show an error page. That is correct.** There
-   is no listener there on purpose — it is what keeps the deployment's zero-inbound-ports
-   property. Copy the **whole address bar**.
-4. Paste it back at the prompt. The tool uses an in-memory store, so running it can never
-   consume the server's live credential.
-5. Put the refresh token it prints into the **server's** `.env` as
-   `SAXO_REFRESH_TOKEN=…`, then:
+3. It prints an authorize URL. Open it, log in to Saxo, approve.
+4. **The browser will land on `https://localhost:8080/callback` and show an error page.
+   That is correct and expected.** Nothing is listening there on purpose — it is what
+   keeps the deployment's zero-inbound-ports property. Copy the **whole address bar**.
+5. Paste it back at the prompt. The tool exchanges the code, writes the token to the
+   0600 file, and then runs its three live checks against `/ref` and `/chart`. It uses an
+   in-memory store, so it can never consume the server's live credential.
+6. Move the token to the server and rebuild:
    ```bash
-   docker compose up -d --build app
+   cat ~/.sentinel/saxo_bootstrap_token
+   ssh root@78.46.240.136 'cd /opt/sentinel && nano .env'    # SAXO_REFRESH_TOKEN=<paste>
+   ssh root@78.46.240.136 'cd /opt/sentinel && docker compose up -d --build app'
+   ```
+7. Delete the local copy. It is spent the first time the server refreshes:
+   ```bash
+   rm ~/.sentinel/saxo_bootstrap_token
    ```
 
 ### 4. Confirm from the running process, not from the file
