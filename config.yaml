@@ -652,3 +652,55 @@ forex:
   # one that needs a browser login.
   token_refresh_interval_seconds: 300
   token_expiry_margin_seconds: 120
+
+# ─────────────────────────────────────────────────────────────────────────────
+# M11p — the 🇮🇷 فارسی button on signal cards and /pulse SYMBOL verdicts.
+#
+# A convenience surface: a cheaper model rewriting the card the analyst already
+# produced, into short spoken Persian. It never sees market data — only the rendered
+# card, minus the per-user sizing — so it cannot form a second opinion, and every
+# number it prints is checked against the card before anything is sent.
+#
+# WHY IT HAS ITS OWN RAILS. Presses are user-initiated, so their volume is a thumb
+# rather than a market. The cost is recorded in `llm_calls` like every other call,
+# which is what puts it on /status and the owner's /pulse spend line with no new
+# surface — and it is also what would let it draw from `llm_daily_budget_global_usd`
+# unchecked. `markets.crypto.llm_reserved_floor_usd` does NOT cover that: the floor
+# holds crypto's unspent budget against OTHER MARKETS, and it is forex that is exposed
+# here. Forex's real ceiling is 20 - 8 = $12 against a measured need of $8.81/day, so
+# it has about $3.19 of slack and nothing else defending it.
+#
+# THE NUMBERS ARE MEASURED, NOT ESTIMATED (journal/M10d_REPORT.md §8's rule). One real
+# call on tests/fixtures/golden_cycle/card_shared.txt, 2026-08-22, claude-sonnet-4-6:
+#
+#   input 1,426 tokens · output 480 tokens · 13.3 s · 655 characters
+#   PER-PRESS COST  $0.011478
+#
+#   two users x 20 generations = $0.46, inside the $0.50 ceiling
+#   $0.50 is 4% of an ordinary $12.42 day and 16% of forex's $3.19 of slack
+#
+# `daily_generations_per_user` counts GENERATIONS, not presses: a second press on the
+# same card returns the stored text and costs nothing, and rationing a free action
+# would be a rail that only annoys. Re-measure with
+# `python -m sentinel.tools.persian_summary_cost --call` before moving either number.
+persian_summary:
+  enabled: true
+  model: claude-sonnet-4-6
+  prompt_version: persian_summary_v1
+  # 700 against a measured 480, and 900 against a measured 655. Telegram allows 4096;
+  # the ceiling that matters is the thirty-second read, not the limit. An overrun is
+  # logged and still sent — length is a style failure. Only the numbers check fails
+  # closed, and keeping the two kinds of failure visibly different is what stops the
+  # rail being softened to accommodate the taste.
+  max_output_tokens: 700
+  max_output_chars: 900
+  # 13.3 s measured. 60 leaves room for a long card without leaving a reader watching
+  # a spinner for the 150 s the analyst is allowed.
+  timeout_seconds: 60
+  # Quoted, so YAML hands over the STRING "0.50" rather than the float 0.5 — the
+  # same trap the crypto budget comments describe at the top of this file. It is
+  # only ever compared and logged here, never rendered on a card, but a rail whose
+  # log line reads "of $0.5" is one nobody double-checks.
+  daily_usd_cap: "0.50"
+  daily_generations_per_user: 20
+  double_tap_seconds: 5

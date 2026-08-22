@@ -45,6 +45,7 @@ from sqlalchemy import (
     Index,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     false,
     func,
@@ -998,4 +999,83 @@ class SignalEventRow(Base):
     __table_args__ = (
         UniqueConstraint("signal_id", "event_key", name="uq_signal_events_key"),
         Index("ix_signal_events_signal_id_at", "signal_id", "at"),
+    )
+
+
+class PersianSummaryRow(Base):
+    """One Persian rewrite of one card (M11p). Its own table, never a column on
+    ``signals``.
+
+    **Why a separate table is the requirement and not a preference.** ``signals`` is
+    read by ``/journal``, ``/stats`` and the three populations, and its shape is frozen
+    for two live measurement windows. A column here would put a convenience feature
+    inside the thing being measured. Delete every row in this table and nothing else in
+    the system notices — which is the test of whether the separation is real.
+
+    **``input_sha256`` is the key, and ``signal_id`` is not.** The obvious key would be
+    the signal, and it is wrong twice over. One analysis produces one ``signals`` row
+    *per approved user*, each sized against that user's own capital, so a signal id is
+    already a per-user id; and a ``/pulse`` verdict card has no signal id at all. Keying
+    on a hash of the exact text the model was shown gives the property the signal id was
+    reached for -- identical input, identical output, one call -- for both card kinds,
+    across users, without a special case. Two users whose plans genuinely differ get two
+    rows, which is correct: they are reading two different cards.
+
+    ``signal_id`` and ``analyst_report_id`` are kept as **nullable, indexed, and
+    unconstrained** columns so the M13 dashboard can join in one hop. Deliberately no
+    foreign key: an FK installs a constraint trigger on the *referenced* table, which
+    would make deleting a signal depend on this table and put a dependency edge into
+    ``signals`` -- the one thing this milestone may not touch.
+
+    ``input_text`` is stored beside ``summary_text`` because the numbers rule is only
+    auditable after the fact if both halves survive. It is also the evidence that the
+    model was shown a card and nothing else.
+    """
+
+    __tablename__ = "persian_summaries"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    #: SHA-256, hex, of the exact text sent to the model. The cache key.
+    input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: ``signal`` | ``pulse_verdict`` -- says which id column below is populated.
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    signal_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    analyst_report_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+
+    market: Mapped[str] = mapped_column(String(MARKET_COLUMN_LENGTH), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    #: The Persian words, exactly as sent. Without the reference line, which is
+    #: appended at render time so that changing its wording does not require a
+    #: migration and cannot leave old rows carrying a superseded sentence.
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The card the model was shown, verbatim.
+    input_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    tokens_in: Mapped[int] = mapped_column(nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(nullable=False, default=0)
+    #: Derived from token counts and config pricing, like every other cost here.
+    cost_usd_estimate: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), nullable=False, default=Decimal("0")
+    )
+    #: The ``llm_calls`` row this came from. Nullable and unconstrained for the same
+    #: reason the two ids above are.
+    llm_call_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Who paid for it. The per-user daily generation cap counts these.
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("input_sha256", name="uq_persian_summaries_input_sha256"),
+        Index("ix_persian_summaries_signal_id", "signal_id"),
+        Index("ix_persian_summaries_analyst_report_id", "analyst_report_id"),
+        Index(
+            "ix_persian_summaries_user_created_at",
+            "created_by_user_id",
+            "created_at",
+        ),
     )

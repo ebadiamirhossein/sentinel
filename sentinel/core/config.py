@@ -960,6 +960,53 @@ def _default_of(model: type[BaseModel], field: str) -> Any:
     return model.model_fields[field].get_default(call_default_factory=True)
 
 
+class PersianSummaryConfig(_Strict):
+    """The 🇮🇷 فارسی button (M11p). A convenience surface, budgeted like one.
+
+    **Why its own rails rather than the analysis ones.** Persian summaries are
+    user-initiated, so their volume is a bored thumb rather than a market. They are
+    recorded in ``llm_calls`` like every other call, which means they are visible on
+    ``/status`` and ``/pulse`` for free — and it also means, without a rail of their
+    own, they would draw from the same global ceiling as deep analysis.
+
+    ``markets.crypto.llm_reserved_floor_usd`` does **not** cover that. The floor holds
+    the unspent part of crypto's budget against *other markets*; forex has no floor at
+    all, and its real ceiling is ``llm_daily_budget_global_usd`` minus crypto's unspent
+    floor -- $12 against a measured need of $8.81/day. A path spending from the ceiling
+    eats forex's $3.19 of slack first. So the exposure is bounded here instead, by
+    construction rather than by an average.
+
+    :attr:`daily_generations_per_user` counts **generations, not presses**: a second
+    press on the same card returns the stored text and costs nothing, and rationing a
+    free action would be a rail that only annoys.
+    """
+
+    enabled: bool = True
+    model: str = "claude-sonnet-4-6"
+    prompt_version: str = "persian_summary_v1"
+    #: Persian is token-hungry; 700 output tokens comfortably covers the 900-character
+    #: ceiling the prompt asks for, with headroom for a model that overruns it.
+    max_output_tokens: int = 700
+    #: A style ceiling, not a safety one: an overrun is logged and still sent. Telegram
+    #: allows 4096. The number that matters is the thirty-second read, not the limit.
+    max_output_chars: int = 900
+    timeout_seconds: float = 60.0
+    #: Both numbers are MEASURED-then-set, not estimated (journal/M10d_REPORT.md §8).
+    #: One real call on the golden card, 2026-08-22: 1,426 in / 480 out on
+    #: ``claude-sonnet-4-6`` = **$0.011478** a press, 13.3 s, 655 characters.
+    #:
+    #: 20 per user is the rail that actually bites: two approved users x 20 =
+    #: **$0.46**, just inside the 0.50 ceiling, so the ceiling is the backstop for a
+    #: third user rather than a second rail on the same two. 0.50 is 4% of an ordinary
+    #: $12.42 day and 16% of the ~$3.19 of headroom forex has under the global ceiling
+    #: after crypto's reserved floor -- which is the number this is really protecting.
+    daily_usd_cap: Dec = Decimal("0.50")
+    daily_generations_per_user: int = 20
+    #: A press already in flight is awaited rather than duplicated; this covers the
+    #: narrower case of a second tap arriving just after the first one finished.
+    double_tap_seconds: float = 5.0
+
+
 class AppConfig(_Strict):
     """The whole non-secret runtime configuration."""
 
@@ -996,6 +1043,9 @@ class AppConfig(_Strict):
     #: M10b. Unreachable while ``markets.forex.enabled`` is false; present so the
     #: shape is reviewable and testable before the market is switched on.
     forex: ForexConfig = ForexConfig()
+    #: M11p. Fully defaulted, so a config file written before this milestone still
+    #: loads -- the same posture ``forex`` shipped with.
+    persian_summary: PersianSummaryConfig = PersianSummaryConfig()
 
     @model_validator(mode="before")
     @classmethod

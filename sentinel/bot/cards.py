@@ -76,7 +76,9 @@ def _side(direction: Direction) -> str:
     return "🟢 LONG" if direction is Direction.LONG else "🔴 SHORT"
 
 
-def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False) -> str:
+def signal_card(
+    record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False, shared_only: bool = False
+) -> str:
     """The core message (§1). Charts go in an album above it, buttons below it.
 
     ``show_market`` adds the market to the header line, and defaults to **off**
@@ -85,6 +87,19 @@ def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False
     measurement window — the one thing the milestone is forbidden to do. The caller
     passes ``AppConfig.multi_market``; ``tests/golden`` pins the untagged form byte
     for byte.
+
+    ``shared_only`` (M11p) omits every figure that belongs to **one user** -- capital,
+    risk budget, quantities, notional, margin, leverage, costs, liquidation buffer,
+    actual risk, the per-user signal number and the decision -- and keeps what is a
+    fact about the market: the verdict, the thesis, the ladder *prices*, the stop, the
+    targets and the invalidation. It defaults to **off**, so today's bytes are
+    unchanged and the goldens prove it.
+
+    It exists because one analysis produces one ``signals`` row **per approved user**,
+    each with its own sizing. A Persian rewrite of a whole card could therefore never
+    be shared between two users without showing one of them the other's position size.
+    The subtraction happens here, in the function that knows which values are private,
+    rather than by parsing this function's output somewhere downstream.
     """
     plan = record.plan
     if not isinstance(plan, TradePlan):
@@ -102,7 +117,8 @@ def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False
     lines = [
         f"{_side(plan.direction)} — {tag}{escape(plan.symbol)}   "
         f"[{plan.setup_type.value} · {plan.timeframe_label.value} · conf {plan.confidence}]",
-        f"{escape(report.prompt_version or 'prompt n/a')} · Signal #{record.number} · "
+        f"{escape(report.prompt_version or 'prompt n/a')} · "
+        f"{'' if shared_only else f'Signal #{record.number} · '}"
         f"{local_and_utc(plan.created_at, tz)}",
         "",
         "📊 <b>Thesis</b>",
@@ -114,22 +130,27 @@ def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False
 
     lines.append("")
     lines.append(
+        "🎯 <b>Plan</b>"
+        if shared_only
         # ``capital_eur`` and ``risk_per_trade_pct`` are the only two figures on this
         # line the engine does not quantize (defect #22): both come from
         # ``Numeric(38, 18)`` columns, so on the live system they printed as
         # €200.000000000000000000 and 0.750000000000000000%. Scale is fixed here
         # because ``risk/engine.py`` is frozen; the value is untouched, and
         # ``test_no_arithmetic`` now enforces exactly that distinction.
-        f"🎯 <b>Plan</b> (capital €{money_eur(plan.capital_eur)} · "
+        else f"🎯 <b>Plan</b> (capital €{money_eur(plan.capital_eur)} · "
         f"risk {percent_2dp(plan.risk_per_trade_pct)}% "
         f"= €{plan.planned_risk_eur} · EURUSD {plan.eurusd_rate})"
     )
     lines.append(f"Entry ladder (limit orders) — last price {plan.last_price}:")
     for index, entry in enumerate(plan.entries, start=1):
+        # The per-user tail as a separate f-string, never a ``+``: ``test_no_arithmetic``
+        # scans this module for ``ast.Add`` and cannot tell string concatenation from
+        # money, which is the right trade for a guard that has to be unarguable.
+        tail = "" if shared_only else f" — {entry.qty} {_base(plan.symbol)} (€{entry.notional_eur})"
         lines.append(
             f"  {index}) <b>{entry.price}</b> ({entry.distance_pct}%) — "
-            f"{entry.weight_pct}% of risk — {entry.qty} {_base(plan.symbol)} "
-            f"(€{entry.notional_eur})"
+            f"{entry.weight_pct}% of risk{tail}"
         )
     lines.append(f"  Weighted entry {plan.avg_entry} · avg fill {plan.avg_fill_price}")
 
@@ -149,21 +170,22 @@ def signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False
         lines.append(f"🥅 TP{index}: <b>{target}</b> (+{away}%) — {net}R net ({gross}R gross)")
 
     lines.append("")
-    lines.append(
-        f"💶 Notional €{plan.notional_eur} ({plan.notional_usdt} USDT) · "
-        f"Margin €{plan.margin_eur} · Leverage {plan.suggested_leverage}x (isolated)"
-    )
-    lines.extend(_cost_lines(plan))
-    lines.append(
-        f"{'✅' if plan.liq_buffer_ok else '⚠️'} Liq. buffer "
-        f"{'OK' if plan.liq_buffer_ok else 'FAIL'} "
-        f"(liq ≈ {plan.liq_distance_pct}% vs stop {plan.stop_distance_pct}%)"
-    )
-    lines.append(f"⚖️ Actual risk €{plan.risk_eur} (planned €{plan.planned_risk_eur})")
+    if not shared_only:
+        lines.append(
+            f"💶 Notional €{plan.notional_eur} ({plan.notional_usdt} USDT) · "
+            f"Margin €{plan.margin_eur} · Leverage {plan.suggested_leverage}x (isolated)"
+        )
+        lines.extend(_cost_lines(plan))
+        lines.append(
+            f"{'✅' if plan.liq_buffer_ok else '⚠️'} Liq. buffer "
+            f"{'OK' if plan.liq_buffer_ok else 'FAIL'} "
+            f"(liq ≈ {plan.liq_distance_pct}% vs stop {plan.stop_distance_pct}%)"
+        )
+        lines.append(f"⚖️ Actual risk €{plan.risk_eur} (planned €{plan.planned_risk_eur})")
     lines.append(f"📋 {escape(plan.management_plan)}")
     lines.append(f"⏳ Expires if unfilled: {local_date_time(plan.expires_at, tz)}")
 
-    if record.decision is not None:
+    if record.decision is not None and not shared_only:
         lines.append("")
         lines.append(f"<b>Your call: {DECISION_LABEL[record.decision]}</b>")
 

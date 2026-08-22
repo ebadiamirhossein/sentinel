@@ -85,7 +85,12 @@ project_network() {
 # round trip runs BOTH downgrades and BOTH upgrades. 0010's assertions all describe
 # state at head and stay valid: 0011 adds two empty tables and relaxes one column,
 # and touches nothing 0010 wrote.
-TARGET_REVISION="0011_forex_spine"
+#
+# M11p moves the target to 0012 on the same principle and leaves PREVIOUS at 0009,
+# so the round trip now spans three upgrades and three downgrades. 0012 adds ONE
+# empty table and touches nothing any earlier revision wrote, so every assertion
+# below stays valid unchanged; the only new one is assert_persian_table_absent.
+TARGET_REVISION="0012_persian_summaries"
 PREVIOUS_REVISION="0009_watchlist_requests"
 
 #: Every table migration 0010 adds ``market`` to.
@@ -237,6 +242,10 @@ assert_backfilled() {
 #: round trip below clean.
 FOREX_TABLES=(forex_instruments saxo_oauth_tokens)
 
+#: M11p's one table. Listed separately from FOREX_TABLES because it belongs to a
+#: different revision, and a downgrade that stopped at 0011 must still drop it.
+PERSIAN_TABLES=(persian_summaries)
+
 assert_volume_relaxed() {
   # Migration 0011, and the owner's requirement R-a: the column becomes nullable and
   # NOTHING ELSE HAPPENS. No backfill, no rewrite, and above all no crypto row that
@@ -270,6 +279,30 @@ assert_forex_tables_absent() {
   [[ "$(psql_scratch "SELECT is_nullable FROM information_schema.columns
                       WHERE table_name = 'ohlcv_candles' AND column_name = 'volume'" | tr -d '[:space:]')" == "NO" ]] ||
     fail "downgrade left ohlcv_candles.volume nullable — the 0011 downgrade is not real"
+}
+
+assert_persian_table_absent() {
+  # M11p. The whole 0012 downgrade is one DROP TABLE, which is exactly the kind of
+  # migration nobody bothers to test — and this deployment runs `alembic upgrade head`
+  # at every container start, so a downgrade that does not work is only discovered on
+  # the day somebody needs to roll back at speed.
+  local table
+  for table in "${PERSIAN_TABLES[@]}"; do
+    [[ "$(psql_scratch "SELECT count(*) FROM information_schema.tables WHERE table_name = '${table}'")" == "0" ]] ||
+      fail "downgrade left $table behind — the 0012 downgrade is not real"
+  done
+}
+
+assert_signals_untouched_by_0012() {
+  # M11p's binding constraint, asserted here as well as in the suite: 0012 may add a
+  # table and NOTHING else. `signals` is read by /journal, /stats and the three
+  # populations, and two live measurement windows depend on its shape not moving.
+  local columns
+  columns="$(psql_scratch "SELECT count(*) FROM information_schema.columns WHERE table_name = 'signals'")"
+  [[ "$(psql_scratch "SELECT count(*) FROM information_schema.table_constraints
+                      WHERE table_name = 'signals' AND constraint_type = 'FOREIGN KEY'")" == "0" ]] ||
+    fail "signals gained a foreign key — 0012 must add no dependency edge into it"
+  log "signals: $columns columns, no foreign keys"
 }
 
 assert_column_absent() {
@@ -387,6 +420,7 @@ main() {
 
   assert_backfilled
   assert_volume_relaxed
+  assert_signals_untouched_by_0012
   after="$(counts_now)"
   [[ "$before" == "$after" ]] || fail "row counts changed across the upgrade:
   before: $before
@@ -415,6 +449,7 @@ main() {
   [[ "$(revision_now)" == "$PREVIOUS_REVISION" ]] || fail "expected $PREVIOUS_REVISION after the downgrade, found $(revision_now)"
   assert_column_absent
   assert_forex_tables_absent
+  assert_persian_table_absent
 
   after="$(counts_now)"
   [[ "$before" == "$after" ]] || fail "row counts changed across the downgrade:
@@ -427,6 +462,7 @@ main() {
   [[ "$(revision_now)" == "$TARGET_REVISION" ]] || fail "expected $TARGET_REVISION after the second upgrade"
   assert_backfilled
   assert_volume_relaxed
+  assert_signals_untouched_by_0012
 
   after="$(counts_now)"
   [[ "$before" == "$after" ]] || fail "row counts changed across the round trip:

@@ -256,3 +256,115 @@ Two things worth recording for the next reader:
   cache write and two reads rather than three full input prices, which is 26% cheaper
   than three times the single-call figure. Any future estimate of this prompt's cost that
   multiplies by the pair count is wrong in that direction.
+
+---
+
+## `persian_summary_v1` — 2026-08-22 (M11p)
+
+**File:** `sentinel/analyst/prompts/persian_summary_v1.md`
+**Model tier:** cheap (`config.persian_summary.model`, default `claude-sonnet-4-6`)
+**Source:** no spec. Owner brief, M11p, written from two supplied examples of the
+target style — not from a document.
+**Status:** in service from M11p. One live call, measured below.
+
+### It is not an analyst prompt, and the file says so twice
+
+Every other prompt here is shown market data. This one is shown **the rendered card and
+nothing else** — not features, not charts, not the structured report, not a database
+row. That is the safety property the whole path rests on: a model that never sees the
+data cannot form a different opinion about it. It can only re-say, in plainer words,
+what `fable_v1` already said.
+
+The provenance header states it in the imperative for whoever tries to "improve" it
+later, because the improvement that would break this is an obvious one to reach for:
+*pass the features in so it can explain the RSI properly.* The moment it has data it has
+an opinion, and the opinion has no risk engine behind it.
+
+What it is actually shown is the **shared half** of the card —
+`cards.signal_card(shared_only=True)` — with capital, position size, notional, margin,
+leverage, the cost block, actual risk, the signal number and the decision removed. That
+subtraction exists because one analysis produces one `signals` row *per approved user*:
+a rewrite of a whole card could never be shared between two users without showing one of
+them the other's position size.
+
+### The numbers rule, and why the prompt is the smaller half of it
+
+HARD BOUNDARIES 2–4 say: copy every number character-for-character, never recompute,
+never round, never reformat, western digits only, and never write a digit that is not on
+the card — *not even to count things*, count in Persian words instead.
+
+`sentinel/analyst/persian/numbers.py` then **checks it** and fails closed. Every numeric
+token in the output must appear in the input, tokenised identically on both sides; any
+Persian or Arabic-Indic digit is an outright failure. A summary that fails is not sent
+and not stored, the reader gets a short Persian sentence saying so, and the `llm_calls`
+row is still written because the money was still spent.
+
+The prompt is a request. The check is the rail. If the two ever disagreed about a stop
+price, the owner would have two systems telling him different things about real money —
+so the design assumes the request will one day be ignored.
+
+**Counting in words is the piece that makes the rail practical.** Without it, a model
+writing "دو دلیل" as "2 دلیل" would fail the check on a number that is not a market claim
+at all, and the pressure would be to loosen the check. Moving the problem into the prompt
+keeps the rail unarguable.
+
+### The reference line is NOT in this prompt, deliberately
+
+Every Persian message ends with *«این فقط یک خلاصه ساده است. مرجع اصلی همان کارت انگلیسی
+بالاست.»* — this is a simple summary, the English card is the reference.
+
+It is appended by `bot/persian_cards.persian_message` **after** the model returns, and
+`test_the_persian_prompt_never_asks_the_model_for_the_reference_line` asserts the prompt
+does not contain it. A rail the model can decline to emit is not a rail, and the message
+where it is most likely to be dropped or softened is the one where the summary has
+already gone wrong.
+
+Why it is needed at all: a friendlier card in the reader's own language is trusted
+**more** than the dense English one, not less — and it is a cheaper model's rewrite with
+no risk engine behind it. Being easier to read is exactly why it has to point back at the
+authority.
+
+### First run — 2026-08-22, and the cost was measured before the rails were set
+
+`python -m sentinel.tools.persian_summary_cost --call`, `claude-sonnet-4-6`, against
+`tests/fixtures/golden_cycle/card_shared.txt` — the real renderer's bytes from recorded
+real market data, in the exact form the handler sends.
+
+| | |
+|---|---|
+| outcome | OK on the first attempt, no retry |
+| latency | 13.3 s against a 60 s timeout |
+| input | 1,426 tokens (no cache read — a press is a cold call) |
+| output | 480 tokens |
+| length | 655 characters against a 900 ceiling |
+| numbers check | **PASS** — 6 numeric tokens in the output, all present in the card |
+| cost | **$0.011478 per press** |
+
+Both spend rails were set **from** this figure and not before it, which is
+journal/M10d_REPORT.md §8's rule obeyed rather than quoted: two users × 20 generations =
+$0.46, inside a $0.50 deployment-wide daily ceiling.
+
+**No cache read, and that is structural rather than a miss.** The analyst pays one cache
+write and two reads per cycle because three pairs share one system block within the
+five-minute window. Presses are minutes or hours apart, so the system block is cold
+every time. Any future estimate of this path's cost that borrows the analyst's cache
+arithmetic will be wrong in the cheap direction.
+
+### What to watch
+
+- **How often the numbers check rejects a summary.** One call is a cost, not a failure
+  rate. A rejection rate above a few percent means the prompt needs `v2`, not that the
+  check needs loosening.
+- **Whether the verdict ever moves.** A `WATCHLIST` that reads, in friendlier words,
+  like a buy is the one failure that would be invisible in review and expensive in
+  practice — and the numbers check cannot see it, because a softened verdict invents no
+  number. It is the reason HARD BOUNDARIES 5 is worded as an absolute.
+- **Length.** 655 characters against a 900 ceiling on a three-rung crypto card; a forex
+  card is longer. An overrun is logged (`persian.over_length`) and still sent, because
+  length is a style failure and not a safety one.
+
+### Rollback
+
+`persian_summary.enabled: false` in `config.yaml` — one line and a restart. There is no
+`v1` to fall back to, so rolling the prompt back means turning the button off. Nothing
+else in the system reads this prompt, this table or this handler.

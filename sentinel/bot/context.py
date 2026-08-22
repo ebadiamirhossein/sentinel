@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
+from sentinel.analyst.persian.summariser import PersianSummariser
 from sentinel.bot.runtime import SymbolChecker
 from sentinel.core.clock import Clock
 from sentinel.core.config import Settings
@@ -28,6 +29,7 @@ from sentinel.storage.repositories import (
     InstrumentMetaRepository,
     LLMCallRepository,
     MarketPauseStateRepository,
+    PersianSummaryRepository,
     RiskStateRepository,
     RuntimeSettingsRepository,
     SignalEventRepository,
@@ -70,6 +72,9 @@ class Repositories:
     # one, so ``/pause`` with no argument writes exactly the row it always has.
     market_pause: type[MarketPauseStateRepository] = MarketPauseStateRepository
     user_market_pause: type[UserMarketPauseRepository] = UserMarketPauseRepository
+    # M11p: the Persian summary cache. Its own table; nothing else reads it, and
+    # deleting every row in it breaks nothing.
+    persian_summaries: type[PersianSummaryRepository] = PersianSummaryRepository
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,12 @@ class BotContext:
     #: Confirms a new watchlist symbol exists. ``None`` disables the check — the
     #: edit still goes through, and ``/watchlist`` says the symbol was unverified.
     symbol_checker: SymbolChecker | None = None
+    #: M11p. The only LLM client the bot layer has ever held, and it is deliberately
+    #: optional: ``None`` means the 🇮🇷 فارسی button answers in Persian that it cannot
+    #: produce a summary, which is what a deployment with no API key should do rather
+    #: than raise on the first press. Injected here so the suite can drive the whole
+    #: handler against a double without a network guard to defeat.
+    summariser: PersianSummariser | None = None
     repositories: Repositories = field(default_factory=Repositories)
 
 

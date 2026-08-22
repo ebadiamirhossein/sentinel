@@ -21,7 +21,12 @@ from aiogram.exceptions import TelegramBadRequest
 from sentinel.bot.auth import Actor
 from sentinel.bot.context import BotContext
 from sentinel.bot.handlers import callbacks
-from sentinel.bot.keyboards import DecisionCallback, ResumeCallback, decision_keyboard
+from sentinel.bot.keyboards import (
+    PERSIAN_LABEL,
+    DecisionCallback,
+    ResumeCallback,
+    decision_keyboard,
+)
 from sentinel.bot.models import SignalDecision
 from sentinel.core.clock import FrozenClock
 from sentinel.core.config import Secrets, Settings, load_config
@@ -346,7 +351,12 @@ async def test_the_manage_row_appears_only_once_something_has_filled(
     ctx: BotContext, store: FakeStore
 ) -> None:
     """§2 puts the row on a signal "after entry fills" — which is exactly why M6
-    deferred it, and exactly what the tracker now makes knowable."""
+    deferred it, and exactly what the tracker now makes knowable.
+
+    The counts moved by one at M11p: every rebuilt keyboard now ends with the 🇮🇷 فارسی
+    row, so an unfilled signal has two rows and a filled one three. The *manage* row is
+    still asserted by position from the end, which is the claim this test is about.
+    """
     unfilled = FakeQuery()
     await callbacks.decision(
         unfilled,
@@ -354,7 +364,9 @@ async def test_the_manage_row_appears_only_once_something_has_filled(
         ctx,
         ACTOR,
     )
-    assert len(unfilled.message.edits[-1].inline_keyboard) == 1
+    rows = unfilled.message.edits[-1].inline_keyboard
+    assert len(rows) == 2
+    assert [button.text for button in rows[-1]] == [PERSIAN_LABEL]
 
     store.signals[SIGNAL_ID].filled_qty = Decimal("18.30")
     filled = FakeQuery()
@@ -365,5 +377,21 @@ async def test_the_manage_row_appears_only_once_something_has_filled(
         ACTOR,
     )
     rows = filled.message.edits[-1].inline_keyboard
-    assert len(rows) == 2
+    assert len(rows) == 3
     assert [button.text for button in rows[1]] == ["🔚 Closed manually", "✏️ Note"]
+    assert [button.text for button in rows[-1]] == [PERSIAN_LABEL]
+
+
+async def test_the_persian_button_survives_a_decision(ctx: BotContext) -> None:
+    """M11p. ``_keyboard_for`` REPLACES the whole markup after a press, so without the
+    row being re-composed there the button would disappear the moment the owner pressed
+    Taken — which is precisely when he is most likely to want the card explained."""
+    query = FakeQuery()
+    await callbacks.decision(
+        query,
+        DecisionCallback(signal_id=SIGNAL_ID, decision=SignalDecision.TAKEN),
+        ctx,
+        ACTOR,
+    )
+    labels = [button.text for row in query.message.edits[-1].inline_keyboard for button in row]
+    assert PERSIAN_LABEL in labels

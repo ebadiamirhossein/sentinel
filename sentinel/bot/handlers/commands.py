@@ -32,11 +32,13 @@ setting that changes sizing should never change quietly.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from uuid import UUID
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, Message
 
+from sentinel.analyst.persian.models import PersianSourceKind
 from sentinel.bot.auth import Actor
 from sentinel.bot.cards import (
     journal_caption,
@@ -54,7 +56,7 @@ from sentinel.bot.context import BotContext
 from sentinel.bot.export import journal_filename, journal_workbook
 from sentinel.bot.formatting import escape, money_eur
 from sentinel.bot.handlers.guard import answers_on_failure
-from sentinel.bot.keyboards import watchlist_request_keyboard
+from sentinel.bot.keyboards import persian_keyboard, watchlist_request_keyboard
 from sentinel.bot.markets import (
     market_of_symbol,
     parse_market,
@@ -323,8 +325,21 @@ async def pulse(message: Message, command: CommandObject, ctx: BotContext, actor
         if isinstance(parsed, Invalid):
             await message.answer(PULSE_USAGE)
             return
-        for page in await _pulse_symbol(ctx, parsed):
-            await message.answer(page)
+        pages, report_id = await _pulse_symbol(ctx, parsed)
+        for index, page in enumerate(pages, start=1):
+            # The 🇮🇷 فارسی button goes on the LAST page only, and the summary covers
+            # every page: the card splits for Telegram's 4096-character limit, but it
+            # is one verdict to a reader, and one button under the end of it is where a
+            # reader looks. A card with no stored verdict has no id and no button.
+            last = index == len(pages)
+            await message.answer(
+                page,
+                reply_markup=(
+                    persian_keyboard(PersianSourceKind.PULSE_VERDICT, report_id)
+                    if last and report_id is not None
+                    else None
+                ),
+            )
         return
 
     now = ctx.clock.now()
@@ -340,7 +355,7 @@ async def pulse(message: Message, command: CommandObject, ctx: BotContext, actor
     await message.answer("\n\n".join(blocks))
 
 
-async def _pulse_symbol(ctx: BotContext, symbol: str) -> tuple[str, ...]:
+async def _pulse_symbol(ctx: BotContext, symbol: str) -> tuple[tuple[str, ...], UUID | None]:
     """§3b ``/pulse SOLUSDT`` — one symbol's last verdict, in full (M8.5).
 
     **No spend argument.** This card carries no cost figure for anybody, so unlike the
@@ -351,6 +366,11 @@ async def _pulse_symbol(ctx: BotContext, symbol: str) -> tuple[str, ...]:
 
     Returns pages, because the card splits rather than truncates when the analyst was
     verbose. Usually one.
+
+    Also returns the report's id (M11p), so the caller can hang a 🇮🇷 فارسی button off
+    the last page. ``None`` when no verdict exists — there is nothing to explain, and a
+    button that produced "there is no analysis of this symbol" in Persian would be a
+    worse answer than no button.
     """
     async with ctx.database.session() as session:
         stored = await ctx.repositories.settings(session).all()
@@ -370,7 +390,7 @@ async def _pulse_symbol(ctx: BotContext, symbol: str) -> tuple[str, ...]:
 
     watchlist = config.market(market).watchlist
     view = symbol_pulse_view(row, decisions, symbol=symbol, on_watchlist=symbol in watchlist)
-    return symbol_pulse_card(view, ctx.tz)
+    return symbol_pulse_card(view, ctx.tz), None if row is None else row.id
 
 
 async def _pulse_spend(

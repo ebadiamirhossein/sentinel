@@ -214,12 +214,21 @@ def golden_gate(
     snapshot: MarketSnapshot,
     features: SymbolFeatures,
     config: AppConfig,
+    *,
+    capital_eur: Decimal = CAPITAL_EUR,
 ) -> GateDecision:
+    """``capital_eur`` is a parameter only so M11p can size the same analysis twice.
+
+    The differential test for ``signal_card(shared_only=True)`` has to produce two
+    cards that differ in **nothing but** the per-user figures, and the only honest way
+    to do that is to run the real engine at two capitals. Every existing caller uses
+    the default, so no golden sees this.
+    """
     return RiskEngine(config, clock=FrozenClock(NOW)).evaluate(
         report=report,
         market=MarketContext.from_snapshot(snapshot, features),
         account=AccountState(
-            capital_eur=CAPITAL_EUR,
+            capital_eur=capital_eur,
             risk_per_trade_pct=config.risk.risk_per_trade_pct,
             eurusd_rate=EURUSD,
         ),
@@ -227,7 +236,13 @@ def golden_gate(
     )
 
 
-def golden_card(decision: GateDecision, *, show_market: bool = False) -> str:
+def golden_card(
+    decision: GateDecision,
+    *,
+    show_market: bool = False,
+    shared_only: bool = False,
+    number: int = 42,
+) -> str:
     """The card as the owner reads it. ``number`` is fixed — Postgres assigns it.
 
     ``show_market`` defaults to **off**, which is the form the shipped config renders
@@ -236,8 +251,8 @@ def golden_card(decision: GateDecision, *, show_market: bool = False) -> str:
     (FOREX.md defect #23).
     """
     assert decision.plan is not None
-    record = SignalRecord(plan=decision.plan, user_id=7222549221, number=42)
-    return signal_card(record, TZ, show_market=show_market)
+    record = SignalRecord(plan=decision.plan, user_id=7222549221, number=number)
+    return signal_card(record, TZ, show_market=show_market, shared_only=shared_only)
 
 
 def multi_market(config: AppConfig) -> AppConfig:

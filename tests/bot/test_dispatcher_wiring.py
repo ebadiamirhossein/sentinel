@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -48,11 +49,17 @@ from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.types import Chat, Message, Update
 from aiogram.types import User as TgUser
 
+from sentinel.analyst.persian.models import PersianSourceKind
 from sentinel.bot.app import build_dispatcher
 from sentinel.bot.auth import AuthMiddleware
 from sentinel.bot.context import BotContext
 from sentinel.bot.handlers.guard import FAILED
-from sentinel.bot.keyboards import AdminAction, AdminCallback, WatchlistCallback
+from sentinel.bot.keyboards import (
+    AdminAction,
+    AdminCallback,
+    PersianCallback,
+    WatchlistCallback,
+)
 from sentinel.bot.menu import MEMBER_COMMANDS, OWNER_COMMANDS
 from sentinel.bot.runtime import watchlist_key
 from sentinel.core.clock import FrozenClock
@@ -301,6 +308,45 @@ async def test_the_admin_buttons_are_reachable_by_the_owner(dispatcher: Dispatch
     )
     response = await feed(dispatcher, update)
     assert reached_a_handler(response), "the Approve button reached no handler"
+
+
+def _persian_update(user_id: int, update_id: int = 3) -> Update:
+    return Update(
+        update_id=update_id,
+        callback_query={  # type: ignore[arg-type]
+            "id": f"cb-{update_id}",
+            "from": {"id": user_id, "is_bot": False, "first_name": "Some"},
+            "chat_instance": f"ci-{update_id}",
+            "data": PersianCallback(
+                source_kind=PersianSourceKind.SIGNAL, source_id=UUID(int=1)
+            ).pack(),
+            "message": {
+                "message_id": update_id,
+                "date": int(datetime.now(UTC).timestamp()),
+                "chat": {"id": user_id, "type": "private"},
+                "text": "card",
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize("user_id", [OWNER, MEMBER])
+async def test_the_persian_button_is_reachable_by_owner_and_member(
+    dispatcher: Dispatcher, user_id: int
+) -> None:
+    """M11p, and the reason this file exists (HANDOFF §4 lesson 1).
+
+    ``persian_router`` is a new router on the ``callback_query`` observer, added after
+    ``callbacks`` and before ``replies``. A registration mistake there produces exactly
+    the failure M8.2 shipped: the press does nothing, and doing nothing is also what a
+    correctly refused press looks like. Only a POSITIVE assertion on real dispatcher
+    machinery can tell the two apart.
+
+    Both roles, because "any user who can see the card may press it" is the
+    requirement — an owner-only button here would be a silent narrowing.
+    """
+    response = await feed(dispatcher, _persian_update(user_id))
+    assert reached_a_handler(response), "the 🇮🇷 فارسی button reached no handler"
 
 
 # --------------------------------------------------------------------------- #

@@ -26,6 +26,7 @@ from itertools import count
 from typing import Any
 from uuid import UUID
 
+from sentinel.analyst.persian.models import PersianSummary
 from sentinel.bot.context import Repositories
 from sentinel.bot.models import (
     ACK_VERSION,
@@ -42,6 +43,7 @@ from sentinel.bot.models import (
 )
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.ingestion.models import InstrumentMeta
+from sentinel.llm.models import LLMCall
 from sentinel.llm.spend import SpendTotals
 from sentinel.risk.models import PauseState
 from sentinel.screener.models import ScreenerVerdict
@@ -52,6 +54,7 @@ from sentinel.storage.repositories import (
     InstrumentMetaRepository,
     LLMCallRepository,
     MarketPauseStateRepository,
+    PersianSummaryRepository,
     RiskStateRepository,
     RuntimeSettingsRepository,
     SignalEventRepository,
@@ -306,6 +309,12 @@ class FakeStore:
     cycles_completed: int = 0
     cycles_started: int = 0
     spend: SpendTotals = field(default_factory=SpendTotals)
+    #: M11p's ``persian_summaries``, keyed by ``input_sha256`` exactly as its unique
+    #: constraint is, so a duplicate store is the no-op Postgres would make it.
+    persian: dict[str, PersianSummary] = field(default_factory=dict)
+    #: Every ``llm_calls`` row written through this store. The Persian path writes one
+    #: on failure as well as on success, and a fake that dropped them would hide it.
+    llm_calls: list[LLMCall] = field(default_factory=list)
     committed: int = 0
     rolled_back: int = 0
 
@@ -943,6 +952,10 @@ class FakeLLMCallRepository(LLMCallRepository):
         self._store: FakeStore = session.store
         self._market = market
 
+    async def record(self, call: LLMCall) -> Any:
+        self._store.llm_calls.append(call)
+        return call.call_id
+
     async def spend_totals(
         self, *, day_start: datetime, month_start: datetime, priced_models: Any
     ) -> SpendTotals:
@@ -973,6 +986,11 @@ class FakeAnalystReportRepository(AnalystReportRepository):
     async def for_cycles(self, cycle_ids: Any, *, role: str = "primary") -> list[Any]:
         wanted = set(cycle_ids)
         return [row for row in self._store.reports if row.cycle_id in wanted]
+
+    async def get(self, report_id: UUID) -> Any:
+        """By primary key, and deliberately **not** filtered by market — the real one
+        is a ``session.get`` and carries no market predicate either."""
+        return next((row for row in self._store.reports if row.id == report_id), None)
 
     async def latest_for_symbol(self, symbol: str, *, role: str = "primary") -> Any:
         """Newest first, as the real ``ORDER BY created_at DESC`` returns them.
@@ -1148,6 +1166,38 @@ class FakeWatchlistRequestRepository(WatchlistRequestRepository):
         return decided
 
 
+class FakePersianSummaryRepository(PersianSummaryRepository):
+    """M11p's cache, with the one constraint that matters modelled: the unique index
+    on ``input_sha256``, so a second store returns the first winner's text rather than
+    overwriting it."""
+
+    def __init__(self, session: Any) -> None:
+        self._store: FakeStore = session.store
+
+    async def find(self, input_sha256: str) -> PersianSummary | None:
+        return self._store.persian.get(input_sha256)
+
+    async def store(self, summary: PersianSummary) -> PersianSummary:
+        return self._store.persian.setdefault(summary.input_sha256, summary)
+
+    async def generations_today(self, *, user_id: int, day_start: datetime) -> int:
+        return sum(
+            1
+            for row in self._store.persian.values()
+            if row.created_by_user_id == user_id and row.created_at >= day_start
+        )
+
+    async def spend_today_usd(self, *, day_start: datetime) -> Decimal:
+        return sum(
+            (
+                row.cost_usd_estimate
+                for row in self._store.persian.values()
+                if row.created_at >= day_start
+            ),
+            start=Decimal("0"),
+        )
+
+
 def fake_repositories() -> Repositories:
     return Repositories(
         signals=FakeSignalRepository,
@@ -1167,6 +1217,7 @@ def fake_repositories() -> Repositories:
         gate_decisions=FakeGateDecisionRepository,
         market_pause=FakeMarketPauseRepository,
         user_market_pause=FakeUserMarketPauseRepository,
+        persian_summaries=FakePersianSummaryRepository,
     )
 
 
