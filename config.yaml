@@ -99,8 +99,8 @@ markets:
     #
     # MEASURED, not estimated (journal/M10d_REPORT.md, join 4): one claude-fable-5
     # call on a real forex payload is $0.226104 cached / $0.281925 uncached, and a
-    # cycle of three pairs pays one cache write and two reads = $0.734. Fourteen
-    # cycles inside `forex.scan_hours_utc` is ~$10.28 on a trading day.
+    # cycle of three pairs pays one cache write and two reads = $0.734. Twelve
+    # cycles inside `forex.scan_hours_utc` is ~$8.81 on a trading day.
     #
     # Note the sub-budget is NOT what binds: crypto's reserved floor caps forex at
     # `llm_daily_budget_global_usd - 8` = $12 whatever crypto spends. 16 sits above
@@ -139,7 +139,7 @@ markets:
 # not its own sub-budget: `evaluate_market_spend` suspends it at
 # `global_day >= global - max(0, 8 - crypto_spent)`, and substituting
 # `global_day = crypto + forex` cancels crypto out. So 20 - 8 = $12 for forex, against
-# a measured need of $10.28 (14 cycles x $0.734). At 11 it was $3 — three cycles of
+# a measured need of $8.81 (12 cycles x $0.734). At 11 it was $3 — three cycles of
 # twenty-four, all of them 00:00-03:00 UTC because the window resets at midnight, i.e.
 # the thin Tokyo session and then silence through London and New York.
 #
@@ -389,9 +389,9 @@ llm:
   # `daily_spend_warn_usd` is the one that HAD to move, and it is easy to miss why:
   # `evaluate_market_spend` reads it as the GLOBAL warn level (sentinel/llm/spend.py),
   # so at 7 against a $20 ceiling it would send a Telegram spend notice every single
-  # day — an ordinary day is now ~$13.89 (crypto $3.61 + forex $10.28). Alert fatigue
+  # day — an ordinary day is now ~$12.42 (crypto $3.61 + forex $8.81). Alert fatigue
   # on the one channel that has to stay meaningful is how a real warning gets muted.
-  # 16 leaves ~$2 of headroom over an ordinary day and ~$4 of notice before the ceiling.
+  # 16 leaves ~$3.6 of headroom over an ordinary day and $4 of notice before the ceiling.
   #
   # `daily_spend_limit_usd` is NOT the operative global limit — that is
   # `llm_daily_budget_global_usd` above, which `evaluate_market_spend` checks first.
@@ -612,29 +612,39 @@ forex:
   # a frozen weekend snapshot perfectly fresh.
   max_candle_age_multiplier: 2
 
-  # WHICH HOURS FOREX IS SCANNED, half-open UTC. [7, 21) is fourteen hourly cycles
-  # covering London and New York. Owner decision, 2026-08-21, for the observation
-  # window; `[0, 24]` turns the window off.
+  # WHICH HOURS FOREX IS SCANNED, half-open UTC. [7, 19) is twelve hourly cycles
+  # covering London and the New York morning. Owner decision, 2026-08-21, for the
+  # observation window; `[0, 24]` turns the window off.
   #
-  # This is a spend rail wearing a clock, and it is the honest place for one. Forex has
-  # no screener and no usable re-analysis cooldown, so every cycle is three
-  # claude-fable-5 calls unconditionally — $0.734 measured, which is ~$17.6/day at 24
-  # cycles against a real ceiling of $12. Scanning only the hours that carry the
-  # liquidity is the one reduction available that costs no information the prompt does
-  # not already discount: fable_forex_v1.md tells the model in as many words that a
-  # level formed in a thin Tokyo session is weaker evidence than the same level in the
-  # London-NY overlap. Outside these hours the cycle returns before the first fetch, so
-  # they cost ZERO rather than cheap.
+  # WHY IT ENDS AT 19 AND NOT AT 21 — the reason is evidence quality, not cost.
   #
-  # THE TWO CYCLES WORTH RECONSIDERING AT THE REVIEW: 19:00 and 20:00. The spike
-  # measured elevated spreads from 19:00 to 21:00 (D-g), and the spread rail does NOT
-  # reject them — 3.0x the global median is 3.3 / 5.4 / 4.5 pips against hour-of-day
-  # medians of 1.5 / 4.6 / 1.9 — so they pay full price for the evening's worst
-  # evidence, and the cost model then charges the hour median against them at row 9.
-  # Ending at 19 costs one character here, saves ~$1.5/day, and lines the daily window
-  # up with `friday_signal_cutoff_hour_utc`, which is already 19 for the same reason.
-  # Measured and reported rather than applied, because the window is the owner's number.
-  scan_hours_utc: [7, 21]
+  # journal/M10b_SPIKE.md §3 (defect D-g) measured elevated spreads from 19:00 through
+  # 21:00 UTC: GBPUSD's hour-of-day median is 4.6 pips at 20:00 and 12.0 at 21:00,
+  # against a global median of 1.8. §5.3 answered that with a spread-TRIGGERED rail —
+  # and the rail provably does not reject those hours. `spread_gate` reaches its clock
+  # backstop only when the spread series is UNUSABLE, and at a 1200-bar tail it never
+  # is, so `ROLLOVER_WINDOW` is unreachable in production and the measured rail decides
+  # alone. At 3.0x the global median the thresholds are 3.3 / 5.4 / 4.5 pips for
+  # EURUSD / GBPUSD / USDJPY, and the 19:00 and 20:00 hour medians are 1.1-1.8 and
+  # 1.5-4.6. Every one of them passes.
+  #
+  # So the 19:00 and 20:00 cycles bought the day's WORST evidence at full price, with
+  # the rail written to stop exactly that letting them through — and the cost model
+  # then charged them the hour-of-day median at row 9, so most of what they bought was
+  # rejected on net RR anyway. Recorded as FOREX.md defect #30 and NOT fixed here: the
+  # fix is a new threshold, which is a new uncalibrated guess, and this window sidesteps
+  # it. 19 invents nothing — it is already `friday_signal_cutoff_hour_utc`, chosen for
+  # the same reason, so the daily window now ends where the Friday one does.
+  #
+  # It is also a spend rail, and that is the secondary benefit rather than the reason.
+  # Forex has no screener and no usable re-analysis cooldown, so every cycle is three
+  # claude-fable-5 calls unconditionally — $0.734 measured. Twelve cycles is ~$8.81 on a
+  # trading day against a real ceiling of $12; twenty-four would be ~$17.6. Outside
+  # these hours the cycle returns before the first fetch, so they cost ZERO rather than
+  # cheap. Nothing here costs information the prompt does not already discount:
+  # fable_forex_v1.md tells the model in as many words that a level formed in a thin
+  # session is weaker evidence than the same level in the London-NY overlap.
+  scan_hours_utc: [7, 19]
 
   # The access token lives ~20 minutes, but the cadence is really about the REFRESH
   # token: it lives ~1 hour and rotates on every use, and each refresh resets that

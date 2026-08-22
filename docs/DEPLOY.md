@@ -801,7 +801,7 @@ Expect, in order:
 - within five minutes: `forex.auth_refreshed … refresh_rotated=True`. If this never appears,
   the credential chain is not being renewed and forex will die within the hour.
 
-Then wait for the top of the next hour inside **07:00–21:00 UTC** and expect a forex card,
+Then wait for the top of the next hour inside **07:00–19:00 UTC** and expect a forex card,
 or a `cycle.forex_condition_blocked` / `cycle.outside_scan_hours` line saying why not.
 
 ### 5. If forex misbehaves — which lever stops it

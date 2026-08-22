@@ -340,6 +340,42 @@ Keep a time-based floor of 19:00–21:00 UTC as a backstop for when the spread s
 unavailable. In bar stamps that is 19, 20 and 21 — the three bars the spike measured as
 elevated — which is wall-clock 19:00–22:00.
 
+**Corrected 2026-08-21 (defect #30): the design above does not currently cover the window
+it was written for, and the backstop cannot fire.**
+
+The two halves were meant to compose — measured rail primary, clock floor for when the
+measurement is missing. In production the measurement is **never** missing: the 1h tail
+is 1200 bars every cycle, far past `spread_min_samples`, so `spread_gate` never reaches
+its clock branch and `ROLLOVER_WINDOW` is **unreachable**. The measured rail therefore
+decides the rollover hours alone, and against the global median at 3.0× it admits them:
+
+| | EURUSD | GBPUSD | USDJPY |
+|---|---|---|---|
+| global median | 1.1 | 1.8 | 1.5 |
+| threshold at 3.0× | **3.3** | **5.4** | **4.5** |
+| hour-of-day median 19:00 | 1.1 → passes | 1.8 → passes | 1.6 → passes |
+| hour-of-day median 20:00 | 1.5 → passes | **4.6 → passes** | 1.9 → passes |
+| hour-of-day median 21:00 | 2.7 → passes | 12.0 → rejects | 4.2 → passes |
+
+Only GBPUSD at 21:00 fails. Every other rollover-hour bar at its own typical spread is
+admitted — so a rail written specifically to stop trading through the widening D-g
+measured lets almost all of it through, while the cost model charges that same widening
+at row 9 and rejects most of the resulting plans on net RR. **The cycle is paid for in
+full to produce a plan the next rail throws away.**
+
+This is defect #21's own sin one level out: *a rail that cannot fire is worse than an
+absent one, because it reads on a checklist as a rail.*
+
+**Deferred, deliberately, and the reason is worth stating.** The fix is a lower multiple,
+or a second per-hour trigger, or an absolute pip cap — every one of them a **new
+uncalibrated guess**, which is exactly what DRY_RUN calibration exists to avoid setting
+blind. So M10d sidesteps the window instead: `forex.scan_hours_utc` ends at **19**, which
+is already `friday_signal_cutoff_hour_utc` and therefore invents no number. The exposure
+is closed for the observation window and the defect is not. `tests/fx/test_spread.py`
+pins the unreachability so a future fix has something to invert, and pins that the scan
+window ends at or before `rollover_window_start_hour_utc` so the exposure cannot be
+re-acquired by widening the window alone.
+
 ### §5.4 — The weekend gap
 
 A pending ladder cannot fill over a weekend. A filled position gaps through its stop on
@@ -1173,8 +1209,22 @@ disabled. Owner rulings on all six are dated the same day.
   A cooldown of one setup-timeframe candle saves nothing here, because forex's setup
   timeframe is **1h** and the scan interval is 60 minutes — the cooldown would expire
   exactly when the next scan fires. **Ruling:** a config-level scan window
-  (``forex.scan_hours_utc``, 07:00–21:00 UTC) is the cost control for the observation
+  (``forex.scan_hours_utc``, 07:00–19:00 UTC) is the cost control for the observation
   window; a forex screener is deferred until there is data to tune it against.
+
+- **#30 §5.3 — the rollover rail cannot fire, and the window it was written for is
+  uncovered.** The spread-triggered design keeps a clock floor "for when the spread
+  series is unavailable"; the series is never unavailable at a 1200-bar tail, so
+  ``ROLLOVER_WINDOW`` is unreachable in production and the measured rail decides the
+  rollover hours alone — admitting every one of them except GBPUSD at 21:00, because
+  3.0× the global median is 3.3/5.4/4.5 pips against 19:00–20:00 hour medians of
+  1.1–1.8 and 1.5–4.6. Corrected in place in §5.3 with the full table. **Ruling: not
+  fixed here.** Every candidate fix is a new uncalibrated threshold, and
+  ``forex.scan_hours_utc`` ending at 19 — already ``friday_signal_cutoff_hour_utc`` —
+  closes the exposure for the observation window without inventing a number. Two tests
+  pin it: one that the backstop cannot fire (to be inverted, not deleted, when somebody
+  fixes it) and one that the scan window ends at or before the rollover band, so the
+  exposure cannot be re-acquired by widening the window alone.
 
 ### The M10b boundary defect — a milestone boundary is untested by construction
 

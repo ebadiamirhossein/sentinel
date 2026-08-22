@@ -606,28 +606,27 @@ class ForexConfig(_Strict):
     rollover_window_start_hour_utc: int = Field(default=19, ge=0, le=23)
     rollover_window_end_hour_utc: int = Field(default=22, ge=1, le=24)
 
-    #: The UTC hours forex is scanned, half-open — ``[7, 21)`` is 07:00 through
-    #: 20:59, i.e. fourteen hourly cycles covering London and New York.
+    #: The UTC hours forex is scanned, half-open — ``[7, 19)`` is 07:00 through 18:59,
+    #: twelve hourly cycles covering London and the New York morning.
     #:
-    #: **This is a spend rail wearing a clock, and it is the honest place for one.**
-    #: Forex has no screener and no re-analysis cooldown (crypto's two M8.2 cost
-    #: controls), so every cycle is three claude-fable-5 calls unconditionally —
-    #: measured at $0.734 a cycle, which is ~$17.6/day at 24 cycles. Scanning only the
-    #: hours that carry the liquidity is the one reduction available that costs no
-    #: information the prompt itself does not already discount: fable_forex_v1.md
-    #: tells the model in as many words that a level formed in a thin Tokyo session is
-    #: weaker evidence than the same level in the London-NY overlap.
+    #: **It ends at 19 because of evidence quality, not cost** (spec defect #30, owner
+    #: decision 2026-08-21). D-g measured elevated spreads from 19:00 to 21:00, and
+    #: §5.3's spread-triggered rail provably does not reject them: ``spread_gate``
+    #: reaches its clock backstop only when the series is *unusable*, which at a
+    #: 1200-bar tail it never is, so ``ROLLOVER_WINDOW`` is unreachable in production
+    #: and the measured rail decides alone — at 3.0x the global median the thresholds
+    #: are 3.3/5.4/4.5 pips against 19:00-20:00 hour medians of 1.1-1.8 and 1.5-4.6, so
+    #: every one of them passes. Those two cycles bought the day's worst evidence at
+    #: full price with the rail written to stop exactly that letting them through. 19
+    #: invents nothing: it is already ``friday_signal_cutoff_hour_utc``.
     #:
-    #: Outside these hours the cycle returns before the first fetch, so those hours
-    #: cost **zero** rather than cheap.
-    #:
-    #: Owner decision, 2026-08-21, for a two-week observation window reviewed
-    #: 2026-09-04. journal/M10d_REPORT.md records the measurement that 19:00 and 20:00
-    #: are the two least valuable cycles of the fourteen — the spread rail does NOT
-    #: reject them (3.0x the global median is 3.3/5.4/4.5 pips against hour medians of
-    #: 1.5/4.6/1.9), so they pay full price for the evening's worst evidence. Ending
-    #: at 19 instead would cost one line here and save ~$1.5/day.
-    scan_hours_utc: tuple[int, int] = (7, 21)
+    #: **It is also a spend rail**, and that is the secondary benefit. Forex has no
+    #: screener and no usable re-analysis cooldown (crypto's two M8.2 cost controls),
+    #: so every cycle is three claude-fable-5 calls unconditionally — measured at
+    #: $0.734 a cycle, so twelve cycles is ~$8.81 a trading day and twenty-four would
+    #: be ~$17.6. Outside these hours the cycle returns before the first fetch, so
+    #: those hours cost **zero** rather than cheap.
+    scan_hours_utc: tuple[int, int] = (7, 19)
 
     # ── authentication (§3) ──────────────────────────────────────────────────
 

@@ -264,3 +264,88 @@ def test_a_normal_spread_in_normal_hours_is_simply_allowed() -> None:
     assert verdict.allowed
     assert verdict.basis == "measured"
     assert verdict.current_pips == Decimal("1.1")
+
+
+# --------------------------------------------------------------------------- #
+# Spec defect #30 — the clock backstop is unreachable in production (M10d)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_clock_backstop_never_fires_once_the_series_is_usable() -> None:
+    """**A rail that cannot fire**, pinned as the defect it is rather than as a feature.
+
+    §5.3 answered D-g — elevated spreads from 19:00 to 21:00 UTC — with a
+    spread-triggered rail and "a time-based floor of 19:00-21:00 UTC as a backstop for
+    when the spread series is unavailable". In production the series is *never*
+    unavailable: the 1h tail is 1200 bars every cycle, comfortably past
+    ``spread_min_samples``. So ``ROLLOVER_WINDOW`` is unreachable and the measured rail
+    decides the rollover hours alone — which is FOREX.md defect #21's own sin one level
+    out, *a rail that cannot fire is worse than an absent one, because it reads on a
+    checklist as a rail.*
+
+    This is asserted, not fixed. The fix is a new threshold and therefore a new
+    uncalibrated guess; ``forex.scan_hours_utc`` ending at 19 sidesteps the window for
+    the observation period instead. When somebody does fix it, this test is the one
+    that has to flip, and it says so.
+    """
+    profile = build_profile(samples(days=50, normal="1.8", hour_21="12.0"), symbol="GBPUSD")
+    assert profile is not None
+    assert profile.samples >= CONFIG.spread_min_samples
+
+    for hour in range(CONFIG.rollover_window_start_hour_utc, CONFIG.rollover_window_end_hour_utc):
+        verdict = spread_gate(
+            # This hour's OWN typical spread, which is what a real cycle presents.
+            current_pips=profile.expected_at(hour),
+            profile=profile,
+            now=datetime(2026, 8, 17, hour, 30, tzinfo=UTC),
+            config=CONFIG,
+        )
+        assert verdict.basis == "measured", hour
+        assert verdict.rejection is not ForexRejection.ROLLOVER_WINDOW, (
+            f"the clock backstop fired at {hour}:00 with a usable series — defect #30 "
+            f"has been fixed and this test should be inverted, not deleted"
+        )
+
+
+def test_the_measured_rail_admits_a_typical_twenty_hundred_spread() -> None:
+    """The half of #30 that costs money, stated as the number it turns on.
+
+    GBPUSD's hour-of-day median at 20:00 is 4.6 pips against a global median of 1.8, so
+    the 3.0x threshold is 5.4 and a typical 20:00 bar sails through — while the cost
+    model charges that same 4.6 at row 9, which is 0.256R of an 18-pip stop. The cycle
+    is paid for in full and most of what it buys is then rejected on net RR.
+    """
+    profile = build_profile(samples(days=50, normal="1.8", hour_21="12.0"), symbol="GBPUSD")
+    assert profile is not None
+    threshold = profile.global_median_pips * CONFIG.spread_max_multiple
+
+    typical_at_20 = Decimal("4.6")
+    assert typical_at_20 < threshold, "the premise of #30 no longer holds; recheck the entry"
+
+    verdict = spread_gate(
+        current_pips=typical_at_20,
+        profile=profile,
+        now=datetime(2026, 8, 17, 20, 30, tzinfo=UTC),
+        config=CONFIG,
+    )
+    assert verdict.allowed
+
+
+def test_the_scan_window_ends_before_the_hours_the_rail_cannot_cover() -> None:
+    """The relationship D2 rests on, so widening the window re-opens the question.
+
+    ``scan_hours_utc`` ending at or before ``rollover_window_start_hour_utc`` is what
+    makes defect #30 harmless for this observation window. Extend the window past 19
+    without fixing the rail and this fails — which is the point: it should not be
+    possible to re-acquire the exposure quietly.
+
+    19 is also already ``friday_signal_cutoff_hour_utc``, chosen for the same reason, so
+    the daily window ends where the Friday one does and neither number is invented.
+    """
+    from sentinel.core.config import load_config
+
+    forex = load_config().forex
+    _, end = forex.scan_hours_utc
+
+    assert end <= forex.rollover_window_start_hour_utc
+    assert end == forex.friday_signal_cutoff_hour_utc

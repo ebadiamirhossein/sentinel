@@ -4,10 +4,13 @@
 
 > **This section is a snapshot taken at handoff and is deliberately not updated.**
 
-**Branch `m10d-forex-switch-on`, 7 commits off `main` at `90f905f`. `main` is untouched.
+> **Five defects in code the specs called done — that is the milestone. Forex is the
+> side effect.** (Owner, 2026-08-21, on reading the handoff.)
+
+**Branch `m10d-forex-switch-on`, 8 commits off `main` at `90f905f`. `main` is untouched.
 Nothing is pushed and NOTHING IS DEPLOYED.**
 
-`make check` **exit 0**. 2129 passed, 68 skipped. `mypy --strict` over 310 files. Risk
+`make check` **exit 0**. 2132 passed, 68 skipped. `mypy --strict` over 310 files. Risk
 branch coverage **100%** — 604 statements, 152 branches, the same figures as M10a, M10b
 and M10c. `git diff main -- sentinel/risk/ sentinel/analyst/prompts/fable_v1.md
 sentinel/analyst/prompts/screener_v1.md screener_v2.md` **empty**.
@@ -22,22 +25,33 @@ see §2. Read that before anything else.
    disabled. Two of them — the dead tracker job and the empty history block — would each
    on its own have made forex produce nothing at all, silently, with `/health` green.
 2. **The cost is lower than the plan said and the rails are the ones you chose.**
-   Measured: **$0.734 per cycle of three pairs**, $10.28 on a trading day. Your original
-   `global $20 / forex $16` was right; my "you need 22" was computed from an estimate.
+   Measured: **$0.734 per cycle of three pairs**, $8.81 on a trading day at the twelve
+   cycles D2 settled on. Your original `global $20 / forex $16` was right; my "you need
+   22" was computed from an estimate. §8 is the lesson in that.
 3. **The observation window has an end date written into the code.** Review
    **2026-09-04**. The revert values are in `config.yaml` beside every raised number and
    asserted in `tests/test_config.py::test_the_observation_windows_rails_are_the_committed_ones`.
 
-### The next three actions, in order
+### Owner decisions taken on the handoff (2026-08-21)
 
-1. **Read §2** — the four moved golden lines — and say whether you accept them. They are
-   `/pulse` printing `today of $20` where it printed `of $10`. It is the ceiling you
-   raised; leaving it at 10 was tried and is worse.
-2. **Merge and deploy** per `docs/DEPLOY.md` §13b, which is rewritten for this release.
+- **D1 — the four `/pulse` golden lines are ACCEPTED.** `of $10` → `of $20` is the
+  ceiling appearing where it should. See §2.
+- **D2 — `scan_hours_utc` is `[7, 19)`, not `[7, 21)`.** Owner's call, reversing his own
+  earlier number on the strength of §1d: 19:00–20:00 buys the day's worst evidence at
+  full price and no rail catches it. 19 invents nothing — it is already
+  `friday_signal_cutoff_hour_utc`. **Twelve cycles, ~$8.81 a trading day.** Global stays
+  at 20.
+- **D3 — the estimate chain is written up as its own lesson.** §8.
+- **D4 — the spread-rail gap is recorded as FOREX.md defect #30**, with §5.3 corrected
+  in place, and deferred deliberately. §1d.
+
+### The next two actions, in order
+
+1. **Merge and deploy** per `docs/DEPLOY.md` §13b, which is rewritten for this release.
    It is a merge and a rebuild — **no migration** — plus one browser login on your Mac
    that must be done in a single sitting.
-3. **Watch for the five job ids** in the boot log, then wait for the top of the next hour
-   inside 07:00–21:00 UTC.
+2. **Watch for the five job ids** in the boot log, then wait for the top of the next hour
+   inside 07:00–19:00 UTC.
 
 **If anything goes wrong, `/pause forex`.** It needs no deploy, it now stops forex
 *spending* as well as publishing, and it leaves the crypto measurement running. Do not
@@ -90,10 +104,10 @@ at $12.5/Mtok and two reads at $1/Mtok rather than three full input prices.
 
 > **forex's real ceiling is `global_limit - 8`, not its own sub-budget.**
 
-| global | forex's real ceiling | funds 14 cycles at $0.734 = $10.28? |
+| global | forex's real ceiling | funds 12 cycles at $0.734 = $8.81? |
 |---|---|---|
 | 11 (before) | **$3.00** | no — 3 cycles of 24, all 00:00–03:00 UTC |
-| **20 (now)** | **$12.00** | **yes**, with $1.72 spare |
+| **20 (now)** | **$12.00** | **yes** — 12 cycles at $0.734 is $8.81, $3.19 spare |
 
 At 11, the UTC-midnight reset meant forex would have spent its whole allowance in the
 thin Tokyo session and then gone dark through London and New York — silently, because the
@@ -102,6 +116,10 @@ spend guard suspends analysis rather than erroring.
 Above the floor the reserve is spent and the plain global ceiling takes over, tightening
 from there. Both halves are asserted in
 `tests/core/test_forex_spend_guards.py::test_forexs_real_ceiling_is_the_global_limit_minus_cryptos_floor`.
+
+At twelve cycles an ordinary day is **$12.42** (crypto $3.61 + forex $8.81) against a
+global warn at 16 and a ceiling at 20 — roughly **$300/month** against ~$110 today, and
+**~$138** for the two-week window itself.
 
 **Crypto's floor still does its job**, on the worst possible forex day: forex can never
 push the global total past `global - floor + crypto_spent`, so crypto always keeps its
@@ -139,7 +157,7 @@ Crypto has M8.2's two cost controls. Forex has neither.
   call is one verdict. Any number here would be crypto's 61%-WATCHLIST figure wearing a
   forex label.
 
-* **What is wired instead:** `forex.scan_hours_utc: [7, 21]` — a spend rail wearing a
+* **What is wired instead:** `forex.scan_hours_utc: [7, 19]` — a spend rail wearing a
   clock, costing no information the prompt does not already discount, since
   `fable_forex_v1.md` tells the model in as many words that a thin Tokyo session is
   weaker evidence than the London-NY overlap. Outside the window the cycle returns
@@ -159,16 +177,29 @@ backstop **only when the series is unusable**; the 1h tail is 1200 bars every cy
 | spike median at 21:00 | 2.7 passes | 12.0 rejects | 4.2 passes |
 
 So on a typical evening bar nothing is rejected at 19:00 or 20:00, and 21:00 — the one
-hour that does bite, and only for GBPUSD — is outside a half-open `[7, 21)` window
-anyway. Those two cycles pay **full price, ~$1.47/day**, for the evening's worst
+hour that does bite, and only for GBPUSD — was outside the half-open window in either
+form. Those two cycles pay **full price, ~$1.47/day**, for the evening's worst
 evidence, and the cost model then charges them the hour-of-day median at row 9 so most of
 what they buy is rejected on net RR. Same shape as defect #15 one level out: a rail that
 reads as covering the rollover window and does not.
 
-**Ending the window at 19 instead** costs one character, saves ~$1.47/day, and lines the
-daily window up with `friday_signal_cutoff_hour_utc`, which is already 19 for the same
-reason. **Not applied** — 07:00–21:00 is your number and trimming it is your call. It is
-one config value, no code edit, and the argument is written beside it in `config.yaml`.
+**Owner decision D2: the window ends at 19.** Reversing his own earlier number on this
+evidence, and for the evidence rather than for the money — the ~$1.47/day is the
+secondary benefit. 19 invents nothing: it is already `friday_signal_cutoff_hour_utc`,
+chosen for the same reason, so the daily window now ends where the Friday one does.
+
+**Owner decision D4: the gap itself is a defect, not just an answer.** It is
+**FOREX.md #30**, with §5.3 corrected in place and the full table beside it, and it is
+**deferred deliberately**: every candidate fix — a lower multiple, a second per-hour
+trigger, an absolute pip cap — is a new uncalibrated threshold, which is exactly what
+DRY_RUN calibration exists to avoid setting blind. D2 sidesteps the window instead, so
+the *exposure* is closed for the observation period and the *defect* is not.
+
+Two tests hold the line. `test_the_clock_backstop_never_fires_once_the_series_is_usable`
+pins the unreachability and says in its own docstring that a future fix must **invert**
+it rather than delete it. `test_the_scan_window_ends_before_the_hours_the_rail_cannot_cover`
+pins `scan_hours_utc[1] <= rollover_window_start_hour_utc`, so the exposure cannot be
+re-acquired by widening the window alone.
 
 ### 1e. The kill switch — your blocking question, answered before building
 
@@ -400,7 +431,7 @@ proved by making the alerter never fire: 7 of 8 fail, and the eighth is the
 
 ## 5. Numbers
 
-* **2129 passed, 68 skipped, 0 failed** — up from M10c's 2076/68, **53 new tests**.
+* **2132 passed, 68 skipped, 0 failed** — up from M10c's 2076/68, **56 new tests**.
 
   | file | tests |
   |---|---|
@@ -412,6 +443,7 @@ proved by making the alerter never fire: 7 of 8 fail, and the eighth is the
   | `tests/bot/test_publisher.py` | +3 |
   | `tests/analyst/test_provider.py` | +2 |
   | `tests/fx/test_calendar.py` | +5 |
+  | `tests/fx/test_spread.py` | +3 (defect #30) |
 
 * `make check` **exit 0**: tests, ruff, `mypy --strict` over 310 files, 100% risk branch
   coverage (604 statements, 152 branches — unchanged since M10a), `check-deps`,
@@ -421,7 +453,7 @@ proved by making the alerter never fire: 7 of 8 fail, and the eighth is the
 * **`sentinel/risk/` and the three crypto prompts: zero-line diff.**
 * Goldens: **37 total, 33 byte-identical, 4 moved by one line each** (§2).
 * 52 files changed. **No migration.**
-* Seven commits, one per step.
+* Eight commits, one per step.
 * **Two real Anthropic calls were made**, both by `sentinel.tools.forex_prompt_cost`,
   ~$0.45 total. The first printed the wrong attribute name after a successful call and
   had to be repeated.
@@ -479,8 +511,9 @@ In the order I would ask them.
 1. **Do the rails come back down?** Revert values are in `config.yaml` and in
    `test_the_observation_windows_rails_are_the_committed_ones`. If forex continues, they
    are re-justified from measured spend rather than left standing.
-2. **Does the scan window end at 19:00?** §1d says those two cycles buy the evening's
-   worst evidence for ~$1.47/day and the spread rail does not stop them. One config value.
+2. **Does defect #30 get fixed, or does the window keep sidestepping it?** D2 closed the
+   exposure by ending the scan at 19; the rail that cannot fire is still there. Fixing it
+   needs a calibrated threshold, which is what this window is for producing.
 3. **A forex screener?** Now answerable with a measured NO_SETUP rate. If it is high, a
    $0.023 sonnet pass in front of a $0.23 call is the largest lever available.
 4. **A re-analysis cooldown longer than one candle?** Only worth it with the same rate in
@@ -493,3 +526,61 @@ In the order I would ask them.
    release keeps them equal at 20 rather than fixing the field, because changing which
    field a crypto card reads is beyond a switch-on. It is a latent defect and it is yours
    to schedule.
+
+---
+
+## 8. The lesson: a cost model is not a measurement (owner requirement D3)
+
+**Four estimates of the same number, by two people, all wrong in the same direction. One
+measurement settled it.**
+
+| | figure | basis |
+|---|---|---|
+| owner, in the brief | "roughly **$2/day** of room" | the shipped rails, read informally |
+| me, from the code | **$3.00/day** exactly | correct arithmetic on `evaluate_market_spend` |
+| me, per call | **~$0.33** | system prompt chars + payload chars + 3 charts × 2,130 visual tokens, at list price |
+| me, per cycle | **~$1.00** | three times the above |
+| me, per day | **~$24** | 24 cycles × the above |
+| **measured** | **$0.226104 cached / $0.281925 uncached, $0.734 per cycle** | one real call |
+
+The per-day estimate was **27% high**. The $3.00 was right, and worth separating: that
+one was *arithmetic over values the code already holds*, which is a different kind of
+claim again and is the only one of the five that survived contact.
+
+**What the estimate missed was not a token count.** The character counts were close and
+the chart figure was close. It missed a **mechanism**: the system block carries
+`cache_control`, so a cycle of three pairs pays one cache write at $12.5/Mtok and two
+reads at $1/Mtok instead of three full inputs at $10/Mtok. Nothing in a token count and a
+price list can tell you that. It is a fact about how the call is made, and the only place
+it is visible is a response's `usage` block.
+
+**The direction matters as much as the size.** Every estimate erred *high*, and a high
+cost estimate argues for a **higher spend rail**. Acting on it, we would have set the
+global ceiling to 22 and given a runaway loop $2/day more blast radius than the measured
+need justifies — a permanent widening bought with an imaginary number. The rail is the
+last thing standing between a bug and the bill; that is a bad place for a 27% error, in
+either direction but especially that one.
+
+### The rule
+
+> **Price an LLM path from a real call before setting a rail on it.** A cost model built
+> from token counts and list prices is a *different kind of claim* from a measured call,
+> and the two must not be mixed in one sentence. When only an estimate is available, say
+> so and set the rail after the first measurement rather than before.
+
+It is cheap to obey. The measurement here cost **$0.45 and about twenty minutes**, and it
+had to be built anyway — join 4 named "no token count, no cost figure" as an open item at
+both M10b-2 and M10c and it was carried forward twice. The estimate was not a shortcut
+around the measurement; it was work done *instead of* the measurement that then had to be
+thrown away.
+
+### The family it belongs to
+
+This is HANDOFF §4's recurring shape in a new place. Items 10, 11 and 12 are all *"a
+check that looked like the thing it stood in for"* — a golden that pinned one branch, a
+suite that proved every piece works alone, a fixture that could not produce the input
+that breaks. An estimate is the same: it looks like a figure, it goes into a table
+alongside measured figures, and nothing about its rendering says it was derived rather
+than observed. In this report §1's table says which is which in its own header, and
+`sentinel/tools/forex_prompt_cost.py` prints the caveat with every number it produces —
+including the two it *under*-states and why.
