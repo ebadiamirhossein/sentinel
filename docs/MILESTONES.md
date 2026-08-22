@@ -255,6 +255,27 @@ with no AI in it — had never been readable from a phone.
 Run live in signals-only mode. You mark Taken/Watch/Skip honestly. Weekly review in the architect chat: `/stats`, false-positive review, prompt v2 proposal.
 **Exit criteria:** ≥ 25 tracked signals, JSON validity ≥ 98%, zero sizing bugs, and a first prompt-version comparison.
 
+> **Read this before the rejection histogram (added 2026-08-22, from M11p; HANDOFF §4
+> item 15).** **Sizing is not a scaling.** The same analysis sized at €200 and at
+> €10,000 does not produce the same plan rendered twice — it produces two plans. On the
+> golden BTCUSDT setup, three ladder rungs become **two**, the weights move 40/35/25 →
+> 53.33/46.67, the stop distance moves -0.86% → -0.97%, and **TP1 net RR moves 1.75R →
+> 1.50R**. `min_notional = max(exchange_min, 20 USDT)`, the quantity step and the
+> leverage cap all bite in absolute terms, so a small account funds fewer rungs and pays
+> a larger *share* of its risk budget in fixed costs.
+>
+> The owner's live capital is **€200**; every golden sizes at **€10,000**; and
+> `min_rr_tp1 = 1.5` sits exactly where the €200 figure landed. So the measured sample
+> comes from a region of the engine's behaviour no golden has ever pinned, and a
+> `NET_RR_TOO_LOW` histogram read without this will credit the market for an artefact of
+> account size.
+>
+> **Two questions to add to this review**, both answerable from stored `gate_decisions`
+> and stored plans and neither from a golden:
+> 1. what share of `NET_RR_TOO_LOW` rejections would have been approvals at a larger
+>    capital?
+> 2. how many delivered signals lost a ladder rung to `min_notional`?
+
 > **Renumbering (2026-08-20, from M10a).** The owner asked for a second *market*
 > before a second *model*, so M10 splits into **M10a** (the market dimension, below)
 > and **M10b** (the forex adapter). Ensemble shadow mode moves M10 → **M11** and the

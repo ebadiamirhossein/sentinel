@@ -133,7 +133,7 @@ async def _handle(
         await query.answer(NOT_YOUR_CARD, show_alert=True)
         return
 
-    card, market, symbol = rendered
+    card, market, symbol, candidate_status = rendered
     digest = card_hash(card)
 
     stored = await _cached(ctx, digest)
@@ -161,7 +161,9 @@ async def _handle(
     future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
     _IN_FLIGHT[digest] = future
     try:
-        text = await _generate(ctx, actor, callback_data, card, digest, market, symbol, now)
+        text = await _generate(
+            ctx, actor, callback_data, card, digest, market, symbol, candidate_status, now
+        )
     except BaseException as exc:
         if not future.done():
             future.set_exception(exc)
@@ -183,11 +185,16 @@ async def _generate(
     digest: str,
     market: Market,
     symbol: str,
+    candidate_status: str,
     now: datetime,
 ) -> str:
-    """One paid call, checked, recorded and stored. Returns the text to send."""
+    """One paid call, checked, recorded and stored. Returns the text to send.
+
+    ``candidate_status`` is read from the stored report, never from the card text and
+    never from the model's answer: it is what the verdict rail is checked *against*.
+    """
     assert ctx.summariser is not None
-    result = await ctx.summariser.summarise(card, symbol=symbol)
+    result = await ctx.summariser.summarise(card, symbol=symbol, candidate_status=candidate_status)
 
     # The audit row is written on EVERY outcome, including the two failures: the money
     # was spent either way, and a failure that left no trace would be invisible to the
@@ -202,7 +209,8 @@ async def _generate(
             outcome=result.outcome.value,
             symbol=symbol,
             user_id=actor.user_id,
-            detail=None if result.check is None else result.check.detail,
+            numbers=None if result.check is None else result.check.detail,
+            verdict=None if result.verdict is None else result.verdict.detail,
         )
         return COULD_NOT_PRODUCE
 
@@ -261,7 +269,8 @@ _NOT_YOURS: Any = object()
 
 async def _render_card(
     callback_data: PersianCallback, ctx: BotContext, actor: Actor
-) -> tuple[str, Market, str] | Any | None:
+) -> tuple[str, Market, str, str] | Any | None:
+    """``(card text, market, symbol, candidate_status)``, ``None``, or ``_NOT_YOURS``."""
     if callback_data.source_kind is PersianSourceKind.SIGNAL:
         return await _render_signal(callback_data, ctx, actor)
     return await _render_pulse(callback_data, ctx, actor)
@@ -269,7 +278,7 @@ async def _render_card(
 
 async def _render_signal(
     callback_data: PersianCallback, ctx: BotContext, actor: Actor
-) -> tuple[str, Market, str] | Any | None:
+) -> tuple[str, Market, str, str] | Any | None:
     async with ctx.database.session() as session:
         row = await ctx.repositories.signals(session).get(callback_data.source_id)
         if row is None:
@@ -295,12 +304,17 @@ async def _render_signal(
     )
     render = signal_card if market is Market.CRYPTO else forex_signal_card
     card = render(record, ctx.tz, show_market=config.multi_market, shared_only=True)
-    return card, market, plan.symbol
+    # Read from the stored report rather than assumed. A signal card exists only for a
+    # gate-approved plan -- ``_check_preconditions`` returns ``NOT_A_CANDIDATE`` before a
+    # plan is ever built -- so this is CANDIDATE today, and hard-coding it would be a
+    # true statement that stops being true the day the gate learns a second way to
+    # approve something.
+    return card, market, plan.symbol, plan.report.candidate_status.value
 
 
 async def _render_pulse(
     callback_data: PersianCallback, ctx: BotContext, actor: Actor
-) -> tuple[str, Market, str] | Any | None:
+) -> tuple[str, Market, str, str] | Any | None:
     async with ctx.database.session() as session:
         stored = await ctx.repositories.settings(session).all()
         # ``get`` is by primary key and carries no market filter, so the market is read
@@ -328,7 +342,15 @@ async def _render_pulse(
     # no cost figure and nothing else that varies by role -- so no ``shared_only``
     # equivalent is needed here. The card is several messages on Telegram and one card
     # to a reader, so the pages are rejoined before the model sees them.
-    return "\n".join(symbol_pulse_card(view, ctx.tz)), market, row.symbol
+    # The surface the verdict rail exists for: this card renders WATCHLIST and NO_SETUP
+    # as well as CANDIDATE, and it carries almost no numbers for the other rail to
+    # constrain.
+    return (
+        "\n".join(symbol_pulse_card(view, ctx.tz)),
+        market,
+        row.symbol,
+        row.candidate_status,
+    )
 
 
 # --------------------------------------------------------------------------- #

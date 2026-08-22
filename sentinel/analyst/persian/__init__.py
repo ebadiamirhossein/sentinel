@@ -7,9 +7,10 @@ live in this package:
 1. **The model sees the card and nothing else.** Not features, not charts, not the
    structured analyst report, not a database row. It cannot form a different opinion
    because it never sees the data -- only the words the analyst already wrote.
-2. **Every number in the output must already be in the input.** The prompt asks;
-   :mod:`sentinel.analyst.persian.numbers` *checks*, and fails closed. A prompt
-   instruction is a request. The check is the rail.
+2. **Every number in the output must already be in the input**, and the verdict line
+   must agree with the card's verdict. The prompt asks;
+   :mod:`sentinel.analyst.persian.numbers` *checks* both, and both fail closed. A
+   prompt instruction is a request; a check is a rail.
 
 Nothing here imports from ``sentinel.risk``, ``sentinel.tracker`` or
 ``sentinel.stats``, and nothing in those packages imports from here. The feature is
@@ -21,7 +22,10 @@ from __future__ import annotations
 from sentinel.analyst.persian.models import PersianSourceKind, PersianSummary
 from sentinel.analyst.persian.numbers import (
     NumberCheck,
+    VerdictCheck,
+    VerdictClass,
     check_numbers,
+    check_verdict,
     numeric_tokens,
     plain_text,
 )
@@ -38,7 +42,10 @@ __all__ = [
     "PersianSummary",
     "SummaryOutcome",
     "SummaryResult",
+    "VerdictCheck",
+    "VerdictClass",
     "check_numbers",
+    "check_verdict",
     "numeric_tokens",
     "plain_text",
 ]

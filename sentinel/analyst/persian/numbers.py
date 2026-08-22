@@ -1,4 +1,15 @@
-"""The numbers rail: every number the Persian summary prints must be on the card.
+"""The two rails a Persian summary must pass before anybody reads it.
+
+**One module for both, deliberately.** They are the only two fail-closed checks on
+this path and they cover each other's blind spot: the numbers rail cannot see a
+softened verdict, because softening invents no number, and the verdict rail cannot
+see an invented price. Splitting them across two files is how one of them gets
+reviewed, loosened or deleted without the other being in front of the reader. The
+module name now under-describes what is in it, which is the smaller cost.
+
+---
+
+**THE NUMBERS RAIL:** every number the Persian summary prints must be on the card.
 
 **Why a check and not only a prompt rule.** If the Persian card and the English card
 ever disagree about a stop price, the owner has two systems telling him different
@@ -31,6 +42,7 @@ Pure: no clock, no database, no LLM, no I/O.
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
@@ -123,11 +135,134 @@ def check_numbers(*, card: str, summary: str) -> NumberCheck:
     )
 
 
+# ---------------------------------------------------------------------------
+# THE VERDICT RAIL
+# ---------------------------------------------------------------------------
+#
+# The numbers rail is structurally blind to the one failure that would be invisible in
+# review and expensive in practice: a WATCHLIST rewritten as an encouraging card.
+# Softening a verdict invents no number, so nothing above can see it, and HARD BOUNDARY
+# 5 in the prompt is a request rather than a rail.
+#
+# **Where this actually bites.** A signal card exists only for a gate-approved plan --
+# ``_check_preconditions`` returns ``NOT_A_CANDIDATE`` before a plan is built -- so on
+# that surface the expected verdict is a constant and this check is weak, catching only
+# the safe-direction mirror (an approved setup described discouragingly). The surface
+# that matters is ``/pulse SYMBOL``, which renders WATCHLIST and NO_SETUP verdicts --
+# **and which carries almost no numbers at all.** Of the fifteen numeric tokens on the
+# golden pulse card, six are parts of a date, two are confidence and four are timeframe
+# labels; three are levels, and all three come from prose rather than from a plan. So on
+# the one surface where a softened verdict is reachable, the numbers rail admits nearly
+# anything and this is the only rail there is.
+#
+# **The verdict is never parsed out of the summary, or out of the card.** It is supplied
+# by the caller, from the report the card was rendered from. A check that read the
+# model's own text to decide what the model was supposed to say would be agreeing with
+# itself.
+
+
+class VerdictClass(StrEnum):
+    """What the card permits the reader to do. Two classes, not three.
+
+    ``WATCHLIST`` and ``NO_SETUP`` share :attr:`NOT_YET` because the distinction this
+    rail exists to protect is *actionable vs not*. Separating them would catch a
+    NO_SETUP that reads like a WATCHLIST -- a far less consequential confusion -- at the
+    cost of a third marker set and a third way to fail a true summary. Every rail here
+    is fail-closed, so every widening of its vocabulary is a widening of the ways a good
+    summary gets thrown away.
+    """
+
+    #: The gate approved a plan. The reader may act on it.
+    ACTIONABLE = "ACTIONABLE"
+    #: WATCHLIST or NO_SETUP. Watch; do not buy.
+    NOT_YET = "NOT_YET"
+
+
+#: The first character of the verdict line, per class. Disjoint by construction, so a
+#: marker from the wrong set is always a failure rather than a silent pass.
+#:
+#: Markers rather than a phrase vocabulary, and that choice is the difference between a
+#: rail and a nuisance. Persian has many ways to say "do not buy" -- نخر, صبر کن, فقط
+#: تماشا, وارد نشو, دست نگه دار -- and a fixed *phrase* list would reject the ones it
+#: had not thought of, which is a rail firing wrongly on a true summary. A single
+#: leading emoji is something the prompt can mandate exactly, the owner's own examples
+#: already do it, and the measured first call already produced it unprompted.
+VERDICT_MARKERS: dict[VerdictClass, frozenset[str]] = {
+    VerdictClass.ACTIONABLE: frozenset({"✅"}),
+    VerdictClass.NOT_YET: frozenset({"❌", "⛔", "👀"}),
+}
+
+
+def verdict_class(candidate_status: str) -> VerdictClass:
+    """``CANDIDATE`` is actionable; everything else is not.
+
+    Written against the *string* rather than against ``CandidateStatus`` so this module
+    keeps importing nothing from the analyst package -- it is a rail, and a rail that
+    grows a dependency on the thing it is checking is on its way to agreeing with it.
+    An unrecognised status falls to ``NOT_YET``, which is the safe direction: a verdict
+    this rail does not understand must not be allowed to read as a buy.
+    """
+    return (
+        VerdictClass.ACTIONABLE if candidate_status.upper() == "CANDIDATE" else VerdictClass.NOT_YET
+    )
+
+
+class VerdictCheck(BaseModel):
+    """The verdict verdict, and what the log needs to say."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    expected: VerdictClass
+    #: The first non-empty line of the summary, as found. Empty when there is none.
+    verdict_line: str = ""
+    ok: bool = False
+
+    @property
+    def detail(self) -> str:
+        if self.ok:
+            return f"the verdict line matches {self.expected.value}"
+        allowed = " ".join(sorted(VERDICT_MARKERS[self.expected]))
+        if not self.verdict_line:
+            return f"no verdict line at all; expected one starting with {allowed}"
+        return (
+            f"verdict line {self.verdict_line!r} does not start with "
+            f"{allowed} — the card is {self.expected.value}"
+        )
+
+
+def check_verdict(*, summary: str, candidate_status: str) -> VerdictCheck:
+    """Does the summary's opening line agree with the card's verdict?
+
+    The prompt requires the first line to be the verdict and to begin with one of the
+    markers for its class, so this pins something that is already there rather than
+    imposing a shape on the Persian.
+
+    **What it does not prove.** It checks the *marker*, not the meaning: a summary
+    reading ``❌ بخر`` would pass. That residual is deliberate -- catching it needs a
+    phrase vocabulary, and a phrase vocabulary is where the false failures live. The
+    marker is the part a model gets wrong when it has drifted into the wrong register,
+    which is the failure this is for.
+    """
+    expected = verdict_class(candidate_status)
+    lines = [line.strip() for line in plain_text(summary).splitlines()]
+    first = next((line for line in lines if line), "")
+    return VerdictCheck(
+        expected=expected,
+        verdict_line=first,
+        ok=any(first.startswith(marker) for marker in VERDICT_MARKERS[expected]),
+    )
+
+
 __all__ = [
     "NON_ASCII_DIGITS",
+    "VERDICT_MARKERS",
     "NumberCheck",
+    "VerdictCheck",
+    "VerdictClass",
     "canonical",
     "check_numbers",
+    "check_verdict",
     "numeric_tokens",
     "plain_text",
+    "verdict_class",
 ]

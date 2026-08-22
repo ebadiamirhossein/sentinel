@@ -280,6 +280,41 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
     both warn — which is the check working, and `ccxt` is worth a decision.
 
 
+15. **Sizing is not a scaling, and the plan the owner reads at €200 is not the plan
+    the goldens pin at €10,000.** Found in M11p by a differential test built for an
+    unrelated reason — render one analysis at two capitals and assert the two cards
+    agree about everything that is not a per-user figure. They do not.
+
+    On the golden BTCUSDT setup the risk engine returns **three ladder rungs at
+    €10,000 and two at €200**. The weights move 40/35/25 → 53.33/46.67, the average
+    fill moves with them, the stop distance moves -0.86% → -0.97%, and **TP1 net RR
+    moves 1.75R → 1.50R**. On SOLUSDT the same comparison moves only the net R
+    multiples, by 0.01R — smaller, and still a difference the owner would read.
+
+    **The cause is that three engine limits bite in absolute terms, not in
+    proportion:** `min_notional = max(exchange_min, 20 USDT)` (BTC = 50), the
+    exchange's quantity step, and the leverage cap. A small account cannot fund the
+    last rung at all, and it pays a different *share* of its risk budget in fixed
+    costs — which is what moves net RR, because `min_rr_tp1` gates NET RR.
+
+    **Why this matters to the Sept 3 review specifically.** The owner's live capital
+    is **€200** — deliberately small, a rehearsal size. Every golden in the suite
+    sizes at €10,000. So the plans in the measured sample are drawn from a different
+    region of the engine's behaviour than the plans any golden has ever pinned, and
+    `min_rr_tp1 = 1.5` sits *exactly* where the €200 figure landed. A gate rejection
+    histogram read without knowing this will attribute to the market something that
+    is partly an artefact of account size.
+
+    **The question to ask of the M9 data:** what share of `NET_RR_TOO_LOW`
+    rejections would have been approvals at a larger capital, and how many signals
+    lost a ladder rung to `min_notional`? Both are answerable from stored
+    `gate_decisions` and stored plans. Neither is answerable from a golden.
+
+    This is HANDOFF §4 item 12's shape one level out. That item says a fixture built
+    in memory cannot produce the input that breaks. This one says a fixture built at
+    one *account size* cannot produce the plan the owner actually trades.
+
+
 ## 5. Boundaries that must survive any new feature
 
 - No execution code / trade-capable keys. Ever. (v1 hard boundary; revisit only

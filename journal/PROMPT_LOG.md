@@ -265,7 +265,25 @@ Two things worth recording for the next reader:
 **Model tier:** cheap (`config.persian_summary.model`, default `claude-sonnet-4-6`)
 **Source:** no spec. Owner brief, M11p, written from two supplied examples of the
 target style — not from a document.
-**Status:** in service from M11p. One live call, measured below.
+**Status:** in service from M11p. Three live calls, measured below.
+
+### Amended in place on 2026-08-22, and why that is not a `v2`
+
+The owner's H1 addition — a second rail, on the verdict — needs the prompt to **mandate**
+the marker it checks, or the rail fires on true summaries. That is a behaviour change,
+and CLAUDE.md says a behaviour change is a new file.
+
+It is authored into `v1` anyway, on the precedent recorded for `fable_v1`'s rule 8 at the
+top of this log: the version had **not been in service**. It was never deployed, no stored
+`prompt_version` row anywhere carries it, and nothing downstream can compare `v1` against
+`v1`. A `persian_summary_v2` here would leave a dead `v1` in `available()` for ever and
+give `config.persian_summary.prompt_version` a choice with no evidence behind it.
+
+**The difference from the `fable_v1` precedent, stated because it is real:** this file
+*had* run against the live model once before it was amended, so a measurement existed
+that the amendment invalidated. It was therefore **re-measured**, and every figure below
+describes the bytes now on disk. No number in this log or in journal/M11p_REPORT.md
+describes a version that no longer exists.
 
 ### It is not an analyst prompt, and the file says so twice
 
@@ -287,7 +305,7 @@ subtraction exists because one analysis produces one `signals` row *per approved
 a rewrite of a whole card could never be shared between two users without showing one of
 them the other's position size.
 
-### The numbers rule, and why the prompt is the smaller half of it
+### Two rails, and the prompt is the smaller half of both
 
 HARD BOUNDARIES 2–4 say: copy every number character-for-character, never recompute,
 never round, never reformat, western digits only, and never write a digit that is not on
@@ -302,6 +320,38 @@ row is still written because the money was still spent.
 The prompt is a request. The check is the rail. If the two ever disagreed about a stop
 price, the owner would have two systems telling him different things about real money —
 so the design assumes the request will one day be ignored.
+
+### The verdict rail (H1), and why it is a marker and not a vocabulary
+
+The numbers rail is **structurally blind** to the failure that would matter most: a
+`WATCHLIST` rewritten as an encouraging card. Softening a verdict invents no number, so
+nothing that counts numbers can see it. HARD BOUNDARY 5 said so in words; now it also
+says so mechanically, and `check_verdict` enforces it.
+
+**Where it actually bites.** A signal card exists only for a gate-approved plan, so on
+that surface the expected verdict is a constant and this rail is weak — it catches the
+safe-direction mirror, an approved setup described discouragingly. The surface that
+matters is `/pulse SYMBOL`, which renders `WATCHLIST` and `NO_SETUP` — **and which
+carries almost no numbers at all.** Of the fifteen numeric tokens on the golden pulse
+card, six are parts of a date, two are confidence and four are timeframe labels; three
+are levels, all from prose. So on the one surface where a softened verdict is reachable,
+the numbers rail admits nearly anything and this is the only rail there is.
+
+**One leading character, not a phrase list.** Persian has many good ways to say "do not
+buy" — نخر, صبر کن, فقط تماشا, وارد نشو, دست نگه دار — and a fixed *phrase* vocabulary
+would reject the ones nobody thought of. That is a rail firing wrongly on a true summary,
+which is worse than the gap it closes. A single leading emoji can be mandated exactly, it
+costs the writing nothing, the owner's own examples already open that way, and the first
+live call produced one **before it was asked to**. `✅` is actionable; `❌ ⛔ 👀` are not;
+the two sets are asserted disjoint.
+
+**The verdict is never read out of the text.** It is supplied by the caller from the
+report the card was rendered from. A check that read the model's own answer to decide
+what the model was supposed to say would be agreeing with itself.
+
+**What it does not prove**, recorded as a test rather than as a comment: it checks the
+*marker*, not the meaning. `❌ بخر` passes. Catching that needs the phrase vocabulary this
+deliberately does not have.
 
 **Counting in words is the piece that makes the rail practical.** Without it, a model
 writing "دو دلیل" as "2 دلیل" would fail the check on a number that is not a market claim
@@ -324,44 +374,62 @@ Why it is needed at all: a friendlier card in the reader's own language is trust
 no risk engine behind it. Being easier to read is exactly why it has to point back at the
 authority.
 
-### First run — 2026-08-22, and the cost was measured before the rails were set
+### Live runs — 2026-08-22, three calls, and the rails were set from them
 
-`python -m sentinel.tools.persian_summary_cost --call`, `claude-sonnet-4-6`, against
-`tests/fixtures/golden_cycle/card_shared.txt` — the real renderer's bytes from recorded
-real market data, in the exact form the handler sends.
+`python -m sentinel.tools.persian_summary_cost --call`, `claude-sonnet-4-6`. Run 1 was
+against the pre-amendment file and is **superseded**; it is listed because the count of
+calls, and one of their outcomes, is evidence about the rails.
 
-| | |
-|---|---|
-| outcome | OK on the first attempt, no retry |
-| latency | 13.3 s against a 60 s timeout |
-| input | 1,426 tokens (no cache read — a press is a cold call) |
-| output | 480 tokens |
-| length | 655 characters against a 900 ceiling |
-| numbers check | **PASS** — 6 numeric tokens in the output, all present in the card |
-| cost | **$0.011478 per press** |
+| | run 1 (superseded) | run 2 — WATCHLIST | run 3 — CANDIDATE |
+|---|---|---|---|
+| card | `card_shared.txt` | rendered `/pulse` WATCHLIST | `card_shared.txt` |
+| prompt bytes | pre-amendment | current | current |
+| cache | cold | **warm** (2 min after run 2's sibling) | cold |
+| input / write / read | 1,426 / 0 / 0 | 389 / 0 / 1,031 | 594 / **1,031** / 0 |
+| output | 480 | 373 | 436 |
+| latency | 13.3 s | 9.7 s | 12.6 s |
+| length | 655 chars | 509 chars | 611 chars |
+| verdict rail | (did not exist) | **PASS** | **PASS** |
+| numbers rail | PASS | **PASS** | **PASS** |
+| cost | $0.011478 | **$0.007071** | **$0.012188** |
 
-Both spend rails were set **from** this figure and not before it, which is
-journal/M10d_REPORT.md §8's rule obeyed rather than quoted: two users × 20 generations =
-$0.46, inside a $0.50 deployment-wide daily ceiling.
+**The rails are set on the cold figure, $0.012188** — the pessimistic one, and the one an
+isolated press pays. Two users × 20 generations = $0.4875, under a $0.60 deployment-wide
+daily ceiling. journal/M10d_REPORT.md §8's rule obeyed rather than quoted.
 
-**No cache read, and that is structural rather than a miss.** The analyst pays one cache
-write and two reads per cycle because three pairs share one system block within the
-five-minute window. Presses are minutes or hours apart, so the system block is cold
-every time. Any future estimate of this path's cost that borrows the analyst's cache
-arithmetic will be wrong in the cheap direction.
+**The amendment turned caching ON, and that is a mechanism no token count would have
+predicted.** The system prompt was ~700 tokens; Anthropic does not cache a block below
+1,024, so `cache_control` was a **no-op** and run 1 paid full input. H1's verdict rule
+pushed the block to 1,031 tokens, and run 3 paid a 1,031-token cache **write** at
+$3.75/Mtok — a per-press cost 6% *higher* than run 1 despite a shorter card — while run 2
+read the same block back at $0.3/Mtok and cost 42% less. A longer prompt made isolated
+presses dearer and bursts much cheaper. This is M10d §8's lesson arriving from the
+opposite direction: the estimate there missed a mechanism that made things cheaper, and
+here a mechanism made them dearer.
+
+**A fourth call, not in the table, is the one worth remembering.** The first attempt at
+run 2 was rejected by the **numbers rail** — the model wrote a figure that was not on the
+card — and it could not be diagnosed, because the tool discarded the text of a rejected
+summary and then re-checked the empty string, printing `PASS` about nothing. Both the
+result type and the tool now carry the rejected text. So of **three** post-amendment
+calls, one tripped a rail: too small a sample to be a rate, and large enough to say the
+rails are not decorative.
 
 ### What to watch
 
-- **How often the numbers check rejects a summary.** One call is a cost, not a failure
-  rate. A rejection rate above a few percent means the prompt needs `v2`, not that the
-  check needs loosening.
-- **Whether the verdict ever moves.** A `WATCHLIST` that reads, in friendlier words,
-  like a buy is the one failure that would be invisible in review and expensive in
-  practice — and the numbers check cannot see it, because a softened verdict invents no
-  number. It is the reason HARD BOUNDARIES 5 is worded as an absolute.
-- **Length.** 655 characters against a 900 ceiling on a three-rung crypto card; a forex
+- **How often each rail rejects a summary.** Three calls, one rejection, is not a rate.
+  `persian.number_check_failed` and `persian.verdict_check_failed` are the two log
+  events. A rejection rate above a few percent means the prompt needs `v2` — **not that
+  a rail needs loosening**, which is the pressure to expect and refuse.
+- **Whether the verdict ever moves in a way the marker rail cannot see.** `❌ بخر`
+  passes. If that ever shows up, the answer is a phrase vocabulary and its false-failure
+  cost, decided on evidence.
+- **Length.** 611 characters against a 900 ceiling on a three-rung crypto card; a forex
   card is longer. An overrun is logged (`persian.over_length`) and still sent, because
   length is a style failure and not a safety one.
+- **Whether the system prompt stays above 1,024 tokens.** It is at 1,031. Trimming forty
+  tokens from it would silently switch caching off and make bursts of presses ~70% dearer
+  — a cost change with no cost-shaped cause, which is the hardest kind to attribute.
 
 ### Rollback
 

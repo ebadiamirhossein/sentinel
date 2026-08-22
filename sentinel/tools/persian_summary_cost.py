@@ -11,17 +11,30 @@ for a **higher spend rail** — a permanent widening bought with an imaginary nu
 **The input is the golden card**, ``tests/fixtures/golden_cycle/card_shared.txt``: the
 bytes the real renderer produces from recorded real market data, in the ``shared_only``
 form the handler sends. Not a hand-written mock — the shape, the length and the number
-of numeric tokens are exactly what a live press would carry.
+of numeric tokens are exactly what a live press would carry. ``--card`` takes any
+other rendered card and ``--verdict`` supplies the ``candidate_status`` the verdict rail
+is checked against — which is what matters for a ``/pulse SYMBOL`` card, the only surface
+where a non-CANDIDATE verdict is reachable at all.
 
 **What this cannot tell you**, printed with the results rather than buried here:
 
-* one call is not a **failure rate**. Whether the model reliably obeys the numbers rule
-  is a question about many calls, and the check is what makes being wrong survivable.
+* one call is not a **failure rate**. Whether the model reliably obeys the numbers and
+  verdict rules is a question about many calls, and the checks are what make being wrong
+  survivable. A refusal is printed in full, because a rejection rate nobody can diagnose
+  is a number nobody can act on.
 * the length of a Persian summary varies with how much the card had to say, so the
   output figure is one sample, not a mean.
 
 There is no ``--count`` mode. The output side is where the money is here — a ~1k-token
 card in against a few hundred tokens of Persian out — and ``count_tokens`` cannot see it.
+
+**Every usage component is printed, cache write included.** It was not, for one
+revision, and the omission immediately hid a real mechanism: the system prompt sat at
+~700 tokens, Anthropic does not cache a block below 1,024, so ``cache_control`` was a
+no-op and every press paid full input at $3/Mtok. The M11p H1 amendment pushed the block
+to 1,031 tokens, caching switched on, and the per-press cost went **up** by the write
+($3.75/Mtok) while a second press inside the five-minute window became much cheaper. A
+cost line showing only ``input`` and ``cache read`` reports that change as a mystery.
 """
 
 from __future__ import annotations
@@ -31,7 +44,7 @@ import asyncio
 import time
 from pathlib import Path
 
-from sentinel.analyst.persian.numbers import check_numbers, numeric_tokens
+from sentinel.analyst.persian.numbers import numeric_tokens
 from sentinel.analyst.persian.summariser import PersianSummariser
 from sentinel.core.config import Settings, load_settings
 from sentinel.core.logging import configure_logging
@@ -40,7 +53,7 @@ from sentinel.llm.client import AnthropicClient
 DEFAULT_CARD = Path("tests/fixtures/golden_cycle/card_shared.txt")
 
 
-async def call(settings: Settings, card: str) -> None:
+async def call(settings: Settings, card: str, candidate_status: str) -> None:
     key = settings.secrets.anthropic_api_key
     if key is None:
         raise SystemExit("ANTHROPIC_API_KEY is not set")
@@ -50,7 +63,9 @@ async def call(settings: Settings, card: str) -> None:
     summariser = PersianSummariser(client, config)
     started = time.monotonic()
     try:
-        result = await summariser.summarise(card, symbol="BTCUSDT")
+        result = await summariser.summarise(
+            card, symbol="BTCUSDT", candidate_status=candidate_status
+        )
     finally:
         elapsed = time.monotonic() - started
         await client.aclose()
@@ -69,10 +84,23 @@ async def call(settings: Settings, card: str) -> None:
     )
     print(f"PER-PRESS COST     ${result.call.cost_usd_estimate}")
 
-    check = check_numbers(card=card, summary=result.text)
+    # The rails' OWN verdicts, not a re-derivation. Re-running them here would report
+    # whatever this file happens to compute rather than what the summariser decided —
+    # and on a rejection it would run against text the summariser had already refused,
+    # which is how a tool comes to print PASS about nothing.
     print(f"\nnumbers on the card    {len(set(numeric_tokens(card)))}")
     print(f"numbers in the summary {len(set(numeric_tokens(result.text)))}")
-    print(f"numbers check          {'PASS' if check.ok else 'FAIL'} — {check.detail}")
+    if result.verdict is not None:
+        state = "PASS" if result.verdict.ok else "FAIL"
+        print(f"card verdict           {candidate_status}  ({result.verdict.expected.value})")
+        print(f"verdict rail           {state} — {result.verdict.detail}")
+    else:
+        print("verdict rail           not reached")
+    if result.check is not None:
+        state = "PASS" if result.check.ok else "FAIL"
+        print(f"numbers rail           {state} — {result.check.detail}")
+    else:
+        print("numbers rail           not reached — the verdict rail refused first")
 
     cap = config.persian_summary.daily_usd_cap
     per_press = result.call.cost_usd_estimate
@@ -80,17 +108,27 @@ async def call(settings: Settings, card: str) -> None:
         print(f"\npresses inside the ${cap} daily cap: {int(cap / per_press)}")
     print(
         "\nOne call is a COST, not a failure rate: whether the model reliably obeys the\n"
-        "numbers rule is a question about many calls, and the rail is what makes being\n"
-        "wrong survivable. The summary length is one sample and varies with the card."
+        "numbers and verdict rules is a question about many calls, and the rails are what\n"
+        "make being wrong survivable. The length is one sample and varies with the card."
     )
-    print("\n" + "=" * 72)
-    print(result.text if result.text else "(no text — see outcome above)")
+    banner = "WHAT THE MODEL RETURNED" if result.ok else "REFUSED — NOT SENT, NOT STORED"
+    print(f"\n===== {banner} " + "=" * max(0, 66 - len(banner)))
+    print(result.text if result.text else "(the model returned nothing)")
     print("=" * 72)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--card", type=Path, default=DEFAULT_CARD)
+    parser.add_argument(
+        "--verdict",
+        default="CANDIDATE",
+        help=(
+            "the card's candidate_status, as the handler reads it from the stored "
+            "report. The verdict rail is checked against THIS, never against the card "
+            "text and never against the model's answer."
+        ),
+    )
     parser.add_argument("--call", action="store_true", help="make ONE real API call")
     args = parser.parse_args()
 
@@ -106,7 +144,7 @@ def main() -> None:
             "\nthe money is, and count_tokens cannot see it."
         )
         return
-    asyncio.run(call(settings, card))
+    asyncio.run(call(settings, card, args.verdict))
 
 
 if __name__ == "__main__":

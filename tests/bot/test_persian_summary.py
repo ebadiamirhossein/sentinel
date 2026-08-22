@@ -56,8 +56,13 @@ NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 TZ = ZoneInfo("Europe/Vilnius")
 
 #: A plausible answer, and every number in it is on the SOLUSDT card the doubles build.
+#:
+#: It opens with ✅ because a **signal card only ever exists for a CANDIDATE** — the
+#: gate returns ``NOT_A_CANDIDATE`` before a plan is built — so the verdict rail expects
+#: an actionable marker on this surface. ``/pulse SYMBOL`` is where ❌ belongs, and that
+#: is the surface the rail exists for.
 PERSIAN = (
-    "❌ الان نخر — فقط تماشا کن\n"
+    "✅ شرایط خوبه — ولی با احتیاط\n"
     "✅ روند چهارساعته هنوز روبه‌بالاست\n"
     "⛔ ترس و طمع روی 74 است و بالای سر قیمت رزیستنس دارد\n"
     "🔑 اگر قیمت به 83.10 برگشت و همان‌جا ماند، اونوقت ورود معنی دارد\n"
@@ -157,6 +162,15 @@ def ok_response(text: str = PERSIAN) -> dict[str, Any]:
     return message_payload(text, model="claude-sonnet-4-6", input_tokens=900, output_tokens=210)
 
 
+#: The right marker, and a number that is on no card. Trips the numbers rail only.
+# Built with an explicit join, not a "\n" inside one literal: ruff's ambiguous-
+# character rule fires on a Persian letter sitting directly after an ASCII escape,
+# and the formatter re-joins adjacent literals, so this is the shape that survives both.
+INVENTED = "\n".join(["✅ شرایط خوبه", "هدف بعدی 99999.0 است"])
+
+#: Every number on the card, and the wrong verdict for it. Trips the verdict rail only.
+SOFTENED_FOR_A_WATCHLIST = "\n".join(["❌ الان نخر — فقط تماشا کن", "صبر کن."])
+
 SIGNAL_PRESS = PersianCallback(source_kind=PersianSourceKind.SIGNAL, source_id=SIGNAL_ID)
 
 
@@ -255,7 +269,7 @@ async def test_the_call_is_recorded_as_its_own_kind(store: FakeStore) -> None:
 async def test_an_invented_number_is_never_sent(store: FakeStore) -> None:
     """The rail, not the request. If the two cards disagreed about a level, the owner
     would have two systems telling him different things about real money."""
-    ctx = build_ctx(store, [ok_response("هدف بعدی 99999.0 است")])
+    ctx = build_ctx(store, [ok_response(INVENTED)])
     query = await press(ctx)
 
     assert query.message.replies == [persian_message(COULD_NOT_PRODUCE)]
@@ -265,18 +279,87 @@ async def test_an_invented_number_is_never_sent(store: FakeStore) -> None:
 async def test_a_rejected_summary_still_records_what_it_cost(store: FakeStore) -> None:
     """The money was spent. A failure that left no audit row would make the one class
     of call worth reviewing the one class with no trace."""
-    ctx = build_ctx(store, [ok_response("هدف بعدی 99999.0 است")])
+    ctx = build_ctx(store, [ok_response(INVENTED)])
     await press(ctx)
     assert len(store.llm_calls) == 1
     assert store.llm_calls[0].status is LLMCallStatus.OK
 
 
 async def test_a_rejection_can_be_retried_because_nothing_was_cached(store: FakeStore) -> None:
-    ctx = build_ctx(store, [ok_response("هدف بعدی 99999.0 است"), ok_response()])
+    ctx = build_ctx(store, [ok_response(INVENTED), ok_response()])
     await press(ctx)
     persian._LAST_PRESS.clear()
     query = await press(ctx)
     assert PERSIAN.splitlines()[0] in query.message.replies[0]
+
+
+async def test_a_verdict_that_disagrees_with_the_card_is_never_sent(
+    store: FakeStore,
+) -> None:
+    """The rail the numbers check cannot stand in for.
+
+    The card here is a signal card, so it is a CANDIDATE by construction; this answer
+    opens with a do-not-buy marker. Every number in it is fine — there are none — so
+    the numbers rail passes it and the verdict rail is the only thing between the reader
+    and a card that contradicts the one above it.
+    """
+    ctx = build_ctx(store, [ok_response(SOFTENED_FOR_A_WATCHLIST)])
+    query = await press(ctx)
+
+    assert query.message.replies == [persian_message(COULD_NOT_PRODUCE)]
+    assert store.persian == {}, "a rejected summary must not be cached"
+    assert len(store.llm_calls) == 1, "the money was spent; the audit row is written"
+
+
+async def test_the_verdict_rail_is_checked_against_the_stored_report(
+    store: FakeStore, repo_config: AppConfig
+) -> None:
+    """It is not parsed out of the card and not read out of the model's answer.
+
+    Proved by moving the *stored* verdict while the card and the answer stay put: the
+    same summary that passes for a CANDIDATE must fail once the report says WATCHLIST.
+    A rail that read the model's text to decide what the model should have said would
+    be agreeing with itself and could not tell these two runs apart.
+    """
+    from sentinel.analyst.persian.summariser import PersianSummariser, SummaryOutcome
+    from tests.anthropic_double import scripted_transport
+
+    cfg = load_config()
+    # A numberless answer, so the numbers rail cannot be what separates the two runs.
+    answer = "\n".join(["✅ شرایط خوبه — ولی با احتیاط", "فعلا همینه."])
+    summariser = PersianSummariser(
+        make_client(
+            scripted_transport([ok_response(answer), ok_response(answer)], Recorder()), cfg
+        ),
+        cfg,
+    )
+    card = "🛑 <b>Stop: 81.20</b>"
+    approved = await summariser.summarise(card, symbol="SOLUSDT", candidate_status="CANDIDATE")
+    watching = await summariser.summarise(card, symbol="SOLUSDT", candidate_status="WATCHLIST")
+
+    assert approved.outcome is SummaryOutcome.OK
+    assert watching.outcome is SummaryOutcome.VERDICT_REJECTED
+    assert approved.text == watching.text, "the model said the same thing both times"
+
+
+async def test_a_rejection_keeps_the_text_so_it_can_be_diagnosed(store: FakeStore) -> None:
+    """ "Watch the rejection rate" is unactionable if a rejection discards what was
+    rejected. The text is carried on the result and never sent — ``ok`` is what decides
+    that, and the two tests above assert the sending half."""
+    from sentinel.analyst.persian.summariser import PersianSummariser
+    from tests.anthropic_double import scripted_transport
+
+    cfg = load_config()
+    summariser = PersianSummariser(
+        make_client(scripted_transport([ok_response(INVENTED)], Recorder()), cfg), cfg
+    )
+    result = await summariser.summarise(
+        "🛑 <b>Stop: 81.20</b>", symbol="SOLUSDT", candidate_status="CANDIDATE"
+    )
+    assert not result.ok
+    assert result.text == INVENTED
+    assert result.check is not None and result.check.foreign_tokens == ("99999.0",)
+    assert result.verdict is not None and result.verdict.ok
 
 
 async def test_an_api_failure_answers_in_persian_not_in_english(store: FakeStore) -> None:

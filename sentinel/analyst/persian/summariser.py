@@ -1,5 +1,5 @@
 """Turn one rendered card into Persian, and refuse to hand back a summary that
-invented a number.
+invented a number or moved the verdict.
 
 This is the seam. It takes **text** and returns **text**: it is handed the card the
 owner is looking at and knows nothing about signals, users, chats or the database. The
@@ -9,9 +9,11 @@ so the generation can be tested, priced and re-run from a string alone -- which 
 
 **No structured output.** The screener and the analyst use it because their answers are
 data with a shape. This answer is prose, and a schema would only be a wrapper object to
-unwrap. What replaces it is the numbers check, which is a stronger contract than any
-schema could express: not "the fields are the right type" but "every figure came from
-the input".
+unwrap. What replaces it is the pair of rails in
+:mod:`sentinel.analyst.persian.numbers`, which express a stronger contract than any
+schema could: not "the fields are the right type" but "every figure came from the input"
+and "the verdict still says what the card says". Both fail closed, and they cover each
+other -- softening a verdict invents no number, and an invented price moves no verdict.
 """
 
 from __future__ import annotations
@@ -21,7 +23,12 @@ from enum import StrEnum
 
 from anthropic.types import MessageParam
 
-from sentinel.analyst.persian.numbers import NumberCheck, check_numbers
+from sentinel.analyst.persian.numbers import (
+    NumberCheck,
+    VerdictCheck,
+    check_numbers,
+    check_verdict,
+)
 from sentinel.analyst.prompts.loader import load_prompt
 from sentinel.core.config import AppConfig
 from sentinel.core.logging import get_logger
@@ -56,6 +63,10 @@ class SummaryOutcome(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
     #: Produced, and rejected by the numbers check. Fails closed: not sent, not stored.
     NUMBERS_REJECTED = "NUMBERS_REJECTED"
+    #: Produced, and its verdict line disagrees with the card's verdict. Fails closed
+    #: for the same reason: a WATCHLIST that reads as a buy is the one failure the
+    #: numbers check cannot see, because softening a verdict invents no number.
+    VERDICT_REJECTED = "VERDICT_REJECTED"
     #: The call succeeded and returned nothing usable.
     EMPTY = "EMPTY"
 
@@ -64,15 +75,23 @@ class SummaryOutcome(StrEnum):
 class SummaryResult:
     """The outcome, the text if there is one, and the audit row either way.
 
-    ``call`` is present on every outcome, including the failures, because the money was
-    spent on every outcome. A result type that dropped the audit row on failure would
-    make the one class of call worth reviewing the one class that left no trace.
+    ``call``, ``text``, ``check`` and ``verdict`` are present on every outcome,
+    including the failures, because the money was spent on every outcome. A result type
+    that dropped them on failure would make the one class of call worth reviewing the
+    one class that left no trace — and "watch the rejection rate" is undiagnosable if a
+    rejection discards the text that was rejected.
+
+    **``text`` is what the model returned. Whether it may be SENT is :attr:`ok`.** The
+    two are deliberately separate: a caller that wants to show a rejected summary to an
+    operator should be able to, and a caller that sends one is making an obvious
+    mistake rather than an invisible one.
     """
 
     outcome: SummaryOutcome
     call: LLMCall
     text: str = ""
     check: NumberCheck | None = None
+    verdict: VerdictCheck | None = None
 
     @property
     def ok(self) -> bool:
@@ -104,7 +123,14 @@ class PersianSummariser:
         self._config = config
         self.prompt_version = config.persian_summary.prompt_version
 
-    async def summarise(self, card: str, *, symbol: str) -> SummaryResult:
+    async def summarise(self, card: str, *, symbol: str, candidate_status: str) -> SummaryResult:
+        """``candidate_status`` comes from the report the card was rendered from.
+
+        It is **not** parsed out of the card and is **not** shown to the model. The
+        model works the verdict out from the card, as a reader would; the rail knows it
+        independently. A check that read the model's own text to decide what the model
+        was supposed to say would be agreeing with itself.
+        """
         settings = self._config.persian_summary
         system = load_prompt(self.prompt_version)
         text = user_message(card)
@@ -136,6 +162,26 @@ class PersianSummariser:
             log.warning("persian.empty", symbol=symbol, detail="the model returned no text")
             return SummaryResult(outcome=SummaryOutcome.EMPTY, call=result.call)
 
+        verdict = check_verdict(summary=summary, candidate_status=candidate_status)
+        if not verdict.ok:
+            # Fails CLOSED, like the numbers rail beside it. A WATCHLIST rewritten as an
+            # encouraging card is the failure that would be invisible in review and
+            # expensive in practice, and `/pulse SYMBOL` -- the only surface where a
+            # non-CANDIDATE verdict is reachable at all -- carries almost no numbers for
+            # the other rail to constrain.
+            log.warning(
+                "persian.verdict_check_failed",
+                symbol=symbol,
+                candidate_status=candidate_status,
+                detail=verdict.detail,
+            )
+            return SummaryResult(
+                outcome=SummaryOutcome.VERDICT_REJECTED,
+                call=result.call,
+                text=summary,
+                verdict=verdict,
+            )
+
         check = check_numbers(card=card, summary=summary)
         if not check.ok:
             # Fails CLOSED. The owner reading two different stop prices for one trade is
@@ -148,7 +194,11 @@ class PersianSummariser:
                 foreign_tokens=list(check.foreign_tokens),
             )
             return SummaryResult(
-                outcome=SummaryOutcome.NUMBERS_REJECTED, call=result.call, check=check
+                outcome=SummaryOutcome.NUMBERS_REJECTED,
+                call=result.call,
+                text=summary,
+                check=check,
+                verdict=verdict,
             )
 
         if len(summary) > settings.max_output_chars:
@@ -163,7 +213,13 @@ class PersianSummariser:
                 ceiling=settings.max_output_chars,
             )
 
-        return SummaryResult(outcome=SummaryOutcome.OK, call=result.call, text=summary, check=check)
+        return SummaryResult(
+            outcome=SummaryOutcome.OK,
+            call=result.call,
+            text=summary,
+            check=check,
+            verdict=verdict,
+        )
 
 
 __all__ = [

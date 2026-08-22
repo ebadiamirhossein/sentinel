@@ -992,15 +992,20 @@ class PersianSummaryConfig(_Strict):
     max_output_chars: int = 900
     timeout_seconds: float = 60.0
     #: Both numbers are MEASURED-then-set, not estimated (journal/M10d_REPORT.md §8).
-    #: One real call on the golden card, 2026-08-22: 1,426 in / 480 out on
-    #: ``claude-sonnet-4-6`` = **$0.011478** a press, 13.3 s, 655 characters.
+    #: One real call on the golden card, 2026-08-22, ``claude-sonnet-4-6``, cold cache:
+    #: 594 in + 1,031 cache write / 436 out = **$0.012188** a press, 12.6 s, 611 chars.
     #:
-    #: 20 per user is the rail that actually bites: two approved users x 20 =
-    #: **$0.46**, just inside the 0.50 ceiling, so the ceiling is the backstop for a
-    #: third user rather than a second rail on the same two. 0.50 is 4% of an ordinary
-    #: $12.42 day and 16% of the ~$3.19 of headroom forex has under the global ceiling
-    #: after crypto's reserved floor -- which is the number this is really protecting.
-    daily_usd_cap: Dec = Decimal("0.50")
+    #: A press inside the five-minute cache window is much cheaper -- a second measured
+    #: call read the system block back for $0.007071 -- so the rail is set on the COLD
+    #: figure, which is the pessimistic one and the one an isolated press pays.
+    #:
+    #: 20 per user is the rail that bites: two approved users x 20 = **$0.4875**, with
+    #: 0.60 above it so the per-user cap reliably exhausts first however long a card
+    #: runs. The ceiling is the backstop for a third user rather than a second rail on
+    #: the same two. 0.60 is 4.8% of an ordinary $12.42 day and 19% of the ~$3.19 of
+    #: headroom forex has under the global ceiling after crypto's reserved floor --
+    #: which is the number this is really protecting.
+    daily_usd_cap: Dec = Decimal("0.60")
     daily_generations_per_user: int = 20
     #: A press already in flight is awaited rather than duplicated; this covers the
     #: narrower case of a second tap arriving just after the first one finished.

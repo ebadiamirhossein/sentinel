@@ -1,6 +1,6 @@
-"""The numbers rail (M11p §B). If this file is wrong, two systems can tell the owner
-different things about a stop price, which is the failure this feature exists to make
-impossible.
+"""Both Persian rails (M11p §B and the verdict rail). If this file is wrong, two
+systems can tell the owner different things about a stop price — or about whether he
+should be buying at all — which is the failure this feature exists to make impossible.
 
 The tests are written against the **real golden card**, not a hand-written string: the
 tokens a card actually carries -- ``0.049``, ``64,150``-style grouping, ``EMA200``,
@@ -15,10 +15,14 @@ from pathlib import Path
 import pytest
 
 from sentinel.analyst.persian.numbers import (
+    VERDICT_MARKERS,
+    VerdictClass,
     canonical,
     check_numbers,
+    check_verdict,
     numeric_tokens,
     plain_text,
+    verdict_class,
 )
 
 CARD = (Path(__file__).resolve().parents[1] / "fixtures" / "golden_cycle" / "card.txt").read_text(
@@ -144,3 +148,111 @@ def test_detail_names_which_rule_broke() -> None:
     assert "not on the card" in check_numbers(card="a 1", summary="b 2").detail
     assert "non-ASCII" in check_numbers(card="a 1", summary="۲").detail
     assert "every number" in check_numbers(card="a 1", summary="a 1").detail
+
+
+# ── the verdict rail (M11p, owner requirement H1) ───────────────────────────
+#
+# The numbers rail above is structurally blind to a WATCHLIST rewritten as an
+# encouraging card, because softening a verdict invents no number. This is the other
+# rail, and on `/pulse SYMBOL` -- the only surface where a non-CANDIDATE verdict is
+# reachable at all -- it is very nearly the only rail there is: of the fifteen numeric
+# tokens on that card, six are parts of a date, two are confidence and four are
+# timeframe labels.
+
+#: **Real model output.** `claude-sonnet-4-6`, `persian_summary_v1`, 2026-08-22, from
+#: one live call on a rendered WATCHLIST `/pulse SOLUSDT` card — 389 in / 373 out,
+#: 9.7 s, both rails PASS. Kept verbatim so the teeth test below alters something the
+#: model actually wrote rather than something a test author invented to be caught.
+REAL_WATCHLIST_SUMMARY = """❌ الان نخر — فقط تماشا کن
+
+👀 چی خوبه
+- روند 4 ساعته هنوز صعودیه
+- قیمت داره به EMA50 و سطح بریک‌اوت 82.4 پولبک می‌زنه
+- Open Interest داره با قیمت بالا میره
+
+⛔ چرا الان نه
+- شاخص ترس و طمع روی 74 (طمع) — یعنی بازار شلوغه و ریسک ازدحام لانگ بالاست
+- رزیستنس مهم روی 84.6 نزدیکه
+
+🔑 شرط ورود
+اگر قیمت بالای 82.4 تثبیت شد و شرایط بهتر شد، اونوقت می‌شه دنبال پلن گشت.
+
+❌ چی خرابش می‌کنه
+کندل 1 ساعته زیر 81.40 بسته بشه — ایده تموم‌شده.
+
+فعلاً این سهم مثل ماشینیه که موتورش گرم‌شده ولی هنوز چراغ سبز نداره — صبر کن."""
+
+
+def test_the_real_watchlist_summary_passes() -> None:
+    """The baseline. Without this, the teeth test below could pass because the rail
+    rejects everything."""
+    assert check_verdict(summary=REAL_WATCHLIST_SUMMARY, candidate_status="WATCHLIST").ok
+
+
+def test_the_verdict_rail_would_catch_a_watchlist_rewritten_as_a_buy() -> None:
+    """**The proof of teeth**, and it alters real model output rather than a fixture
+    written to be caught.
+
+    One line changes — the opening verdict — from "don't buy, just watch" to "conditions
+    are good, you can go in". Every other word, and every number, is untouched: the
+    numbers rail passes it, which is the point. Softening a verdict invents no number,
+    so the rail that counts numbers cannot see this and never could.
+    """
+    softened = REAL_WATCHLIST_SUMMARY.replace(
+        "❌ الان نخر — فقط تماشا کن", "✅ شرایط خوبه — می‌تونی وارد شی"
+    )
+    assert softened != REAL_WATCHLIST_SUMMARY, "the substitution did not apply"
+
+    # The numbers rail is untroubled by it, and this is the sharpest way to say so:
+    # the alteration changed NO NUMBER AT ALL, so no rail built on numbers can see it,
+    # whatever card it is checked against.
+    assert numeric_tokens(softened) == numeric_tokens(REAL_WATCHLIST_SUMMARY)
+
+    check = check_verdict(summary=softened, candidate_status="WATCHLIST")
+    assert not check.ok
+    assert "does not start with" in check.detail
+
+
+def test_a_candidate_card_described_discouragingly_is_also_caught() -> None:
+    """The mirror. Safe-direction, and still two systems disagreeing about one setup."""
+    assert not check_verdict(summary="❌ الان نخر", candidate_status="CANDIDATE").ok
+
+
+@pytest.mark.parametrize("status", ["WATCHLIST", "NO_SETUP", "watchlist", "something_new"])
+def test_everything_that_is_not_a_candidate_is_not_actionable(status: str) -> None:
+    """Including a status this rail has never heard of. A verdict it cannot classify
+    must not be allowed to read as a buy — the safe direction is the default."""
+    assert verdict_class(status) is VerdictClass.NOT_YET
+    assert check_verdict(summary="❌ صبر کن", candidate_status=status).ok
+    assert not check_verdict(summary="✅ بخر", candidate_status=status).ok
+
+
+def test_the_two_marker_sets_are_disjoint() -> None:
+    """Structural, so the vocabulary cannot drift into a marker that means both."""
+    actionable = VERDICT_MARKERS[VerdictClass.ACTIONABLE]
+    not_yet = VERDICT_MARKERS[VerdictClass.NOT_YET]
+    assert actionable and not_yet
+    assert not (actionable & not_yet)
+
+
+def test_a_heading_before_the_verdict_line_fails() -> None:
+    """The prompt says nothing may come before the marker. A summary that buried its
+    verdict under a title would be one this rail could not read."""
+    assert not check_verdict(summary="خلاصه سیگنال\n\n❌ الان نخر", candidate_status="WATCHLIST").ok
+
+
+def test_leading_blank_lines_are_not_a_heading() -> None:
+    """Whitespace is not content. The rail reads the first NON-EMPTY line, so a model
+    that starts with a newline is not punished for formatting."""
+    assert check_verdict(summary="\n\n  ❌ الان نخر", candidate_status="WATCHLIST").ok
+
+
+def test_the_rail_checks_the_marker_and_not_the_meaning() -> None:
+    """Stated as a test so the limit is recorded where somebody will read it.
+
+    ``❌ بخر`` — "don't-buy marker, buy text" — PASSES. Catching that needs a phrase
+    vocabulary, and a phrase vocabulary is where false failures live: Persian has many
+    good ways to say "do not buy" and a fixed list rejects the ones nobody thought of.
+    A rail that fires wrongly on a true summary is worse than a documented gap.
+    """
+    assert check_verdict(summary="❌ بخر", candidate_status="WATCHLIST").ok

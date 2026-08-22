@@ -155,6 +155,24 @@ def test_the_persian_prompt_forbids_moving_the_verdict() -> None:
     assert "WATCHLIST means watch and do not buy" in text
 
 
+def test_the_persian_prompt_mandates_the_marker_the_verdict_rail_checks() -> None:
+    """The rail and the prompt have to name the same characters, or the rail fires on
+    true summaries — which is worse than no rail at all.
+
+    Asserted from the marker table rather than by re-typing the emoji here, so the two
+    cannot drift apart: adding a marker to :data:`VERDICT_MARKERS` without teaching the
+    prompt about it fails right here.
+    """
+    from sentinel.analyst.persian.numbers import VERDICT_MARKERS
+
+    text = load_prompt("persian_summary_v1")
+    for markers in VERDICT_MARKERS.values():
+        for marker in markers:
+            assert marker in text, marker
+    assert "Never ✅ on a WATCHLIST or NO_SETUP card" in text
+    assert "Nothing else may come before that character" in text
+
+
 def test_the_persian_prompt_never_asks_the_model_for_the_reference_line() -> None:
     """The line that says the English card is authoritative is appended by code.
 
