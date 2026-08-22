@@ -1,0 +1,25 @@
+🟢 LONG — BTCUSDT   [trend_pullback · intraday · conf 74]
+fable_v1 · 2026-08-18 15:00 EEST (12:00 UTC)
+
+📊 <b>Thesis</b>
+4h regime up, 1h pullback into demand, 15m reclaim with volume.
+
+⚠️ <b>Against:</b> Funding is mildly crowded long.
+
+🎯 <b>Plan</b>
+Entry ladder (limit orders) — last price 64100.0:
+  1) <b>64150.0</b> (0.08%) — 40% of risk
+  2) <b>63975.0</b> (-0.2%) — 35% of risk
+  3) <b>63800.0</b> (-0.47%) — 25% of risk
+  Weighted entry 64001.25 · avg fill 63961.5
+
+🛑 <b>Stop: 63450.0</b> (-0.86%)
+❌ Invalidation: 63450.0 — 1h close below 63450 breaks the demand shelf.
+🥅 TP1: <b>65100.0</b> (+1.72%) — 1.75R net (1.99R gross)
+🥅 TP2: <b>65900.0</b> (+2.97%) — 3.08R net (3.44R gross)
+🥅 TP3: <b>67000.0</b> (+4.69%) — 4.92R net (5.44R gross)
+
+📋 TP1: close 40%, move stop to breakeven. TP2: close 35%. TP3: close remainder or trail by 1xATR.
+⏳ Expires if unfilled: 2026-08-19 03:00 EEST (2026-08-19 00:00 UTC)
+
+<i>Research tool — not financial advice. Past stats ≠ future results.</i>

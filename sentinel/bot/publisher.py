@@ -43,9 +43,10 @@ from uuid import UUID
 
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InputMediaPhoto
 
+from sentinel.analyst.persian.models import PersianSourceKind
 from sentinel.bot.cards import signal_card
 from sentinel.bot.forex_cards import forex_signal_card
-from sentinel.bot.keyboards import decision_keyboard
+from sentinel.bot.keyboards import decision_keyboard, with_persian
 from sentinel.bot.models import MessageKind, PostedMessage, SignalRecord
 from sentinel.bot.plans import AnyPlan
 from sentinel.charts.models import ChartImage
@@ -270,7 +271,11 @@ class SignalPublisher:
             )
             return False
 
-        keyboard: InlineKeyboardMarkup = decision_keyboard(record.signal_id, record.decision)
+        keyboard: InlineKeyboardMarkup = with_persian(
+            decision_keyboard(record.signal_id, record.decision),
+            PersianSourceKind.SIGNAL,
+            record.signal_id,
+        )
         try:
             sent = await self._bot.send_message(
                 chat_id=chat_id,

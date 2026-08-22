@@ -70,13 +70,23 @@ def _side(direction: Direction) -> str:
     return "🟢 LONG" if direction is Direction.LONG else "🔴 SHORT"
 
 
-def forex_signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False) -> str:
+def forex_signal_card(
+    record: SignalRecord, tz: ZoneInfo, *, show_market: bool = False, shared_only: bool = False
+) -> str:
     """One forex signal, as the owner reads it.
 
     ``show_market`` follows ``AppConfig.multi_market`` exactly as the crypto card does.
     It defaults to **off** so that a caller which forgets cannot tag a card in a
     single-market deployment — the same default, and the same reasoning, as
     ``cards.signal_card``.
+
+    ``shared_only`` (M11p) is the same subtraction ``cards.signal_card`` documents, over
+    this market's own per-user figures: notional, margin, the euro pip value, the
+    leverage line and the cost block all scale with one user's capital. Two lines that
+    look like they belong to that block are **kept**, because they are facts about the
+    market rather than about the reader: :data:`ACCOUNT_LEVEL_MARGIN` says this venue has
+    no per-position liquidation price, and :data:`WEEKEND_GAP` says price can jump the
+    Friday close. Both are safety statements a Persian summary should be able to repeat.
     """
     plan = record.plan
     if not isinstance(plan, ForexPlan):  # pragma: no cover — the publisher dispatches
@@ -91,7 +101,8 @@ def forex_signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool =
     lines = [
         f"{_side(plan.direction)} — {tag}{escape(plan.symbol)}   "
         f"[{plan.setup_type.value} · {plan.timeframe_label.value} · conf {plan.confidence}]",
-        f"{escape(report.prompt_version or 'prompt n/a')} · Signal #{record.number} · "
+        f"{escape(report.prompt_version or 'prompt n/a')} · "
+        f"{'' if shared_only else f'Signal #{record.number} · '}"
         f"{local_and_utc(plan.created_at, tz)}",
         "",
         "📊 <b>Thesis</b>",
@@ -103,16 +114,20 @@ def forex_signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool =
 
     lines.append("")
     lines.append(
-        f"🎯 <b>Plan</b> (capital €{money_eur(plan.capital_eur)} · "
+        "🎯 <b>Plan</b>"
+        if shared_only
+        else f"🎯 <b>Plan</b> (capital €{money_eur(plan.capital_eur)} · "
         f"risk {percent_2dp(plan.risk_per_trade_pct)}% "
         f"= €{plan.planned_risk_eur} · EUR{plan.quote_currency} {plan.eur_quote_rate})"
     )
     lines.append(f"Entry ladder (limit orders) — last price {plan.last_price}:")
     for index, entry in enumerate(plan.entries, start=1):
+        # A separate f-string rather than a ``+``, for the reason ``cards.py`` records
+        # at the same place: the no-arithmetic scan reads ``ast.Add`` and nothing else.
+        tail = "" if shared_only else f" — {entry.qty} {escape(base)} (€{entry.notional_eur})"
         lines.append(
             f"  {index}) <b>{entry.price}</b> ({entry.distance_pct}% · "
-            f"{entry.distance_pips} pips) — {entry.weight_pct}% of risk — "
-            f"{entry.qty} {escape(base)} (€{entry.notional_eur})"
+            f"{entry.distance_pips} pips) — {entry.weight_pct}% of risk{tail}"
         )
     lines.append(f"  Weighted entry {plan.avg_entry} · avg fill {plan.avg_fill_price}")
 
@@ -137,18 +152,22 @@ def forex_signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool =
         )
 
     lines.append("")
-    lines.append(
-        f"💶 Notional €{plan.notional_eur} "
-        f"({plan.notional_quote} {plan.quote_currency}) · Margin €{plan.margin_eur} "
-        f"({plan.margin_pct_of_equity}% of equity)"
-    )
-    lines.append(
-        f"📐 Pip value €{plan.pip_value_eur} per pip · pip = {plan.pip} ({plan.quote_currency})"
-    )
-    lines.append(f"⚙️ Max leverage {plan.max_leverage}x — {escape(plan.leverage_basis)}")
-    lines.extend(_cost_lines(plan))
+    if shared_only:
+        lines.append(f"📐 pip = {plan.pip} ({plan.quote_currency})")
+    else:
+        lines.append(
+            f"💶 Notional €{plan.notional_eur} "
+            f"({plan.notional_quote} {plan.quote_currency}) · Margin €{plan.margin_eur} "
+            f"({plan.margin_pct_of_equity}% of equity)"
+        )
+        lines.append(
+            f"📐 Pip value €{plan.pip_value_eur} per pip · pip = {plan.pip} ({plan.quote_currency})"
+        )
+        lines.append(f"⚙️ Max leverage {plan.max_leverage}x — {escape(plan.leverage_basis)}")
+        lines.extend(_cost_lines(plan))
     lines.append(ACCOUNT_LEVEL_MARGIN)
-    lines.append(f"⚖️ Actual risk €{plan.risk_eur} (planned €{plan.planned_risk_eur})")
+    if not shared_only:
+        lines.append(f"⚖️ Actual risk €{plan.risk_eur} (planned €{plan.planned_risk_eur})")
     lines.append(f"📋 {escape(plan.management_plan)}")
     lines.append(
         f"⏳ Expires if unfilled: {local_date_time(plan.expires_at, tz)} — "
@@ -157,7 +176,7 @@ def forex_signal_card(record: SignalRecord, tz: ZoneInfo, *, show_market: bool =
     if plan.weekend_gap_warning:
         lines.append(WEEKEND_GAP)
 
-    if record.decision is not None:
+    if record.decision is not None and not shared_only:
         lines.append("")
         lines.append(f"<b>Your call: {DECISION_LABEL[record.decision]}</b>")
 

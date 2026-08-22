@@ -30,6 +30,15 @@ class LLMCallKind(StrEnum):
 
     SCREENER = "SCREENER"
     ANALYST = "ANALYST"
+    #: M11p. Not a pipeline stage: a user pressed a button on a card that already
+    #: exists. It is a member here so that its cost lands in ``llm_calls`` with
+    #: everything else and shows up on ``/status`` and ``/pulse`` without a new
+    #: surface -- and so that a later reader can tell convenience spend from analysis
+    #: spend by looking, rather than by inferring it from the model name.
+    #:
+    #: Fifteen characters, against ``llm_calls.kind``'s ``String(16)``. The column is
+    #: a varchar and not a Postgres enum, so this needs no ``ALTER TYPE``.
+    PERSIAN_SUMMARY = "PERSIAN_SUMMARY"
 
 
 class LLMCallStatus(StrEnum):

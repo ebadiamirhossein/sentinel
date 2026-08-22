@@ -14,6 +14,7 @@ from uuid import UUID
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from sentinel.analyst.persian.models import PersianSourceKind
 from sentinel.bot.cards import DECISION_LABEL
 from sentinel.bot.models import ACK_VERSION, SignalDecision
 
@@ -83,6 +84,65 @@ def decision_keyboard(
             ]
         ]
     )
+
+
+#: M11p. Its own row rather than a fourth button beside the decisions: the decision
+#: row is a set of mutually exclusive answers to one question, and a button that
+#: answers a different question does not belong in it.
+PERSIAN_PREFIX = "fa"
+
+PERSIAN_LABEL = "🇮🇷 فارسی"
+
+
+class PersianCallback(CallbackData, prefix=PERSIAN_PREFIX):
+    """Which card the reader wants explained in Persian.
+
+    ``source_id`` is a signal id for a signal card and an analyst-report id for a
+    ``/pulse SYMBOL`` verdict; ``source_kind`` says which. The handler re-renders from
+    that id rather than reading the message text, which is what lets a ``/pulse`` card
+    spread over two messages be summarised as one card.
+
+    Telegram caps ``callback_data`` at 64 bytes. Two characters of prefix, a 36-character
+    UUID and the longer of the two kind values pack to 49 bytes, asserted in
+    ``tests/bot/test_persian_summary.py`` rather than reasoned about here.
+
+    Like every other callback in this module the payload is client-supplied and proves
+    nothing: a forwarded card carries its buttons, so the handler re-checks ownership
+    against the database before it renders anything.
+    """
+
+    source_kind: PersianSourceKind
+    source_id: UUID
+
+
+def persian_row(source_kind: PersianSourceKind, source_id: UUID) -> list[InlineKeyboardButton]:
+    """The 🇮🇷 فارسی row, composed onto a card by whoever is sending it.
+
+    A helper the call sites add rather than a change inside :func:`decision_keyboard`,
+    deliberately. ``decision_keyboard`` is specs/TELEGRAM_UX.md §2's contract and is
+    asserted on directly by several tests; leaving it untouched keeps this milestone's
+    keyboard change confined to the three places that actually send a card.
+    """
+    return [
+        InlineKeyboardButton(
+            text=PERSIAN_LABEL,
+            callback_data=PersianCallback(source_kind=source_kind, source_id=source_id).pack(),
+        )
+    ]
+
+
+def with_persian(
+    keyboard: InlineKeyboardMarkup, source_kind: PersianSourceKind, source_id: UUID
+) -> InlineKeyboardMarkup:
+    """``keyboard`` plus the Persian row underneath it."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[*keyboard.inline_keyboard, persian_row(source_kind, source_id)]
+    )
+
+
+def persian_keyboard(source_kind: PersianSourceKind, source_id: UUID) -> InlineKeyboardMarkup:
+    """The Persian row alone, for a card that has no other buttons -- ``/pulse SYMBOL``."""
+    return InlineKeyboardMarkup(inline_keyboard=[persian_row(source_kind, source_id)])
 
 
 def decision_keyboard_with_manage(
@@ -267,6 +327,8 @@ __all__ = [
     "BUTTON_LABEL",
     "DECISION_ORDER",
     "LEAVE_PREFIX",
+    "PERSIAN_LABEL",
+    "PERSIAN_PREFIX",
     "AckCallback",
     "AdminAction",
     "AdminCallback",
@@ -274,6 +336,7 @@ __all__ = [
     "LeaveCallback",
     "ManageAction",
     "ManageCallback",
+    "PersianCallback",
     "ResumeCallback",
     "WatchlistCallback",
     "acknowledge_keyboard",
@@ -282,6 +345,9 @@ __all__ = [
     "decision_keyboard_with_manage",
     "leave_keyboard",
     "manage_row",
+    "persian_keyboard",
+    "persian_row",
     "resume_keyboard",
     "watchlist_request_keyboard",
+    "with_persian",
 ]

@@ -28,6 +28,7 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 
+from sentinel.analyst.persian.models import PersianSourceKind
 from sentinel.bot.auth import Actor
 from sentinel.bot.cards import DECISION_LABEL, decision_ack_card
 from sentinel.bot.context import BotContext
@@ -36,6 +37,7 @@ from sentinel.bot.keyboards import (
     ResumeCallback,
     decision_keyboard,
     decision_keyboard_with_manage,
+    with_persian,
 )
 from sentinel.bot.models import MessageKind, SignalDecision
 from sentinel.core.logging import get_logger
@@ -113,10 +115,19 @@ async def decision(
 
 
 def _keyboard_for(signal_id: UUID, chosen: SignalDecision, row: Any) -> InlineKeyboardMarkup:
-    """§2's second row appears once the tracker has seen a fill, and not before."""
-    if getattr(row, "filled_qty", Decimal(0)) > 0:
-        return decision_keyboard_with_manage(signal_id, chosen)
-    return decision_keyboard(signal_id, chosen)
+    """§2's second row appears once the tracker has seen a fill, and not before.
+
+    M11p's Persian row is appended here as well as in the publisher, because this
+    function *replaces* the whole markup after a decision: without it the 🇮🇷 فارسی
+    button would vanish the moment the owner pressed Taken, which is exactly when he is
+    most likely to want the card explained.
+    """
+    base = (
+        decision_keyboard_with_manage(signal_id, chosen)
+        if getattr(row, "filled_qty", Decimal(0)) > 0
+        else decision_keyboard(signal_id, chosen)
+    )
+    return with_persian(base, PersianSourceKind.SIGNAL, signal_id)
 
 
 async def _acknowledge(

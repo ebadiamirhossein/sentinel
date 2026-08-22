@@ -23,8 +23,14 @@ import pytest
 
 from sentinel.core.config import AppConfig, load_config
 from tests.golden.pipeline import (
+    APPROVED_REPORT,
     EXTRA_SYMBOLS,
     GoldenCycle,
+    golden_card,
+    golden_features,
+    golden_gate,
+    golden_report,
+    golden_snapshot,
     golden_symbol_charts,
     run_golden_cycle,
 )
@@ -100,6 +106,33 @@ def test_the_rendered_card_is_unchanged(cycle: GoldenCycle) -> None:
     """What the owner actually reads. The last link in the chain, and the one a
     market tag added carelessly would break."""
     assert cycle.card == _text("card.txt"), REGENERATE
+
+
+def test_the_shared_form_of_the_card_is_unchanged(repo_config: AppConfig) -> None:
+    """M11p. The text a Persian summary is written from, and therefore the exact bytes
+    the model is shown.
+
+    Added as a **second** golden rather than by regenerating the first: ``card.txt``
+    above is produced from the same gate decision in the same generator run, so the two
+    files sitting side by side are the evidence that ``shared_only`` moved nothing in
+    the form the owner actually reads.
+
+    Regenerate with ``.venv/bin/python -m tests.fixtures.generate_goldens_m11p``, which
+    can write no other file.
+    """
+    snapshot = golden_snapshot()
+    features = golden_features(snapshot, repo_config)
+    decision = golden_gate(
+        golden_report(APPROVED_REPORT, repo_config), snapshot, features, repo_config
+    )
+    assert golden_card(decision, shared_only=True) == _text("card_shared.txt")
+
+
+def test_the_shared_golden_is_not_the_full_one(cycle: GoldenCycle) -> None:
+    """Proof of teeth for the golden above: a ``shared_only`` that did nothing would
+    write ``card.txt``'s bytes into ``card_shared.txt`` and both files would pass."""
+    assert _text("card_shared.txt") != _text("card.txt")
+    assert "€" in cycle.card and "€" not in _text("card_shared.txt")
 
 
 #: Crypto defaults M10a is forbidden to touch, each with a perturbation that must

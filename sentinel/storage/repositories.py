@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel.analyst.history import PastVerdict
 from sentinel.analyst.models import AnalystReport, CandidateStatus, SetupType
+from sentinel.analyst.persian.models import PersianSourceKind, PersianSummary
 from sentinel.bot.models import (
     OPEN_STATUSES,
     MessageKind,
@@ -63,6 +64,7 @@ from sentinel.storage.models import (
     MarketPauseStateRow,
     MarketSnapshotRow,
     OhlcvCandleRow,
+    PersianSummaryRow,
     RiskStateRow,
     RuntimeSettingRow,
     SaxoTokenRow,
@@ -1158,6 +1160,18 @@ class AnalystReportRepository(MarketScopedRepository):
             .order_by(AnalystReportRow.created_at)
         )
         return list((await self._session.execute(statement)).scalars())
+
+    async def get(self, report_id: UUID) -> AnalystReportRow | None:
+        """One report by its primary key.
+
+        **No market filter**, matching :meth:`SignalRepository.get` one table over. A
+        UUID primary key is globally unique, so filtering it by market would let the
+        same id return a row or nothing depending on which repository instance the
+        caller happened to be holding — a difference with no meaning and an obvious way
+        to produce a bug. The row carries its own ``market``, and the caller reads it
+        from there rather than assuming the one it asked with.
+        """
+        return await self._session.get(AnalystReportRow, report_id)
 
     async def latest_for_symbol(
         self, symbol: str, *, role: str = "primary"
@@ -2467,3 +2481,116 @@ class SignalEventRepository:
             .limit(limit)
         )
         return list((await self._session.execute(statement)).scalars())
+
+
+class PersianSummaryRepository:
+    """Cached Persian rewrites of cards (M11p).
+
+    Not :class:`MarketScopedRepository`: a row carries its market as data, but the
+    lookup is by content hash and a scoped read would answer "is there a summary of
+    this exact text, in this market" -- a question nobody asks, since the hash already
+    settles it. The daily-cap count is per **user**, deliberately across markets: the
+    cap exists to bound spend, and spend does not care which card was pressed.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def find(self, input_sha256: str) -> PersianSummary | None:
+        """The stored summary of this exact card text, if one exists."""
+        statement = select(PersianSummaryRow).where(PersianSummaryRow.input_sha256 == input_sha256)
+        row = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if row is None else _persian_summary(row)
+
+    async def store(self, summary: PersianSummary) -> PersianSummary:
+        """Persist ``summary``, or return the one that got there first.
+
+        ``ON CONFLICT DO NOTHING`` on ``input_sha256``, then re-read on a miss. Two
+        presses racing on the same card is the ordinary case, not the exotic one --
+        the in-flight coalescer in the handler covers a single process, and this
+        covers everything the coalescer cannot see. The winner's text is returned to
+        both, so the two readers cannot end up with different Persian words for one
+        card, which is the whole point of storing it.
+        """
+        statement = (
+            insert(PersianSummaryRow)
+            .values(
+                input_sha256=summary.input_sha256,
+                source_kind=summary.source_kind.value,
+                signal_id=summary.signal_id,
+                analyst_report_id=summary.analyst_report_id,
+                market=summary.market.value,
+                symbol=summary.symbol,
+                summary_text=summary.summary_text,
+                input_text=summary.input_text,
+                prompt_version=summary.prompt_version,
+                model=summary.model,
+                tokens_in=summary.tokens_in,
+                tokens_out=summary.tokens_out,
+                cost_usd_estimate=summary.cost_usd_estimate,
+                llm_call_id=summary.llm_call_id,
+                created_at=summary.created_at,
+                created_by_user_id=summary.created_by_user_id,
+            )
+            .on_conflict_do_nothing(index_elements=["input_sha256"])
+            .returning(PersianSummaryRow)
+        )
+        row = (await self._session.execute(statement)).scalar_one_or_none()
+        if row is not None:
+            return _persian_summary(row)
+        existing = await self.find(summary.input_sha256)
+        if existing is None:  # pragma: no cover -- the row cannot vanish mid-transaction
+            raise RuntimeError(f"persian summary {summary.input_sha256} neither inserted nor found")
+        log.info(
+            "persian.summary_already_stored",
+            input_sha256=summary.input_sha256,
+            detail="another press stored this card first; returning its text",
+        )
+        return existing
+
+    async def generations_today(self, *, user_id: int, day_start: datetime) -> int:
+        """How many summaries this user has **paid for** since ``day_start``.
+
+        Generations, not presses. A press that hits the cache costs nothing, and a cap
+        that rationed free actions would only annoy without protecting anything.
+        """
+        statement = select(func.count()).where(
+            PersianSummaryRow.created_by_user_id == user_id,
+            PersianSummaryRow.created_at >= day_start,
+        )
+        return int((await self._session.execute(statement)).scalar_one())
+
+    async def spend_today_usd(self, *, day_start: datetime) -> Decimal:
+        """Every user's Persian spend since ``day_start`` -- the deployment-wide cap.
+
+        Read from this table rather than from ``llm_calls``, even though both hold the
+        figure. ``llm_calls`` is what the analysis rails read, and a cap that queried it
+        with a ``kind`` filter would put a Persian-shaped predicate inside the query
+        path two live measurement windows depend on. This table answers its own
+        question.
+        """
+        statement = select(func.coalesce(func.sum(PersianSummaryRow.cost_usd_estimate), 0)).where(
+            PersianSummaryRow.created_at >= day_start
+        )
+        return Decimal((await self._session.execute(statement)).scalar_one())
+
+
+def _persian_summary(row: PersianSummaryRow) -> PersianSummary:
+    return PersianSummary(
+        input_sha256=row.input_sha256,
+        source_kind=PersianSourceKind(row.source_kind),
+        signal_id=row.signal_id,
+        analyst_report_id=row.analyst_report_id,
+        market=Market(row.market),
+        symbol=row.symbol,
+        summary_text=row.summary_text,
+        input_text=row.input_text,
+        prompt_version=row.prompt_version,
+        model=row.model,
+        tokens_in=row.tokens_in,
+        tokens_out=row.tokens_out,
+        cost_usd_estimate=row.cost_usd_estimate,
+        llm_call_id=row.llm_call_id,
+        created_at=row.created_at,
+        created_by_user_id=row.created_by_user_id,
+    )

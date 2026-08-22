@@ -17,6 +17,7 @@ from typing import Any
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
+from sentinel.analyst.persian.summariser import PersianSummariser
 from sentinel.bot.auth import AuthMiddleware
 from sentinel.bot.context import BotContext, Repositories
 from sentinel.bot.formatting import zone_info
@@ -25,6 +26,7 @@ from sentinel.bot.handlers import (
     callbacks_router,
     commands_router,
     membership_router,
+    persian_router,
     replies_router,
 )
 from sentinel.bot.menu import publish_menu
@@ -33,9 +35,35 @@ from sentinel.bot.runtime import SymbolChecker
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import Settings
 from sentinel.core.logging import get_logger
+from sentinel.llm.client import AnthropicClient
 from sentinel.storage.db import Database
 
 log = get_logger(__name__)
+
+
+def build_summariser(settings: Settings) -> PersianSummariser | None:
+    """The 🇮🇷 فارسی button's model client, or ``None`` if it cannot have one.
+
+    One client for the process rather than one per press: a press is rare, but a new
+    HTTP client per press would leak a connection pool every time. It is never closed,
+    which is correct for a component whose lifetime is the process's.
+
+    Returns ``None`` when the feature is disabled or no API key is configured, and the
+    handler degrades explicitly rather than raising on the first press — the same
+    posture ``symbol_checker`` takes one field over.
+    """
+    key = settings.secrets.anthropic_api_key
+    if not settings.config.persian_summary.enabled or key is None:
+        log.info(
+            "bot.persian_disabled",
+            enabled=settings.config.persian_summary.enabled,
+            has_key=key is not None,
+        )
+        return None
+    return PersianSummariser(
+        AnthropicClient(settings.config.llm, api_key=key.get_secret_value()),
+        settings.config,
+    )
 
 
 def build_context(
@@ -45,6 +73,7 @@ def build_context(
     clock: Clock | None = None,
     symbol_checker: SymbolChecker | None = None,
     repositories: Repositories | None = None,
+    summariser: PersianSummariser | None = None,
 ) -> BotContext:
     return BotContext(
         settings=settings,
@@ -53,6 +82,7 @@ def build_context(
         tz=zone_info(settings.config.telegram.owner_timezone),
         symbol_checker=symbol_checker,
         repositories=repositories or Repositories(),
+        summariser=summariser or build_summariser(settings),
     )
 
 
@@ -97,6 +127,9 @@ def build_dispatcher(ctx: BotContext) -> Dispatcher:
     dispatcher.include_router(commands_router)
     dispatcher.include_router(admin_router)
     dispatcher.include_router(callbacks_router)
+    # M11p. Before ``replies``, which matches any reply and must not shadow it, and
+    # after ``callbacks``, which owns the decision buttons on the same cards.
+    dispatcher.include_router(persian_router)
     dispatcher.include_router(replies_router)
     return dispatcher
 
