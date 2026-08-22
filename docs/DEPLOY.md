@@ -784,8 +784,8 @@ credential in terminal scrollback is a live credential in a screenshot.
 6. Move the token to the server and rebuild:
    ```bash
    cat ~/.sentinel/saxo_bootstrap_token
-   ssh root@78.46.240.136 'cd /opt/sentinel && nano .env'    # SAXO_REFRESH_TOKEN=<paste>
-   ssh root@78.46.240.136 'cd /opt/sentinel && docker compose up -d --build app'
+   ssh <server> 'cd /opt/sentinel && nano .env'      # SAXO_REFRESH_TOKEN=<paste>
+   ssh <server> 'cd /opt/sentinel && docker compose up -d --build app'
    ```
 7. Delete the local copy. It is spent the first time the server refreshes:
    ```bash
