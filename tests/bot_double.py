@@ -666,7 +666,25 @@ class FakeSignalRepository(SignalRepository):
         return row, True
 
     def _mine(self, user_id: int) -> list[_SignalRow]:
-        return [row for row in self._store.signals.values() if row.user_id == user_id]
+        """This user's rows **in this repository's market** (M10d).
+
+        It filtered on ``user_id`` alone until forex was switched on, while the real
+        ``SignalRepository`` is a ``MarketScopedRepository`` and filters on ``market``
+        in SQL. With one market that difference was invisible; with two, every
+        market-scoped reader got every market's rows — ``/positions`` iterates the
+        enabled markets and rehydrates each row against the market it is iterating
+        (§16.7), so a crypto row served to the forex pass raised 45 validation errors
+        and the command answered "something went wrong".
+
+        The same shape as the gap journal/M10c_REPORT.md §13 closed for the real
+        repository against Postgres: *a missing market filter also passes when the
+        table holds one market's rows.*
+        """
+        return [
+            row
+            for row in self._store.signals.values()
+            if row.user_id == user_id and row.market is self._market
+        ]
 
     async def with_decision(self, decision: Any, *, user_id: int, limit: int = 50) -> list[Any]:
         return [row for row in self._mine(user_id) if row.decision == decision.value][:limit]

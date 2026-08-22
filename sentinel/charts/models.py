@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import (
     BaseModel,
@@ -24,6 +24,10 @@ from pydantic import (
 #: Bumped whenever a change alters rendered pixels, so a stored chart's bytes
 #: can be explained by the renderer that produced them.
 RENDERER_VERSION = 1
+
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle: config imports nothing from here
+    from sentinel.core.config import ChartsConfig
 
 
 class Frozen(BaseModel):
@@ -49,6 +53,30 @@ class ChartSpec(Frozen):
     def figsize(self) -> tuple[float, float]:
         """Inches. With dpi=100 these map 1:1 to the pixel dimensions above."""
         return (self.width_px / self.dpi, self.height_px / self.dpi)
+
+
+def album_specs(charts: ChartsConfig, symbol: str) -> tuple[ChartSpec, ...]:
+    """The analyst's chart album for one symbol, straight from config (PRD F4).
+
+    One definition, because there are now three callers — the crypto cycle, the forex
+    cycle and ``sentinel.tools.forex_prompt_cost`` — and a second copy would measure a
+    *different* album than the one the pipeline sends. The token count that sets a spend
+    rail has to be the count of the real payload.
+    """
+    return tuple(
+        ChartSpec(
+            symbol=symbol,
+            timeframe=timeframe,
+            candle_window=charts.candle_window,
+            width_px=charts.width_px,
+            height_px=charts.height_px,
+            dpi=charts.dpi,
+            volume_panel_ratio=charts.volume_panel_ratio,
+            ema_periods=charts.ema_periods,
+            max_levels=charts.max_levels,
+        )
+        for timeframe in charts.timeframes
+    )
 
 
 class DrawnLevel(Frozen):

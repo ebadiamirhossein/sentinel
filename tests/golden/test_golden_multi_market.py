@@ -37,7 +37,7 @@ from tests.golden.pipeline import (
     golden_gate,
     golden_report,
     golden_snapshot,
-    multi_market,
+    single_market,
 )
 from tests.golden.surfaces import render_surfaces
 
@@ -71,12 +71,27 @@ UNTAGGED = ("pulse_symbol", "snapshot")
 
 @pytest.fixture(scope="module")
 def multi() -> dict[str, Any]:
-    return render_surfaces(multi_market(load_config()))
+    """The shipped config, which since M10d **is** the multi-market one.
+
+    It was ``multi_market(load_config())`` while forex shipped disabled. Leaving it
+    that way would have been harmless and useless: with the flag already on, the
+    helper is a no-op and this fixture would still pass while pinning nothing about
+    the config that actually ships.
+    """
+    return render_surfaces(load_config())
 
 
 @pytest.fixture(scope="module")
 def single() -> dict[str, Any]:
-    return render_surfaces(load_config())
+    """Forex switched back off in memory — the other half of the comparison.
+
+    It was a bare ``load_config()``. After switch-on that made ``single`` and
+    ``multi`` the *same config*, so
+    ``test_every_multi_market_surface_differs_by_its_header_alone`` compared a string
+    with itself and could never fail again — the exact shape of a test that looks
+    like it is checking and is not (journal/M10c_REPORT.md §3).
+    """
+    return render_surfaces(single_market(load_config()))
 
 
 # --------------------------------------------------------------------------- #
@@ -95,7 +110,7 @@ def test_the_multi_market_journal_is_unchanged(multi: dict[str, Any]) -> None:
 
 
 def test_the_tagged_card_is_unchanged() -> None:
-    config = multi_market(load_config())
+    config = load_config()
     snapshot = golden_snapshot()
     features = golden_features(snapshot, config)
     decision = golden_gate(golden_report(APPROVED_REPORT, config), snapshot, features, config)
@@ -138,7 +153,7 @@ def test_a_symbol_scoped_surface_carries_no_header(
 
 def test_the_tagged_card_differs_from_the_untagged_one_by_the_tag_alone() -> None:
     """The same property on the card, which is the surface that matters most."""
-    config = multi_market(load_config())
+    config = load_config()
     snapshot = golden_snapshot()
     features = golden_features(snapshot, config)
     decision = golden_gate(golden_report(APPROVED_REPORT, config), snapshot, features, config)
@@ -149,17 +164,27 @@ def test_the_tagged_card_differs_from_the_untagged_one_by_the_tag_alone() -> Non
     assert tagged.replace("CRYPTO · ", "", 1) == plain
 
 
-def test_the_shipped_config_is_still_single_market() -> None:
-    """The premise the whole arrangement rests on, and the M10c exit criterion.
+def test_the_shipped_config_is_multi_market_and_the_goldens_know_which_is_which() -> None:
+    """M10c's exit criterion, **inverted at M10d — and the inversion is switch-on.**
 
-    If this ever fails, the goldens in ``surfaces/`` stopped describing what the
-    deployed system renders — which is the one thing they exist to describe.
+    It read ``config.multi_market is False``, and while that held, ``surfaces/``
+    described what the deployed system renders and ``surfaces_multi/`` described what
+    it would render one day. Those roles have now swapped, and the swap is the whole
+    milestone: the shipped config enables both markets, so ``surfaces_multi/`` is the
+    live set and ``surfaces/`` is the historical one, still pinned because "with one
+    market every surface renders exactly what it rendered before M10a" is the promise
+    specs/TELEGRAM_UX.md §3e makes and it does not stop being worth checking.
+
+    Asserted here rather than only in the fixtures, because a fixture that renders
+    from the wrong config still renders *something* — and something is what a golden
+    cannot tell you is wrong.
     """
     config = load_config()
 
-    assert config.multi_market is False
-    assert config.enabled_markets == (Market.CRYPTO,)
-    assert config.market(Market.FOREX).enabled is False
+    assert config.multi_market is True
+    assert config.enabled_markets == (Market.CRYPTO, Market.FOREX)
+    assert config.market(Market.FOREX).enabled is True
+    assert single_market(config).multi_market is False
 
 
 def test_the_multi_market_set_covers_every_pinned_surface(multi: dict[str, Any]) -> None:

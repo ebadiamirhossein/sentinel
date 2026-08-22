@@ -46,10 +46,53 @@ def verdict(
     return result.state, result.scope
 
 
+#: The scenario every test below is written around: crypto 10.00, forex 4.00, one
+#: ceiling of 11.00.
+#:
+#: **Fixed here rather than read from ``config.yaml``, since M10d.** These tests are
+#: about ``evaluate_market_spend``'s *behaviour* — which market stops, which scope is
+#: named, which ceiling is checked first — and every scenario number below is chosen
+#: against those three figures. Reading the shipped config coupled them to the owner's
+#: rails, so raising the ceiling for the forex observation window broke nine tests that
+#: have nothing to do with the raise. What the SHIPPED numbers do is a different
+#: question and has its own file: ``tests/core/test_forex_spend_guards.py``.
+CRYPTO_BUDGET = Decimal("10.00")
+FOREX_BUDGET = Decimal("4.00")
+CEILING = Decimal("11.00")
+
+
 @pytest.fixture
 def config() -> AppConfig:
-    """The shipped config: crypto 10.00, forex 4.00, ceiling 11.00."""
-    return load_config()
+    """The scenario config: crypto 10.00, forex 4.00, ceiling 11.00, no floor."""
+    shipped = load_config()
+    markets = {
+        Market.CRYPTO: shipped.market(Market.CRYPTO).model_copy(
+            update={
+                "llm_daily_budget_usd": CRYPTO_BUDGET,
+                "llm_daily_warn_usd": Decimal("7.00"),
+                "llm_reserved_floor_usd": Decimal("0"),
+            }
+        ),
+        Market.FOREX: shipped.market(Market.FOREX).model_copy(
+            update={
+                "llm_daily_budget_usd": FOREX_BUDGET,
+                "llm_daily_warn_usd": Decimal("3.00"),
+                "llm_reserved_floor_usd": Decimal("0"),
+            }
+        ),
+    }
+    return shipped.model_copy(
+        update={
+            "markets": markets,
+            "llm_daily_budget_global_usd": CEILING,
+            "llm": shipped.llm.model_copy(
+                update={
+                    "daily_spend_limit_usd": CRYPTO_BUDGET,
+                    "daily_spend_warn_usd": Decimal("7.00"),
+                }
+            ),
+        }
+    )
 
 
 # --------------------------------------------------------------------------- #

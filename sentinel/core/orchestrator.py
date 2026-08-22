@@ -60,16 +60,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sentinel.analyst.history import build_history_block
 from sentinel.analyst.models import AnalystReport, CandidateStatus
 from sentinel.analyst.providers.anthropic_fable import AnthropicFableAnalyst
-from sentinel.bot.cards import no_capital_card, signal_card
+from sentinel.bot.cards import alert_card, no_capital_card, signal_card
 from sentinel.bot.forex_cards import forex_signal_card
 from sentinel.bot.formatting import zone_info
 from sentinel.bot.models import SignalRecord, UserAccount
-from sentinel.bot.notices import UserNotifier, no_capital_key
+from sentinel.bot.notices import UserNotifier, calendar_coverage_key, no_capital_key
 from sentinel.bot.plans import AnyPlan, plan_of
 from sentinel.bot.publisher import SignalPublisher
+from sentinel.bot.readmodels import alert_view
 from sentinel.bot.runtime import account_state, effective_config
-from sentinel.charts.models import ChartImage, ChartSpec
+from sentinel.charts.models import ChartImage, ChartSpec, album_specs
 from sentinel.charts.renderer import render_album
+from sentinel.core.alerts import calendar_alert
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import AppConfig, MarketConfig, Settings
 from sentinel.core.forex_cycle import MARKET_CLOSED_REASON, ForexAssembly, assemble_forex
@@ -85,8 +87,10 @@ from sentinel.core.wiring import (
 from sentinel.features.models import SymbolFeatures
 from sentinel.fx.calendar import EconomicCalendar, load_calendar
 from sentinel.fx.gate import ForexAccountState, ForexGate, ForexMarketContext
+from sentinel.fx.hours import clock_verdict
 from sentinel.fx.models import ForexGateStatus, ForexRejection
 from sentinel.fx.rails import ForexPortfolioState
+from sentinel.fx.spread import spread_gate
 from sentinel.ingestion.clients.fx import FxClient
 from sentinel.ingestion.models import FxRate, MarketSnapshot
 from sentinel.llm.client import AnthropicClient
@@ -188,6 +192,18 @@ class SkipReason(StrEnum):
     #: a degraded read (§4.4), or a tail whose newest bar is too old (§5.1, defect
     #: #14). Which of the three is in ``Skip.detail``; the key is what groups.
     NO_DATA = "NO_DATA"
+    #: M10d — outside ``forex.scan_hours_utc``. Its own key rather than MARKET_CLOSED,
+    #: because the venue is **open** and we are choosing not to look: the two answer
+    #: different questions about the same silence, and one of them is a config value
+    #: somebody may want to widen after reading how often it fired.
+    OUTSIDE_SCAN_HOURS = "OUTSIDE_SCAN_HOURS"
+    #: M10d — a market-condition rail rejected this symbol **before** the analyst was
+    #: asked (§16.5 rows 2-4: the clock, the calendar blackout, the spread). The gate
+    #: still runs all three afterwards and is still the authority; this is the
+    #: orchestrator's own stated rule — "guards before spend, not after" — finally
+    #: applied to forex, where three rails that cost nothing sat behind a $0.23 call.
+    #: The specific ``ForexRejection`` is in ``Skip.detail``.
+    MARKET_CONDITION = "MARKET_CONDITION"
 
 
 @dataclass(frozen=True)
@@ -510,6 +526,56 @@ class CycleOrchestrator:
             log.warning("cycle.no_api_key", detail="the pipeline cannot analyse without a key")
             return
 
+        # Before anything else, including the fetch: §8's staleness rail now has a
+        # voice. A lapsed calendar means the gate rejects every symbol with
+        # CALENDAR_STALE anyway, so the owner should hear about it on the cycle it
+        # starts costing him rather than from an absence he notices days later.
+        await self._alert_calendar_coverage()
+
+        # ── guards before spend, not after (M10d) ────────────────────────────
+        #
+        # ARCHITECTURE §3 and this module's own docstring say it, and the crypto path
+        # has done it since M7 with the reason written at the call site: "analysing
+        # first would buy a ~$0.32 rejection". The forex path did neither of these.
+        #
+        # `/pause forex` was a publish-stopper rather than an off switch: the pause was
+        # read inside the per-user fan-out, AFTER three analyst calls, so a paused
+        # forex market still cost ~$0.73 a cycle to be paused — and cost is the first
+        # reason anybody reaches for it.
+        if await self._paused():
+            result.analysis_suspended = True
+            result.suspended_reason = "paused"
+            for symbol in symbols:
+                result.skipped[symbol] = Skip(SkipReason.PAUSED, "paused")
+            log.info(
+                "cycle.paused",
+                cycle_id=str(result.cycle_id),
+                market=self._market.value,
+                held_back=sorted(symbols),
+                detail="the tracker keeps running",
+            )
+            return
+
+        # Outside the scan window the cycle costs ZERO rather than cheap: no fetch, no
+        # instrument resolution, no charts. See ForexConfig.scan_hours_utc for why the
+        # window exists at all — forex has neither of crypto's two M8.2 cost controls.
+        start, end = config.forex.scan_hours_utc
+        if not start <= started.hour < end:
+            for symbol in symbols:
+                result.skipped[symbol] = Skip(
+                    SkipReason.OUTSIDE_SCAN_HOURS,
+                    f"{started.hour:02d}:00Z is outside the {start:02d}:00-{end:02d}:00Z "
+                    f"scan window",
+                )
+            log.info(
+                "cycle.outside_scan_hours",
+                cycle_id=str(result.cycle_id),
+                hour=started.hour,
+                window=[start, end],
+                detail="no fetch and no analyst call this cycle",
+            )
+            return
+
         async with forex_adapter(self._settings, self._database) as adapter:
             assembly = await assemble_forex(
                 adapter, symbols, config=config, now=started, cycle_id=result.cycle_id
@@ -563,10 +629,30 @@ class CycleOrchestrator:
 
         await self._refresh_forex_rates(assembly)
 
+        # Rows 2-4 of §16.5's order — the clock, the calendar blackout and the spread —
+        # run HERE as well as in the gate, because none of the three needs the analyst
+        # report and all three make the rest moot. `fx/gate.py` still runs them and is
+        # still the authority; this is the optimisation ARCHITECTURE §3 describes,
+        # which forex simply never had. A blacked-out or rollover-wide symbol used to
+        # cost a full $0.23 call to be rejected on a condition known before the call.
+        tradeable = [
+            snapshot
+            for snapshot in assembly.snapshots
+            if self._forex_conditions_allow(result, snapshot, assembly, config, now=started)
+        ]
+        if not tradeable:
+            log.info(
+                "cycle.no_tradeable_symbols",
+                cycle_id=str(result.cycle_id),
+                market=self._market.value,
+                reasons=sorted({skip.detail for skip in result.skipped.values()}),
+            )
+            return
+
         client = AnthropicClient(config.llm, api_key=key.get_secret_value())
         calls: list[LLMCall] = []
         try:
-            for snapshot in assembly.snapshots:
+            for snapshot in tradeable:
                 calls += await self._analyse_forex_symbol(
                     result,
                     snapshot=snapshot,
@@ -589,6 +675,63 @@ class CycleOrchestrator:
         result.spend_scope_after = after.scope
         result.spend_usd_estimate = sum((call.cost_usd_estimate for call in calls), Decimal(0))
 
+    def _forex_conditions_allow(
+        self,
+        result: CycleResult,
+        snapshot: MarketSnapshot,
+        assembly: ForexAssembly,
+        config: AppConfig,
+        *,
+        now: datetime,
+    ) -> bool:
+        """§16.5 rows 2-4, asked before the money is spent rather than after.
+
+        Deliberately **not** a second implementation: it calls the same
+        ``clock_verdict``, the same ``EconomicCalendar.blackout`` and the same
+        ``spread_gate`` the gate calls, in the same order. Two copies of a rail is how
+        the card and the gate end up disagreeing about why a signal did not appear.
+
+        Returns ``True`` when the analyst is worth asking. A ``False`` records the
+        specific ``ForexRejection`` in ``Skip.detail``, so how often each of the three
+        fires is answerable in SQL — which matters, because whether the spread rail
+        fires in the evening at all is a live question (journal/M10d_REPORT.md).
+        """
+        forex = config.forex
+        symbol = snapshot.symbol
+
+        rejection = clock_verdict(now, config=forex).reason
+        if rejection is None:
+            rejection = self._calendar.blackout(
+                symbol,
+                now,
+                before_minutes=forex.blackout_before_minutes,
+                after_minutes=forex.blackout_after_minutes,
+                warn_within_days=forex.calendar_warn_within_days,
+            ).rejection
+        if rejection is None:
+            features = assembly.forex_features.get(symbol)
+            rejection = spread_gate(
+                current_pips=(
+                    None
+                    if features is None or features.spread is None
+                    else features.spread.current_pips
+                ),
+                profile=assembly.spread_profiles.get(symbol),
+                now=now,
+                config=forex,
+            ).rejection
+        if rejection is None:
+            return True
+
+        result.skipped[symbol] = Skip(SkipReason.MARKET_CONDITION, rejection.value)
+        log.info(
+            "cycle.forex_condition_blocked",
+            symbol=symbol,
+            reason=rejection.value,
+            detail="rejected before the analyst call, not after",
+        )
+        return False
+
     async def _analyse_forex_symbol(
         self,
         result: CycleResult,
@@ -610,6 +753,14 @@ class CycleOrchestrator:
                 annotations=assembly.annotations.get(snapshot.symbol, ()),
             )
         )
+        # A **real** history block, not the ``""`` this passed until M10d. An empty text
+        # block is an HTTP 400 — "text content blocks must be non-empty" — so every
+        # forex analyst call would have failed, as an AnalystUnavailable that reads like
+        # an API problem. Nothing caught it because the forex prompt had never been sent
+        # (join 4). specs/PROMPTS.md §3's calibration block is market-scoped through
+        # `self._reports`, so forex builds its own history exactly as crypto does, and
+        # `build_history_block` states "nothing measured yet" in words while it is empty.
+        history = await self._history_block(snapshot.symbol, owner_id=await self._owner_id())
         analyst = AnthropicFableAnalyst(
             client,
             config,
@@ -617,7 +768,7 @@ class CycleOrchestrator:
             prompt_version=self._market_config(config).analyst_prompt_version,
         )
         try:
-            report = await analyst.analyze(snapshot, charts, "")
+            report = await analyst.analyze(snapshot, charts, history)
         except AnalystUnavailable as exc:
             log.warning(
                 "cycle.analyst_unavailable",
@@ -1066,6 +1217,59 @@ class CycleOrchestrator:
         )
         if published.published:
             result.published += 1
+
+    async def _alert_calendar_coverage(self) -> None:
+        """§8's staleness rail, wired to a message for the first time (M10d).
+
+        The rail was built at M10b and read by nobody: ``health()`` was only ever
+        called from inside ``blackout()``, so its ``warn_within_days`` branch composed
+        a sentence that never left the process. The calendar could quietly run out,
+        every forex signal would stop, and the first sign would be that no card had
+        arrived for a while — silence reading as a quiet market, which is the one
+        failure mode this system cannot see (HANDOFF §4 item 1).
+
+        Sent once per UTC day through the existing claim-and-confirm notice path, so a
+        fortnight of warnings is a fortnight of daily nudges rather than 336 messages
+        nobody reads. Fires while coverage is **expiring** as well as after it has
+        lapsed, because the whole point is to arrive before the morning it runs out.
+        """
+        if self._notices is None:
+            return
+        owner_id = await self._owner_id()
+        if owner_id is None:
+            return
+        now = self._clock.now()
+        health = self._calendar.health(
+            now, warn_within_days=self._settings.config.forex.calendar_warn_within_days
+        )
+        if health.usable and not health.expiring:
+            return
+        log.warning(
+            "forex.calendar_coverage",
+            usable=health.usable,
+            days_remaining=health.days_remaining,
+            coverage_until=None
+            if health.coverage_until is None
+            else health.coverage_until.isoformat(),
+            needs_verification=len(health.needs_verification),
+            known_gaps=len(health.known_gaps),
+        )
+        alert = calendar_alert(
+            usable=health.usable,
+            detail=health.detail,
+            actions=health.actions,
+            coverage_until=None
+            if health.coverage_until is None
+            else health.coverage_until.isoformat(),
+        )
+        await self._notices.notice(
+            owner_id,
+            key=calendar_coverage_key(now),
+            text=alert_card(
+                alert_view(alert),
+                zone_info(self._settings.config.telegram.owner_timezone),
+            ),
+        )
 
     async def _say_no_capital(self, user: UserAccount) -> None:
         """Tell an approved user why an approved plan did not reach them (M8.1).
@@ -1548,21 +1752,7 @@ class CycleOrchestrator:
             return await self._repos.fx(session).get()
 
     def _chart_specs(self, symbol: str) -> tuple[ChartSpec, ...]:
-        charts = self._settings.config.charts
-        return tuple(
-            ChartSpec(
-                symbol=symbol,
-                timeframe=timeframe,
-                candle_window=charts.candle_window,
-                width_px=charts.width_px,
-                height_px=charts.height_px,
-                dpi=charts.dpi,
-                volume_panel_ratio=charts.volume_panel_ratio,
-                ema_periods=charts.ema_periods,
-                max_levels=charts.max_levels,
-            )
-            for timeframe in charts.timeframes
-        )
+        return album_specs(self._settings.config.charts, symbol)
 
     async def _close_cycle(self, result: CycleResult, *, status: str) -> None:
         async with self._database.session() as session:

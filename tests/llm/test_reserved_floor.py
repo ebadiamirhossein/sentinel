@@ -100,10 +100,40 @@ def test_a_markets_own_floor_never_reserves_anything_against_itself() -> None:
 
 def test_a_disabled_market_reserves_nothing() -> None:
     """It cannot spend, so holding money for it would starve a live market for a dollar
-    nobody can use. The caller passes enabled markets only, and this pins why."""
+    nobody can use. The caller passes enabled markets only, and this pins why.
+
+    Rewritten at M10d: it asserted ``Market.FOREX not in config.enabled_markets``,
+    which stopped being a statement about the *floor* the moment forex was switched on.
+    The property is about a disabled market — any disabled market — so it is now stated
+    over one, rather than over whichever market happens to be off this month.
+    """
     config = load_config()
-    assert Market.FOREX not in config.enabled_markets
+    disabled = config.market(Market.FOREX).model_copy(
+        update={"enabled": False, "llm_reserved_floor_usd": Decimal(5)}
+    )
+    off = config.model_copy(update={"markets": {**config.markets, Market.FOREX: disabled}})
+
+    assert Market.FOREX not in off.enabled_markets
+    held = reserved_elsewhere_usd(
+        for_market=Market.CRYPTO,
+        markets={market: off.market(market) for market in off.enabled_markets},
+        day_spend_by_market={},
+    )
+    assert held == Decimal(0), "a market that cannot spend must not hold a dollar back"
+
+
+def test_forex_reserves_nothing_even_now_that_it_is_enabled() -> None:
+    """The shipped state after switch-on: forex is live and its own floor is still 0.
+
+    The floor is asymmetric on purpose (FOREX.md §13 decision 6). Crypto's measurement
+    window is the thing being protected; forex is the unmeasured newcomer and reserving
+    for it would be reserving against the market whose numbers actually matter.
+    """
+    config = load_config()
+
+    assert Market.FOREX in config.enabled_markets
     assert config.market(Market.FOREX).llm_reserved_floor_usd == Decimal(0)
+    assert config.market(Market.CRYPTO).llm_reserved_floor_usd == Decimal(8)
 
 
 # ── what the floor does once forex can spend ───────────────────────────────

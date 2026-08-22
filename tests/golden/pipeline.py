@@ -241,13 +241,31 @@ def golden_card(decision: GateDecision, *, show_market: bool = False) -> str:
 
 
 def multi_market(config: AppConfig) -> AppConfig:
-    """The shipped config with forex switched on — **in memory only**.
+    """A config with forex switched on.
 
-    The same helper ``tests/bot/test_multi_market.py`` has had since M10a, here so the
-    multi-market goldens are produced from the config that will actually exist on
-    switch-on day rather than from a config invented for the fixture.
+    Since M10d the shipped config already is one, so this is now a no-op on it and is
+    kept because several tests build a single-market config and want the other form.
     """
     forex = config.market(Market.FOREX).model_copy(update={"enabled": True})
+    return config.model_copy(update={"markets": {**config.markets, Market.FOREX: forex}})
+
+
+def single_market(config: AppConfig) -> AppConfig:
+    """The mirror of :func:`multi_market`: forex switched off, **in memory only**.
+
+    **This is what M10c's "switch-on moves no golden" actually needed, and did not
+    have.** The tagged bytes were pinned in advance — ``card_multi.txt`` and
+    ``surfaces_multi/`` — so no fixture's *contents* had to change. What was not
+    arranged is that ``render_surfaces()`` defaults to ``load_config()``: with forex
+    enabled the shipped config renders the **tagged** form, and the untagged goldens
+    were being compared against it. Six surfaces plus the journal failed, and
+    ``test_every_multi_market_surface_differs_by_its_header_alone`` went vacuous
+    because ``single`` and ``multi`` had become the same config.
+
+    So the mapping moved, not the bytes: the single-market set is rendered from this,
+    the multi-market set from the shipped config, and both relationships stay pinned.
+    """
+    forex = config.market(Market.FOREX).model_copy(update={"enabled": False})
     return config.model_copy(update={"markets": {**config.markets, Market.FOREX: forex}})
 
 

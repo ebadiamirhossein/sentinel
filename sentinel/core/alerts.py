@@ -52,6 +52,13 @@ class AlertKind(StrEnum):
     #: problem to investigate and the other is a two-minute login. An alert that does
     #: not say which sends the owner looking in the wrong place at the worst time.
     FOREX_REAUTH_REQUIRED = "FOREX_REAUTH_REQUIRED"
+    #: M10d. The hand-maintained economic calendar is running out, or has run out
+    #: (specs/FOREX.md §8). Its own kind for the same reason the one above has one:
+    #: the owner action is specific — extend one YAML file and rebuild the image —
+    #: and an alert that does not say so is an alert that gets read and not acted on.
+    #: There is no second source, so a lapsed calendar suppresses every forex signal;
+    #: this is the message that arrives BEFORE that happens.
+    FOREX_CALENDAR_COVERAGE = "FOREX_CALENDAR_COVERAGE"
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,10 @@ class Alert:
     #: owner reading it hours later.
     since: datetime | None = None
     detail: str = ""
+    #: What the owner has to **do**, one line each, in the order it matters. Empty
+    #: for the alerts whose action is "look at the logs". A status without an action
+    #: is the failure §3.1 names: it sends the reader hunting the wrong problem.
+    actions: tuple[str, ...] = ()
 
 
 def _failed(outcome: CycleOutcome, *, now: datetime, stale_after: timedelta) -> bool:
@@ -191,11 +202,38 @@ def reauth_alert(*, authorize_url: str, detail: str, since: datetime | None = No
     )
 
 
+def calendar_alert(
+    *, usable: bool, detail: str, actions: Sequence[str], coverage_until: str | None
+) -> Alert:
+    """The economic-calendar coverage alert (specs/FOREX.md §8's staleness rail).
+
+    **The rail was built at M10b and never wired to anything.** ``health()`` was called
+    only from inside ``blackout()``, so the ``warn_within_days`` branch composed a
+    sentence that nobody ever read: the calendar could run out, forex would fall
+    silent, and the first anybody would know is that no forex card had arrived for a
+    while. Silence reading as a quiet market is the exact failure HANDOFF §4 item 1 is
+    about, which is why the test for this asserts a message in an outbox rather than a
+    return value.
+
+    Two states, one alert, and the wording distinguishes them because the consequences
+    differ: **expiring** is a warning with signals still flowing, **expired** means
+    forex is emitting nothing at all until the file is extended.
+    """
+    return Alert(
+        kind=AlertKind.FOREX_CALENDAR_COVERAGE,
+        detail=detail,
+        last_error=coverage_until,
+        actions=tuple(actions),
+        failures=0 if usable else 1,
+    )
+
+
 __all__ = [
     "DEFAULT_THRESHOLD",
     "Alert",
     "AlertKind",
     "CycleOutcome",
+    "calendar_alert",
     "consecutive_failures",
     "cycle_alert",
     "reauth_alert",

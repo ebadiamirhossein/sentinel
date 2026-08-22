@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import secrets as token_source
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -430,8 +431,68 @@ async def login_and_check() -> int:
     fetcher, client = _fetcher(settings)
     async with client:
         bundle = await exchange_code(settings, fetcher, code_from(pasted, expected_state=state))
+        emit_bootstrap_token(bundle)
         adapter, _ = _adapter(settings, fetcher, bundle)
         return await run_checks(settings, adapter)
+
+
+#: Where the bootstrap refresh token is left for the owner to move to the server.
+#: **Outside the repository**, under the user's home, mode 0600.
+BOOTSTRAP_TOKEN_PATH = Path.home() / ".sentinel" / "saxo_bootstrap_token"
+
+
+def emit_bootstrap_token(bundle: SaxoTokenBundle) -> Path:
+    """Write the refresh token to a 0600 file and print the **path**, never the value.
+
+    **This existed nowhere until M10d, and its absence was a hole in the runbook.**
+    ``--login`` exchanged the code, ran its checks and dropped the credential on exit,
+    so there was no supported way to get a bootstrap token onto the server — which is
+    the only reason a human runs this flow at all. The server has zero inbound ports by
+    design, the browser is on the owner's Mac, and the token is the one thing that has
+    to cross between them.
+
+    **A file rather than stdout**, and that is deliberate rather than fussy: HANDOFF §4
+    item 9 records that this owner screenshots his terminal. A live credential in
+    scrollback is a live credential in a screenshot. So the value goes to disk with
+    ``0600`` from the moment of creation — opened with the mode, not chmod'ed after,
+    because the window between the two is exactly when another process can read it —
+    and what reaches the terminal is a path and a fingerprint.
+
+    Nothing here is ever inside the repository. The path is under ``$HOME`` and the
+    ``.gitignore`` question does not arise.
+    """
+    path = BOOTSTRAP_TOKEN_PATH
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Unlink first. ``O_TRUNC`` reuses the existing inode and therefore its existing
+    # permissions, so writing over a file somebody had loosened to 0644 would leave it
+    # at 0644 — and the mode passed to ``os.open`` applies only on creation, which
+    # makes the failure invisible. A fresh inode gets the mode asked for.
+    path.unlink(missing_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(bundle.refresh_token_value or "")
+        handle.write("\n")
+
+    print("\n" + "=" * 72)
+    print("BOOTSTRAP REFRESH TOKEN WRITTEN — the value is NOT printed, by design.")
+    print("=" * 72)
+    print(f"  file        {path}  (mode 0600)")
+    print(f"  fingerprint {bundle.refresh_fingerprint}")
+    if bundle.refresh_expires_at is not None:
+        print(f"  expires     {bundle.refresh_expires_at.isoformat()}  — about an hour")
+    print()
+    print("  Put it on the server as SAXO_REFRESH_TOKEN, then rebuild:")
+    print()
+    print(f"    cat {path}")
+    print("    ssh <server> 'cd /opt/sentinel && nano .env'      # paste it")
+    print("    ssh <server> 'cd /opt/sentinel && docker compose up -d --build app'")
+    print()
+    print("  Then delete this file. It is single-use and it is spent the first time the")
+    print("  server refreshes:")
+    print()
+    print(f"    rm {path}")
+    print("=" * 72 + "\n")
+    return path
 
 
 async def check_with_stored_token() -> int:

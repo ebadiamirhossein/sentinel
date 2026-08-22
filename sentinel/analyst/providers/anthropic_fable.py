@@ -185,8 +185,8 @@ class AnthropicFableAnalyst:
             )
 
         blocks.append({"type": "text", "text": f"SNAPSHOT\n{render_payload(payload)}"})
-        blocks.append({"type": "text", "text": news_block(snapshot.news, symbol=snapshot.symbol)})
-        blocks.append({"type": "text", "text": history_block})
+        _append_text(blocks, news_block(snapshot.news, symbol=snapshot.symbol))
+        _append_text(blocks, history_block)
         blocks.append(
             {
                 "type": "text",
@@ -207,6 +207,26 @@ def _retry_instruction(problem: str) -> str:
         "make it validate -- if the honest verdict is NO_SETUP, say NO_SETUP with "
         "null prices."
     )
+
+
+def _append_text(blocks: list[TextBlockParam | ImageBlockParam], text: str) -> None:
+    """Add a text block, or nothing at all if there is no text (M10d).
+
+    **An empty text block is an HTTP 400**, not an empty section: the Messages API
+    answers ``messages: text content blocks must be non-empty`` and the whole call
+    fails. The forex path passed ``""`` as its history block, so *every* forex analyst
+    call would have died that way — as an ``AnalystUnavailable`` that reads in the logs
+    like an API problem rather than like a bug (journal/M10d_REPORT.md, join 4).
+
+    Fixed in both places, deliberately. The caller now sends a real history block, and
+    this makes the failure impossible rather than merely absent — the next caller with
+    an empty section should get no section, not a 400.
+
+    Crypto's bytes cannot move: ``build_history_block`` and ``news_block`` both always
+    emit their headers, so neither has ever been empty, and the prompt golden proves it.
+    """
+    if text.strip():
+        blocks.append({"type": "text", "text": text})
 
 
 def order_charts(charts: list[ChartImage], symbol: str) -> list[ChartImage]:

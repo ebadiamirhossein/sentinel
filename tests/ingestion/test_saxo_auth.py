@@ -13,7 +13,9 @@ single-use it does not merely leave the system stale — it ends the chain.
 
 from __future__ import annotations
 
+import stat
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -426,3 +428,70 @@ async def test_no_token_value_ever_appears_in_a_log_line() -> None:
     refreshed = [entry for entry in logs if entry["event"] == "forex.auth_refreshed"]
     assert refreshed and refreshed[0]["refresh_rotated"] is True
     assert refreshed[0]["refresh_after"] == fingerprint(SecretStr(NEW_REFRESH))
+
+
+# ── moving the bootstrap token to the server (M10d) ─────────────────────────
+
+
+def test_the_bootstrap_token_is_written_0600_and_never_printed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one operation whose whole purpose is to move a credential between machines.
+
+    ``--login`` exchanged the code, ran its checks and dropped the credential on exit,
+    so until M10d there was **no supported way to get a bootstrap token onto the
+    server** — which is the only reason a human runs that flow. The server has zero
+    inbound ports by design and the browser is on the owner's Mac; the token is the one
+    thing that has to cross.
+
+    **A file rather than stdout**, and HANDOFF §4 item 9 is why: this owner screenshots
+    his terminal, and a live credential in scrollback is a live credential in a
+    screenshot. So the assertion that matters is the second one — the value does not
+    reach stdout — and the first is that the file is unreadable by anyone else from the
+    moment it exists.
+    """
+    from sentinel.tools import saxo_record_fixtures as tool
+
+    target = tmp_path / "home" / ".sentinel" / "saxo_bootstrap_token"
+    monkeypatch.setattr(tool, "BOOTSTRAP_TOKEN_PATH", target)
+    secret = "a-live-single-use-refresh-token"
+    bundle = SaxoTokenBundle(
+        refresh_token=SecretStr(secret),
+        obtained_at=NOW,
+        refresh_expires_at=NOW + timedelta(seconds=3600),
+    )
+
+    written = tool.emit_bootstrap_token(bundle)
+    printed = capsys.readouterr().out
+
+    assert written.read_text(encoding="utf-8").strip() == secret
+    assert stat.S_IMODE(written.stat().st_mode) == 0o600
+    assert stat.S_IMODE(written.parent.stat().st_mode) == 0o700
+
+    assert secret not in printed, "the credential reached the terminal"
+    assert str(written) in printed, "the owner is not told where it went"
+    assert bundle.refresh_fingerprint in printed, "no fingerprint to check it against"
+
+
+def test_the_bootstrap_file_is_created_with_its_mode_not_chmoded_afterwards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file created 0644 and chmod'ed to 0600 is world-readable in between.
+
+    The window is small and it is real, and it is avoidable for free by passing the
+    mode to ``os.open``. Asserted by pre-creating the file **world-readable** and
+    checking the rewrite does not inherit that: ``O_TRUNC`` keeps an existing inode's
+    permissions, so a second login onto a loosened file would silently stay loosened.
+    """
+    from sentinel.tools import saxo_record_fixtures as tool
+
+    target = tmp_path / ".sentinel" / "saxo_bootstrap_token"
+    target.parent.mkdir(parents=True)
+    target.write_text("stale", encoding="utf-8")
+    target.chmod(0o644)
+    monkeypatch.setattr(tool, "BOOTSTRAP_TOKEN_PATH", target)
+
+    tool.emit_bootstrap_token(SaxoTokenBundle(refresh_token=SecretStr("fresh"), obtained_at=NOW))
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text(encoding="utf-8").strip() == "fresh"

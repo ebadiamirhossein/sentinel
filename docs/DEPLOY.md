@@ -26,7 +26,7 @@ cannot collide with the neighbour.
 | 12 | Shipping the next commit | *when needed* |
 | 13 | Going live (after 24h of dry run) | *when ready* |
 | 13a | Letting somebody else in | *when needed* |
-| 13b | Enabling forex — what must be on the server first | *not yet* |
+| 13b | Enabling forex — the switch-on procedure | **this release** |
 | 14 | Troubleshooting | *when needed* |
 
 **§1–§8 are 24 minutes and end with a running, verified system** — that is the
@@ -709,120 +709,138 @@ docker compose run --rm --no-deps app python -m sentinel.tools.stats --user <id>
 is how you would read somebody else's book from the server if you ever had to —
 deliberately a shell command on the box, not a Telegram command.
 
-## 13b. Enabling forex — what must be on the server first
+## 13b. Enabling forex — the switch-on procedure
 
-> **Correction (2026-08-21, from the hygiene session) — this section's opening
-> premise is false, and its prerequisite is already satisfied.** The text below is
-> left standing unedited, apart from step 5, because a runbook that quietly rewrites
-> itself cannot be checked against the state it recorded. Read this first.
->
-> **"The problem" below says the server's `config.yaml` predates M10a and has no
-> `markets:` block at all. It does have one.** Verified on the live server,
-> 2026-08-21:
->
-> ```
-> $ grep -n "markets:\|dry_run\|llm_reserved_floor_usd" config.yaml
-> 21:markets:
-> 23:    enabled: true          # markets.crypto
-> 31:    dry_run: false         # markets.crypto
-> 72:    llm_reserved_floor_usd: 8
-> 86:    enabled: false         # markets.forex
-> 87:    dry_run: true          # markets.forex
->
-> $ git diff config.yaml
-> (no output — the server file is byte-identical to the committed one)
-> ```
->
-> Both bullets under "The problem" are therefore out of date: the server **has** a
-> `markets.forex` section, and it **has** `markets.crypto.llm_reserved_floor_usd: 8`.
-> Some earlier deploy applied step 3 of the procedure below as a side effect —
-> `git pull` rewrote the file because there was nothing local to collide with.
->
-> **So steps 2, 3 and 4 are already done, and there is nothing to reconstruct.**
-> Switch-on day is step 6 alone: one line, `markets.forex.enabled: false` → `true`,
-> committed and deployed through §12. The floor is already in with the block, which
-> is what steps 3-4 existed to guarantee.
->
-> **Step 5 is corrected in place**, because it carried the same defect §13 did: it
-> said `docker compose restart app`, and a restart cannot apply a config change. The
-> config is `COPY`-ed into the image (`Dockerfile`) with no volume mounted over it
-> (`docker-compose.yml`), so a rebuild is required. See §13's correction.
->
-> Nothing else in this section changes. The credentials paragraph, the floor
-> argument, the warning about `config.multi_market` moving crypto's card bytes, and
-> the "forex starts in dry_run" rule all stand as written.
+> **Rewritten 2026-08-21 (M10d), and superseding everything this section said before.**
+> The old text was written when forex shipped disabled and its prerequisite was a
+> `markets:` block the server did not have. Both of those are gone: the server's
+> `config.yaml` has carried the block since some earlier deploy (verified on the box
+> 2026-08-21), and **`markets.forex.enabled` is now committed as `true`**. What follows
+> is the procedure for the deploy that turns it on, not for a future one.
 
-**Not yet.** Forex ships disabled and cannot produce a signal until M10c adds the
-card and the tracker. This section exists because the prerequisite is a config
-change on the server that nothing in the code can do for you, and discovering it on
-switch-on day is the wrong time.
+**What switch-on actually is.** A merge and a rebuild. There is **no migration** — the
+schema stays at `0011_forex_spine` — and no config edit on the box, because
+`config.yaml` is baked into the image and the committed file already says everything.
 
-**The problem.** The server's `config.yaml` predates M10a: §6 and §13 edit it in
-place, so it has **no `markets:` block at all**. It is read as crypto-only, which is
-correct and is why nothing has broken. But it means the server carries:
+### What must be true before you start
 
-- no `markets.forex` section — so forex cannot be enabled by flipping a flag,
-  because there is no flag on that machine;
-- **no `markets.crypto.llm_reserved_floor_usd`** — so crypto's reserved budget
-  floor is not in effect there. Harmless today (a floor only reserves against
-  *other* markets, and there is only one) and **not** harmless the moment a second
-  market can spend.
+| | |
+|---|---|
+| `SAXO_APP_KEY`, `SAXO_APP_SECRET` in the server's `.env` | forex cannot read a candle without them |
+| `SAXO_REFRESH_TOKEN` in the server's `.env` | seeded by the browser login in step 3 |
+| `sentinel/fx/data/calendar.yaml` populated | committed, covers to **2026-10-30** |
+| `TELEGRAM_OWNER_USER_ID` set | or the re-auth and calendar alerts have nowhere to go |
 
-**The procedure, when the time comes.**
+Nothing goes in the repo. All three Saxo values are `.env` only.
 
-1. Take a backup first: `./ops/backup.sh`.
-2. Read what the server's config currently differs from the repo's:
+### 1. Back up, and capture the before-picture
+
+```bash
+./ops/backup.sh
+```
+
+journal/M10c_REPORT.md's "Deployed" section names the cheap fix it wished it had:
+capture the surfaces **before** the restart so "nothing else moved" is a diff rather
+than a memory. Send yourself `/status`, `/pulse` and `/positions` and keep the text.
+
+**One line of `/pulse` is expected to change and only one:** `today of $10` becomes
+`today of $20`. That is the deployment ceiling this release raises, and the four
+goldens that carry it were regenerated deliberately. Anything else moving on a crypto
+card is a defect, not a regeneration.
+
+### 2. Merge and deploy
+
+```bash
+cd /opt/sentinel && ./ops/update.sh
+```
+
+`ops/update.sh` pulls, rebuilds and recreates. **A rebuild is required, not a restart:**
+`config.yaml`, the prompts and the calendar are all `COPY`-ed into the image with
+nothing mounted over them, so `docker compose restart` cannot apply any of this.
+
+### 3. The browser login — the one manual step, and it is on your Mac
+
+**One sitting.** The refresh token is single-use and lives about an hour, so from 3.1 to
+3.7 you have roughly that long. Your deploys take ~30 s, so it is comfortable — but do
+not start it and walk away.
+
+**The tool never prints the token.** It writes it to `~/.sentinel/saxo_bootstrap_token`
+with mode 0600 and prints the path and a fingerprint. That is deliberate: a live
+credential in terminal scrollback is a live credential in a screenshot.
+
+1. Put `SAXO_APP_KEY` and `SAXO_APP_SECRET` in your **local** `.env` as well as the
+   server's. (Same values. They are the app registration, not the session.)
+2. On the Mac, in the repo:
    ```bash
-   cd /opt/sentinel && git diff config.yaml
+   .venv/bin/python -m sentinel.tools.saxo_record_fixtures --login
    ```
-   Keep that output. It is your live settings.
-3. Take the repo's `markets:` block — it already contains both markets, the floor
-   and the forex prompt version — by discarding the local edits and re-applying
-   them on top:
+3. It prints an authorize URL. Open it, log in to Saxo, approve.
+4. **The browser will land on `https://localhost:8080/callback` and show an error page.
+   That is correct and expected.** Nothing is listening there on purpose — it is what
+   keeps the deployment's zero-inbound-ports property. Copy the **whole address bar**.
+5. Paste it back at the prompt. The tool exchanges the code, writes the token to the
+   0600 file, and then runs its three live checks against `/ref` and `/chart`. It uses an
+   in-memory store, so it can never consume the server's live credential.
+6. Move the token to the server and rebuild:
    ```bash
-   git checkout -- config.yaml
-   ./ops/update.sh
+   cat ~/.sentinel/saxo_bootstrap_token
+   ssh <server> 'cd /opt/sentinel && nano .env'      # SAXO_REFRESH_TOKEN=<paste>
+   ssh <server> 'cd /opt/sentinel && docker compose up -d --build app'
    ```
-4. Re-apply the settings from step 2 (at minimum `markets.crypto.dry_run: false`
-   if you have gone live) and confirm all three of these are present:
+7. Delete the local copy. It is spent the first time the server refreshes:
    ```bash
-   grep -A2 "llm_reserved_floor_usd" config.yaml     # must be 8, under markets.crypto
-   grep -A2 "analyst_prompt_version" config.yaml     # fable_forex_v1, under markets.forex
-   grep -n "enabled" config.yaml                     # crypto true, forex STILL false
+   rm ~/.sentinel/saxo_bootstrap_token
    ```
-   **The floor must go in with the forex block, not after it.** A config that
-   enables forex without `llm_reserved_floor_usd: 8` lets a forex-heavy morning
-   spend the shared dollar while crypto's measurement window is running, which is
-   the exact failure FOREX.md §13 decision 6 exists to prevent. Config load will
-   not complain: a missing floor is a valid zero.
-5. Rebuild, recreate, and confirm the job list from the **running process**. A
-   restart cannot apply a config change — the config is baked into the image (see
-   the correction at the top of this section):
-   ```bash
-   docker compose up -d --build app
-   docker compose logs --tail=20 app | grep pipeline_scheduled
-   ```
-   Before switch-on that line reads
-   `markets=['crypto'] job_ids=['scan:crypto', 'tracker']`. After it, expect
-   `markets=['crypto', 'forex']` and **four** ids —
-   `['scan:crypto', 'scan:forex', 'tracker', 'tracker:forex']`. Note crypto's
-   tracker keeps the bare id `tracker` it has had since M7: APScheduler keys on the
-   id and the running deployment's job is that one (journal/M10c_REPORT.md §11).
-6. Only then, and only when M10c has shipped, set `markets.forex.enabled: true`.
-   Forex starts in `dry_run: true` and stays there until the numbers justify
-   otherwise (FOREX.md §11).
 
-**One thing that changes crypto when forex is switched on.** With two markets
-enabled, `config.multi_market` becomes true and crypto's cards gain a market tag —
-which changes their bytes. The golden surfaces must be regenerated **deliberately,
-as a named step in that milestone**, never as a side effect. See
-`journal/M10b_2_REPORT.md` §12.
+### 4. Confirm from the running process, not from the file
 
-**Forex also needs credentials the crypto deployment has never had:** `SAXO_APP_KEY`
-and `SAXO_APP_SECRET` in `.env`, plus a one-time browser login to seed the refresh
-token. The refresh chain has a one-hour memory, so any outage longer than that needs
-that login repeated by hand (FOREX.md §3.1). None of it is needed while forex is
-disabled.
+```bash
+docker compose logs --tail=50 app | grep -E "pipeline_scheduled|auth_bootstrapped|auth_refreshed|calendar_loaded"
+```
+
+Expect, in order:
+
+- `forex.calendar_loaded … events=11 coverage_until=2026-10-30 known_gaps=1`
+- `forex.auth_bootstrapped` — the `.env` token reached Postgres. **`forex.auth_bootstrap_skipped`
+  is also correct** and means a credential was already stored; the stored one always wins,
+  because the `.env` one was spent on the first refresh.
+- `scheduler.pipeline_scheduled … markets=['crypto', 'forex'] job_ids=['scan:crypto',
+  'scan:forex', 'tracker', 'tracker:forex', 'forex-token-refresh']` — **five** ids. Crypto's
+  tracker keeps the bare `tracker` it has had since M7.
+- within five minutes: `forex.auth_refreshed … refresh_rotated=True`. If this never appears,
+  the credential chain is not being renewed and forex will die within the hour.
+
+Then wait for the top of the next hour inside **07:00–19:00 UTC** and expect a forex card,
+or a `cycle.forex_condition_blocked` / `cycle.outside_scan_hours` line saying why not.
+
+### 5. If forex misbehaves — which lever stops it
+
+In order of speed. **The first one is almost always the right one.**
+
+| lever | stops | reaches the running system by |
+|---|---|---|
+| `/pause forex` | forex gating, publishing **and spending**; crypto untouched | the next forex cycle. No deploy, no restart. |
+| `/resume forex` | lifts it | same |
+| `markets.forex.enabled: false` | everything forex, including its three jobs | **`up -d --build` only** — the config is baked into the image |
+| `/pause` *(no argument)* | **every market, including crypto's live measurement** | the next cycle |
+
+**Do not reach for the bare `/pause` during this window.** It ends the crypto sample it
+was not aimed at, and the crypto measurement is the thing this deployment exists to
+produce. `/pause forex` is the switch you want, and since M10d it stops forex *spending*
+as well as publishing — before that it cost ~$0.73 a cycle to be paused.
+
+### 6. The window has an end date
+
+This is a **two-week observation window, reviewed 2026-09-04** — one day after crypto's
+measurement review, so both are read together. The spend rails were raised for it and
+the revert values are written beside every raised number in `config.yaml` and asserted
+in `tests/test_config.py::test_the_observation_windows_rails_are_the_committed_ones`.
+
+The calendar runs out on **2026-10-30**. Sentinel will send a daily nudge for the
+fortnight before that; when it does, extend `sentinel/fx/data/calendar.yaml` and rebuild.
+It also repeats two outstanding jobs until they are done: verifying the two ECB dates
+against the ECB's own page, and adding US PCE from bea.gov.
+
 
 ## 14. Troubleshooting
 

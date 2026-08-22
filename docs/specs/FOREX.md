@@ -133,17 +133,45 @@ Measured:
 8. **Credentials never appear** in logs, process listings, or error messages — the
    standard `ops/lib.sh` already enforces.
 
-### §3.1 — The one-hour memory is a real operational cost
+### §3.1 — The one-hour memory is a **rare-event** cost, not constant toil *(reframed 2026-08-21, M10d)*
 
-The refresh chain remembers for one hour. **If Sentinel is down longer than that, the
-refresh token is dead and the owner must complete a browser login by hand.**
+**This section previously read as ongoing work. It is not, and the difference decides
+whether Saxo is a viable provider.** The refresh chain remembers for one hour and
+**every refresh resets that hour**, so with the five-minute cadence running the window
+is only ever consumed by an outage.
 
-That covers: a long deploy, a server reboot, a Docker upgrade, any outage over an hour.
-There is no way to engineer around it at this account tier.
+Measured against how this deployment actually behaves:
 
-So the alert must **name re-authentication as the action and carry the authorize URL**.
-A generic "forex paused" sends the owner hunting a data problem when the fix is a
-two-minute login.
+| event | duration | survives? |
+|---|---|---|
+| `docker compose up -d --build` | **~30 s** | yes, easily |
+| the owner's last server reboot | **~90 s** | yes, easily |
+| routine operation | — | yes; each refresh resets the hour |
+| an outage **longer than an hour** | > 3600 s | **no — one manual browser login** |
+
+So the honest statement is: **one manual login after an outage longer than an hour.**
+Not "log in once, forever" (v1, false), and not constant toil (this section until
+M10d, misleading). It is a rare-event cost, and it is the price of this provider at
+this account tier — Certificate Based Authentication is the only unattended option
+Saxo documents and it is partners-only.
+
+Three things follow, and **all three were unimplemented until M10d** even though this
+section had specified them since the spike (journal/M10d_REPORT.md P3):
+
+1. **Something must call `bootstrap()`.** Otherwise `SAXO_REFRESH_TOKEN` never leaves
+   `.env`, the store is empty at boot, and forex is dead on its first cycle with a
+   valid credential sitting in the environment. `sentinel/core/app.py` seeds at boot;
+   the stored credential always wins, so a redeploy cannot overwrite a live chain with
+   the spent `.env` one.
+2. **Something must call `ensure_fresh()` on a timer.** The `forex-token-refresh` job
+   runs every `token_refresh_interval_seconds` (300) with jitter, registered only when
+   forex is enabled, and it runs **through the weekend** — the market being shut does
+   not pause the credential's clock.
+3. **Something must catch `ReauthenticationRequired` and send the alert.** It names
+   re-authentication as the action and carries the authorize URL, because a generic
+   "forex paused" sends the owner hunting a data problem when the fix is a two-minute
+   login. It is keyed on the **dead credential's fingerprint**, not on the date: one
+   message per dead chain, and a fresh one if a fresh chain dies the same day.
 
 The flow itself stays as designed: the owner logs in on his own Mac, the code lands on
 `https://localhost:8080/callback`, and the refresh token goes into the server's `.env`.
@@ -311,6 +339,42 @@ because how often it fires is itself a measurement.
 Keep a time-based floor of 19:00–21:00 UTC as a backstop for when the spread series is
 unavailable. In bar stamps that is 19, 20 and 21 — the three bars the spike measured as
 elevated — which is wall-clock 19:00–22:00.
+
+**Corrected 2026-08-21 (defect #30): the design above does not currently cover the window
+it was written for, and the backstop cannot fire.**
+
+The two halves were meant to compose — measured rail primary, clock floor for when the
+measurement is missing. In production the measurement is **never** missing: the 1h tail
+is 1200 bars every cycle, far past `spread_min_samples`, so `spread_gate` never reaches
+its clock branch and `ROLLOVER_WINDOW` is **unreachable**. The measured rail therefore
+decides the rollover hours alone, and against the global median at 3.0× it admits them:
+
+| | EURUSD | GBPUSD | USDJPY |
+|---|---|---|---|
+| global median | 1.1 | 1.8 | 1.5 |
+| threshold at 3.0× | **3.3** | **5.4** | **4.5** |
+| hour-of-day median 19:00 | 1.1 → passes | 1.8 → passes | 1.6 → passes |
+| hour-of-day median 20:00 | 1.5 → passes | **4.6 → passes** | 1.9 → passes |
+| hour-of-day median 21:00 | 2.7 → passes | 12.0 → rejects | 4.2 → passes |
+
+Only GBPUSD at 21:00 fails. Every other rollover-hour bar at its own typical spread is
+admitted — so a rail written specifically to stop trading through the widening D-g
+measured lets almost all of it through, while the cost model charges that same widening
+at row 9 and rejects most of the resulting plans on net RR. **The cycle is paid for in
+full to produce a plan the next rail throws away.**
+
+This is defect #21's own sin one level out: *a rail that cannot fire is worse than an
+absent one, because it reads on a checklist as a rail.*
+
+**Deferred, deliberately, and the reason is worth stating.** The fix is a lower multiple,
+or a second per-hour trigger, or an absolute pip cap — every one of them a **new
+uncalibrated guess**, which is exactly what DRY_RUN calibration exists to avoid setting
+blind. So M10d sidesteps the window instead: `forex.scan_hours_utc` ends at **19**, which
+is already `friday_signal_cutoff_hour_utc` and therefore invents no number. The exposure
+is closed for the observation window and the defect is not. `tests/fx/test_spread.py`
+pins the unreachability so a future fix has something to invert, and pins that the scan
+window ends at or before `rollover_window_start_hour_utc` so the exposure cannot be
+re-acquired by widening the window alone.
 
 ### §5.4 — The weekend gap
 
@@ -1075,6 +1139,92 @@ look for it. Owner rulings on all three are dated the same day.
   and `test_the_deployed_config_renders_the_same_surface`, the strongest assertion in the
   suite, keeps holding because the shipped config is still single-market.
   The only bytes M10c regenerates are the two lines defect #22 fixes.
+
+**2026-08-21 — from the M10d switch-on**
+
+Six more, and the shape of them is different from the twelve before. Those were found
+by reading this spec against the code. **These were found by composing the joins M10c
+left open and by turning the flag on** — five of the six were in code this document
+already described as done, and every one of them was invisible while forex was
+disabled. Owner rulings on all six are dated the same day.
+
+- **#24 §3.1 — the OAuth chain had three unwired callers out of four.** ``SaxoAuth``
+  itself is correct and has been since M10b. Nothing called ``bootstrap()``, so
+  ``SAXO_REFRESH_TOKEN`` never left ``.env`` and the token store was **empty at boot** —
+  forex would have died on its first cycle with a valid credential in the environment.
+  Nothing called ``ensure_fresh()``, so §3 requirement 5's five-minute cadence did not
+  exist and the token was touched once an hour by a scan, against a credential that
+  lives about an hour. And ``reauth_alert()`` was constructed only in a test, with
+  ``ReauthenticationRequired`` caught nowhere that could send a message. **Ruling:**
+  ``sentinel/core/forex_auth.ForexCredentialKeeper`` is those three callers and holds no
+  rules of its own; the alert is keyed on the dead credential's **fingerprint** rather
+  than the date, so a second death after a fresh login is not suppressed. §3.1 is also
+  reframed above — the one-hour memory is a rare-event cost, not constant toil.
+
+- **#25 §16.10 — the forex tracker job could not build its adapter.** ``app.track_for``
+  went through ``wiring.market_adapter``, which supplies neither an HTTP fetcher nor an
+  access-token provider; ``wiring._saxo`` raises ``UnknownAdapter`` without both. Binance
+  needs neither, so crypto has been fine since M7. The exception was swallowed into a
+  ``scheduler.tick_failed`` log line, so ``tracker:forex`` would have failed every 60
+  seconds for ever with ``/health`` green. **Ruling:** forex builds through
+  ``wiring.forex_adapter``, and ``_schedule_pipeline``'s closure is now *executed* in a
+  test rather than only counted.
+
+- **#26 §4.1 — the closed-candle rule is right for indicators and wrong for the
+  tracker.** ``PriceFeed`` asks one method two different questions and Binance answers
+  both correctly by returning the in-progress candle last. Saxo has no closed flag, so
+  the adapter applies §4.1 itself — which left the 1m fill read **120 s stale on every
+  tick** (M7 reads 1m high/low precisely so a 60-second poll cannot miss a wick) and made
+  the invalidation read drop the forming bar **twice**, discarding the newest closed
+  hour, which is the only hour an invalidation is ever measured on. **Ruling:** §4.1's
+  rule stands unchanged for anything computing an indicator, and
+  ``sentinel/fx/pricing.ForexCandleSource`` answers each of ``PriceFeed``'s two questions
+  separately. A high and a low are prices already traded; an EMA is not.
+
+- **#27 §2.1 — an empty section is an HTTP 400, not an empty section.** The forex path
+  passed ``""`` as its history block and ``user_blocks`` appended it unconditionally. The
+  Messages API refuses an empty text block outright, so **every forex analyst call would
+  have failed** — as an ``AnalystUnavailable`` that reads in the logs like a vendor
+  problem rather than like a bug. Nothing caught it because the forex prompt had never
+  once been sent. Verified against the live endpoint before the fix. **Ruling:** the
+  forex path builds a real history block through the same market-scoped
+  ``_history_block`` crypto uses, and ``user_blocks`` drops an empty block so the failure
+  is impossible rather than merely absent.
+
+- **#28 §11 — "switch-on moves no golden" was half true.** M10c pinned the tagged bytes
+  in advance and that half held perfectly. What it could not pin is that
+  ``render_surfaces()`` defaults to ``load_config()``: once the shipped config enabled
+  both markets it rendered the **tagged** form into the untagged fixtures, and
+  ``test_every_multi_market_surface_differs_by_its_header_alone`` compared a string with
+  itself. **Ruling:** ``single_market()`` mirrors ``multi_market()``; the single set
+  renders from it and the multi set from the shipped config. No fixture's contents moved
+  for the tag — the mapping moved.
+
+- **#29 §7.4 / §16.11 — the cost model omitted prompt caching, and forex has neither of
+  crypto's cost controls.** Measured (journal/M10d_REPORT.md): one call is **$0.226104**
+  cached and **$0.281925** uncached, and a cycle of three pairs pays one cache write and
+  two reads = **$0.734**, not the ~$1.00 a naive three-times-one estimate gives. The
+  larger point is structural and §16.11 should have said it: forex has **no screener and
+  no usable re-analysis cooldown**, so every pair buys a full analyst call every cycle.
+  A cooldown of one setup-timeframe candle saves nothing here, because forex's setup
+  timeframe is **1h** and the scan interval is 60 minutes — the cooldown would expire
+  exactly when the next scan fires. **Ruling:** a config-level scan window
+  (``forex.scan_hours_utc``, 07:00–19:00 UTC) is the cost control for the observation
+  window; a forex screener is deferred until there is data to tune it against.
+
+- **#30 §5.3 — the rollover rail cannot fire, and the window it was written for is
+  uncovered.** The spread-triggered design keeps a clock floor "for when the spread
+  series is unavailable"; the series is never unavailable at a 1200-bar tail, so
+  ``ROLLOVER_WINDOW`` is unreachable in production and the measured rail decides the
+  rollover hours alone — admitting every one of them except GBPUSD at 21:00, because
+  3.0× the global median is 3.3/5.4/4.5 pips against 19:00–20:00 hour medians of
+  1.1–1.8 and 1.5–4.6. Corrected in place in §5.3 with the full table. **Ruling: not
+  fixed here.** Every candidate fix is a new uncalibrated threshold, and
+  ``forex.scan_hours_utc`` ending at 19 — already ``friday_signal_cutoff_hour_utc`` —
+  closes the exposure for the observation window without inventing a number. Two tests
+  pin it: one that the backstop cannot fire (to be inverted, not deleted, when somebody
+  fixes it) and one that the scan window ends at or before the rollover band, so the
+  exposure cannot be re-acquired by widening the window alone.
 
 ### The M10b boundary defect — a milestone boundary is untested by construction
 

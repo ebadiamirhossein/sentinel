@@ -257,12 +257,14 @@ class DatabaseTokenStore:
 
 
 @asynccontextmanager
-async def forex_adapter(settings: Settings, database: Database) -> AsyncIterator[SaxoForexAdapter]:
-    """The Saxo adapter, its HTTP client and its OAuth chain, closed after use.
+async def forex_auth(settings: Settings, database: Database) -> AsyncIterator[SaxoAuth]:
+    """The OAuth chain and the HTTP client it talks over, closed after use.
 
-    Its own entry point rather than a branch inside :func:`snapshot_assembler`,
-    because almost nothing is shared: forex has no CryptoPanic, no fear-and-greed and
-    no BTC dominance, and it needs a stateful credential none of those want.
+    Split out of :func:`forex_adapter` at M10d, because the credential now has a
+    **second** caller that wants no adapter at all: the five-minute refresh job (§3
+    requirement 5). That job exists to keep the refresh token's one-hour life rolling
+    over — including all weekend, when the market is shut and nothing is reading a
+    chart — so building a chart adapter to do it would be building the wrong thing.
 
     Raises when the app keys are absent. A forex cycle without credentials cannot
     degrade into a quieter forex cycle — it has no data at all — and the failure has
@@ -274,22 +276,31 @@ async def forex_adapter(settings: Settings, database: Database) -> AsyncIterator
             "SAXO_APP_KEY and SAXO_APP_SECRET are required to ingest forex; "
             "forex stays paused until they are set (specs/FOREX.md §3)"
         )
-
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        fetcher = HttpFetcher(
-            client,
-            timeout_seconds=settings.config.ingestion.request_timeout_seconds,
-            max_retries=settings.config.ingestion.max_retries,
-            backoff_seconds=settings.config.ingestion.retry_backoff_seconds,
-        )
-        auth = SaxoAuth(
+        yield SaxoAuth(
             settings.config.forex,
-            fetcher=fetcher,
+            fetcher=HttpFetcher(
+                client,
+                timeout_seconds=settings.config.ingestion.request_timeout_seconds,
+                max_retries=settings.config.ingestion.max_retries,
+                backoff_seconds=settings.config.ingestion.retry_backoff_seconds,
+            ),
             store=DatabaseTokenStore(database),
             app_key=key,
             app_secret=secret,
         )
-        adapter = build_adapter(settings, Market.FOREX, fetcher=fetcher, tokens=auth)
+
+
+@asynccontextmanager
+async def forex_adapter(settings: Settings, database: Database) -> AsyncIterator[SaxoForexAdapter]:
+    """The Saxo adapter over the OAuth chain, closed after use.
+
+    Its own entry point rather than a branch inside :func:`snapshot_assembler`,
+    because almost nothing is shared: forex has no CryptoPanic, no fear-and-greed and
+    no BTC dominance, and it needs a stateful credential none of those want.
+    """
+    async with forex_auth(settings, database) as auth:
+        adapter = build_adapter(settings, Market.FOREX, fetcher=auth.fetcher, tokens=auth)
         assert isinstance(adapter, SaxoForexAdapter)
         try:
             yield adapter

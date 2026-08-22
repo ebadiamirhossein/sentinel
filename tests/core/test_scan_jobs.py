@@ -57,11 +57,32 @@ def enable_forex(settings: Settings) -> Settings:
     return settings.model_copy(update={"config": config})
 
 
+def disable_forex(settings: Settings) -> Settings:
+    """Forex off — what the shipped config carried until M10d switched it on.
+
+    The single-market assertions below are about **one enabled market**, not about
+    which one the shipped file happens to enable this month. Reading the shipped flag
+    made them a test of the config; against an explicit one they keep saying what they
+    meant, and they keep the crypto-only job list pinned for the day forex is turned
+    back off.
+    """
+    config = settings.config.model_copy(deep=True)
+    config.markets[Market.FOREX] = config.markets[Market.FOREX].model_copy(
+        update={"enabled": False}
+    )
+    return settings.model_copy(update={"config": config})
+
+
 def test_with_forex_disabled_exactly_one_scan_job_is_registered_at_sixty_minutes(
     settings: Settings,
 ) -> None:
-    """The no-op claim, pinned. One scan, one tracker, nothing else."""
-    registered = jobs_for(settings)
+    """One scan, one tracker, nothing else — and **no forex token job**.
+
+    That last clause is what makes this worth keeping after switch-on: M10d adds a
+    five-minute credential-refresh job, and it must appear only when forex is enabled
+    or a crypto-only deployment starts polling a token endpoint it has no keys for.
+    """
+    registered = jobs_for(disable_forex(settings))
     scans = {name: seconds for name, seconds in registered.items() if name.startswith("scan:")}
     assert scans == {"scan:crypto": 3600.0}
     assert registered["tracker"] == 60.0
@@ -173,10 +194,15 @@ def test_the_logged_ids_are_the_ones_switch_on_day_will_read(settings: Settings)
     pass. This is the one place the actual strings are written down, and the bare
     ``tracker`` is the whole point of it.
     """
-    assert scheduled_log_for(settings)["job_ids"] == ["scan:crypto", "tracker"]
+    assert scheduled_log_for(disable_forex(settings))["job_ids"] == ["scan:crypto", "tracker"]
     assert scheduled_log_for(enable_forex(settings))["job_ids"] == [
         "scan:crypto",
         "scan:forex",
         "tracker",
         "tracker:forex",
+        # M10d. §3 requirement 5's five-minute cadence, which had no caller at all
+        # until this milestone. Registered ONLY with forex enabled, which is what
+        # keeps the crypto-only list above unchanged — the "deploying this is a no-op"
+        # claim rests on that line, not on an argument.
+        "forex-token-refresh",
     ]

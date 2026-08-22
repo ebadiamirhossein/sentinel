@@ -314,3 +314,57 @@ async def test_analyze_signature_matches_the_spec(
     client = client_factory([message_payload(valid_report_json())])
     report = await build(client, app_config).analyze(snapshot, charts, HISTORY)
     assert report is not None
+
+
+# --------------------------------------------------------------------------- #
+# Empty text blocks are an HTTP 400, not an empty section (M10d, join 4)
+# --------------------------------------------------------------------------- #
+
+
+async def test_an_empty_history_block_is_omitted_rather_than_sent_empty(
+    client_factory: ClientFactory,
+    app_config: AppConfig,
+    snapshot: MarketSnapshot,
+    charts: list[ChartImage],
+    recorder: Recorder,
+) -> None:
+    """The defect join 4 found, and the reason it could not be found any other way.
+
+    The Messages API rejects an empty text block outright — ``messages: text content
+    blocks must be non-empty``, HTTP 400 — so a section with nothing in it is not an
+    empty section, it is a failed call. The forex path passed ``""`` as its history
+    block, which means **every** forex analyst call would have died as an
+    ``AnalystUnavailable`` that reads in the logs like an API problem rather than like a
+    bug. Nothing caught it because the forex prompt had never once been sent, and every
+    test in this file scripts the transport.
+
+    Verified against the live endpoint before this was written: the same payload with
+    one empty text block 400s, and without it counts 8 tokens.
+    """
+    client = client_factory([message_payload(valid_report_json())])
+    await build(client, app_config).analyze(snapshot, charts, "")
+
+    blocks = recorder.last["messages"][0]["content"]
+    empty = [b for b in blocks if b["type"] == "text" and not b["text"].strip()]
+    assert empty == [], f"{len(empty)} empty text block(s) would 400 the whole call"
+
+
+async def test_a_real_history_block_is_still_sent_whole(
+    client_factory: ClientFactory,
+    app_config: AppConfig,
+    snapshot: MarketSnapshot,
+    charts: list[ChartImage],
+    recorder: Recorder,
+) -> None:
+    """The sibling that keeps the fix above from becoming "history is optional".
+
+    Dropping empty blocks must not drop a *present* one. specs/PROMPTS.md §3's
+    calibration block is the analyst's only view of its own measured performance, and
+    losing it silently would be a worse defect than the 400 — the call would succeed
+    and the reasoning would be poorer with nothing to notice it by.
+    """
+    client = client_factory([message_payload(valid_report_json())])
+    await build(client, app_config).analyze(snapshot, charts, HISTORY)
+
+    texts = [b["text"] for b in recorder.last["messages"][0]["content"] if b["type"] == "text"]
+    assert HISTORY in texts

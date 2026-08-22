@@ -183,12 +183,26 @@ class SaxoForexAdapter:
 
     # ── candles ──────────────────────────────────────────────────────────────
 
-    async def fetch_tail(self, symbol: str, timeframe: str, limit: int) -> ForexTail:
+    async def fetch_tail(
+        self, symbol: str, timeframe: str, limit: int, *, include_forming: bool = False
+    ) -> ForexTail:
         """The newest ``limit`` bars, bid and ask, with the forming one dropped.
 
         The primitive every other candle read is built on. One request, no anchor:
         ``Mode`` and ``Time`` are deliberately never sent, so the series cannot vary
         with an anchor the way D-d showed it can.
+
+        ``include_forming`` keeps the still-forming newest bar, and **exactly one
+        caller may pass it**: :class:`sentinel.fx.pricing.ForexCandleSource`, for the
+        tracker's 1m fill read (M10d). §4.1's rule exists because a forming bar
+        poisons RSI, ATR and the whole EMA stack — plausibly, with no error. A high
+        and a low are different in kind: they are prices this instrument has
+        *already traded through*, and M7 reads them precisely so a 60-second poll
+        cannot miss the wick that filled a rung. Withholding them costs two minutes
+        of blindness on every tick and protects nothing.
+
+        Nothing that computes an indicator may pass it, which is why it is
+        keyword-only and defaults to today's behaviour.
         """
         horizon = _horizon_for(timeframe)
         if limit > self._config.max_count:
@@ -222,21 +236,38 @@ class SaxoForexAdapter:
         now = self._clock.now()
         closed = [row for row in rows if _is_closed(row, horizon, now, self._config)]
         forming_dropped = len(closed) != len(rows)
+        if include_forming:
+            # Nothing is dropped, so nothing can be "every bar dropped" either: the
+            # all-forming guard below is a statement about the *closed* series, and
+            # this caller did not ask for one.
+            return self._tail(symbol, timeframe, horizon, limit, rows, now, dropped=False)
         if not closed:
             raise DegradedRead(
                 f"{symbol} {timeframe}: every returned bar is still forming at {now.isoformat()}"
             )
 
-        fetched_at = now
+        return self._tail(symbol, timeframe, horizon, limit, closed, now, dropped=forming_dropped)
+
+    @staticmethod
+    def _tail(
+        symbol: str,
+        timeframe: str,
+        horizon: int,
+        limit: int,
+        rows: list[dict[str, Any]],
+        at: datetime,
+        *,
+        dropped: bool,
+    ) -> ForexTail:
         return ForexTail(
             symbol=symbol,
             timeframe=timeframe,
             horizon_minutes=horizon,
             requested=limit,
-            bid=_series(closed, symbol=symbol, timeframe=timeframe, side="Bid", at=fetched_at),
-            ask=_series(closed, symbol=symbol, timeframe=timeframe, side="Ask", at=fetched_at),
-            forming_dropped=forming_dropped,
-            alignment_hours_utc=tuple(sorted({row["at"].hour for row in closed})),
+            bid=_series(rows, symbol=symbol, timeframe=timeframe, side="Bid", at=at),
+            ask=_series(rows, symbol=symbol, timeframe=timeframe, side="Ask", at=at),
+            forming_dropped=dropped,
+            alignment_hours_utc=tuple(sorted({row["at"].hour for row in rows})),
         )
 
     # ── MarketDataAdapter ────────────────────────────────────────────────────
@@ -359,11 +390,22 @@ def _parse_time(value: Any, *, symbol: str) -> datetime:
     return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-def _is_closed(row: dict[str, Any], horizon: int, now: datetime, config: ForexConfig) -> bool:
-    """§4.1's rule, and the whole of it: ``now >= T + H + grace``."""
-    opened_at: datetime = row["at"]
+def is_closed(opened_at: datetime, *, horizon: int, now: datetime, config: ForexConfig) -> bool:
+    """§4.1's rule, and the whole of it: ``now >= T + H + grace``.
+
+    Public because it has **two** callers and must never have two implementations.
+    The second is :class:`sentinel.fx.pricing.ForexCandleSource`, which has to know
+    which of the bars it kept are still forming so the tracker's invalidation read can
+    hand exactly one of them back to be dropped. A private copy of this inequality
+    there could disagree with this one at the 30-second grace boundary — and the
+    disagreement would be a signal invalidated on a bar that had not closed.
+    """
     closes_at = opened_at + timedelta(minutes=horizon, seconds=config.candle_grace_seconds)
     return now >= closes_at
+
+
+def _is_closed(row: dict[str, Any], horizon: int, now: datetime, config: ForexConfig) -> bool:
+    return is_closed(row["at"], horizon=horizon, now=now, config=config)
 
 
 def _series(
@@ -392,4 +434,4 @@ def _series(
     )
 
 
-__all__ = ["SOURCE", "AccessTokenProvider", "ForexTail", "SaxoForexAdapter"]
+__all__ = ["SOURCE", "AccessTokenProvider", "ForexTail", "SaxoForexAdapter", "is_closed"]

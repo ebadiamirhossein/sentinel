@@ -68,6 +68,11 @@ class CycleStore:
     #: M8.1 — who the cycle fans out to. Empty means nobody is set up, and the
     #: orchestrator must then skip the deep analyst entirely.
     users: list[UserAccount] = field(default_factory=list)
+    #: ``telegram_messages``' claim key (M10d). The cycle writes here now: §8's
+    #: calendar-coverage alert goes out through the same claim-and-confirm notice path
+    #: the daily-loss notice uses, so a cycle store that could not hold a claim could
+    #: not exercise the once-per-day rule at all.
+    messages: dict[tuple[UUID, str, int, str], Any] = field(default_factory=dict)
     #: ``fx_rates``, keyed by pair (M10c). Keyed rather than a single figure because
     #: forex sizes in EUR against the **quote** currency, which is EURJPY on the yen
     #: cross (§7.1) — a table with one row could not express that.

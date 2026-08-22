@@ -53,12 +53,48 @@ class Impact(StrEnum):
     LOW = "LOW"
 
 
+class TimeConfidence(StrEnum):
+    """Whether the issuing institution publishes a time, or we estimated one.
+
+    **BoJ is the reason this exists.** It announces "in the afternoon of the second
+    day" and gives no fixed clock time; the observed range is roughly 02:30-06:00 UTC.
+    A single instant written down for it is an estimate, and an estimate that looks
+    like a fact is how a blackout ends up on the wrong side of a rate decision.
+    """
+
+    EXACT = "exact"
+    APPROXIMATE = "approximate"
+
+
 @dataclass(frozen=True)
 class CalendarEvent:
     at: datetime
     currency: str
     impact: Impact
     name: str
+    #: The issuing institution's own page. **Required**, because a wrong date is a
+    #: blackout that never fires — silence, which is the failure mode this repository
+    #: has been bitten by most (HANDOFF §4 item 1) — and the only cheap defence is
+    #: being able to re-check the date without re-researching it.
+    source: str = ""
+    #: ``approximate`` widens the window and says why. See :class:`TimeConfidence`.
+    time_confidence: TimeConfidence = TimeConfidence.EXACT
+    #: Per-event window overrides, in minutes. ``None`` means "use the configured
+    #: default", which is -60/+30 (§8). An approximate event **must** set both, so the
+    #: marker cannot be decorative.
+    before_minutes: int | None = None
+    after_minutes: int | None = None
+    #: True while the date rests on secondary sources rather than on the institution's
+    #: own calendar. It does not change behaviour — a plausible date is still used —
+    #: it changes what the staleness alert asks the owner to do.
+    needs_verification: bool = False
+
+    def window(self, *, before_minutes: int, after_minutes: int) -> tuple[int, int]:
+        """This event's blackout window, its own overrides winning over the defaults."""
+        return (
+            self.before_minutes if self.before_minutes is not None else before_minutes,
+            self.after_minutes if self.after_minutes is not None else after_minutes,
+        )
 
 
 @dataclass(frozen=True)
@@ -82,6 +118,39 @@ class CalendarHealth:
     coverage_until: date | None
     days_remaining: int | None
     detail: str
+    #: True while coverage is still valid but running out inside ``warn_within_days``.
+    #: Separate from ``usable``, because these are **different states with different
+    #: outcomes** and collapsing them is the whole defect §8 guards against: expiring
+    #: is a message, expired is a suppression.
+    expiring: bool = False
+    #: Events whose date rests on secondary sources. Carried on the health rather than
+    #: left in a YAML comment, because the point of marking them was to be asked about
+    #: them — a marker nothing reads is decoration.
+    needs_verification: tuple[str, ...] = ()
+    #: What the file says it does **not** cover, verbatim. An absent event is safer
+    #: than a wrong one (no fabricated dates), but only if the absence is visible.
+    known_gaps: tuple[str, ...] = ()
+
+    @property
+    def actions(self) -> tuple[str, ...]:
+        """What the owner has to do, in the order it matters. Never a bare status.
+
+        Same rule as the re-authentication alert (§3.1): a message that says a thing
+        is wrong without saying which two-minute job fixes it sends the reader looking
+        in the wrong place.
+        """
+        todo: list[str] = []
+        if not self.usable or self.expiring:
+            todo.append(
+                "Extend sentinel/fx/data/calendar.yaml, then rebuild the image "
+                "(docker compose up -d --build app) — the calendar is COPY-ed into the "
+                "image, so a restart cannot pick up an edit."
+            )
+        todo.extend(
+            f"Verify against the issuing institution: {name}" for name in self.needs_verification
+        )
+        todo.extend(f"Still missing from the calendar: {gap}" for gap in self.known_gaps)
+        return tuple(todo)
 
 
 @dataclass(frozen=True)
@@ -91,6 +160,16 @@ class EconomicCalendar:
     events: tuple[CalendarEvent, ...]
     coverage_until: date | None
     source: str
+    #: What this file knowingly does **not** contain, in the author's own words.
+    #:
+    #: ``coverage_until`` alone is a claim of completeness, and the shipped file cannot
+    #: honestly make it: US PCE is absent because the BEA schedule could not be reached
+    #: when the file was written, and no date was guessed. Rather than either claim a
+    #: completeness that is false or claim no coverage at all — which suppresses every
+    #: forex signal and would have made this milestone pointless — the file says
+    #: "complete except these", and the staleness alert repeats them until they are
+    #: filled in.
+    known_gaps: tuple[str, ...] = ()
 
     # ── the staleness rail ───────────────────────────────────────────────────
 
@@ -106,6 +185,11 @@ class EconomicCalendar:
         * **coverage ends within ``warn_within_days``** — still usable, but the owner
           is told now rather than on the morning it runs out.
         """
+        unverified = tuple(
+            f"{event.currency} {event.name} at {event.at.isoformat()}"
+            for event in self.events
+            if event.needs_verification
+        )
         if self.coverage_until is None:
             return CalendarHealth(
                 usable=False,
@@ -116,6 +200,8 @@ class EconomicCalendar:
                     "populated, because with no second source 'I do not know' and "
                     "'nothing is scheduled' are the same silence"
                 ),
+                needs_verification=unverified,
+                known_gaps=self.known_gaps,
             )
         remaining = (self.coverage_until - now.date()).days
         if remaining < 0:
@@ -128,6 +214,8 @@ class EconomicCalendar:
                     f"{-remaining} day(s) ago — it is now silent about a period it does "
                     f"not cover"
                 ),
+                needs_verification=unverified,
+                known_gaps=self.known_gaps,
             )
         if remaining <= warn_within_days:
             return CalendarHealth(
@@ -138,12 +226,17 @@ class EconomicCalendar:
                     f"the calendar runs out in {remaining} day(s), on "
                     f"{self.coverage_until.isoformat()} — it needs extending"
                 ),
+                expiring=True,
+                needs_verification=unverified,
+                known_gaps=self.known_gaps,
             )
         return CalendarHealth(
             usable=True,
             coverage_until=self.coverage_until,
             days_remaining=remaining,
             detail=f"covered to {self.coverage_until.isoformat()}",
+            needs_verification=unverified,
+            known_gaps=self.known_gaps,
         )
 
     # ── blackouts ────────────────────────────────────────────────────────────
@@ -170,17 +263,24 @@ class EconomicCalendar:
         for event in self.events:
             if event.impact is not Impact.HIGH or event.currency not in currencies:
                 continue
-            if (
-                event.at - timedelta(minutes=before_minutes)
-                <= now
-                <= event.at + timedelta(minutes=after_minutes)
-            ):
+            # The event's own window when it has one, the configured default otherwise.
+            # BoJ publishes no announcement time — "the afternoon of the second day",
+            # observed 02:30-06:00 UTC — so its entries carry -180/+60 and are marked
+            # approximate. A -60/+30 window around an estimated instant is a window
+            # that can miss the event entirely, which is a blackout that does not fire.
+            before, after = event.window(before_minutes=before_minutes, after_minutes=after_minutes)
+            if event.at - timedelta(minutes=before) <= now <= event.at + timedelta(minutes=after):
+                approximate = (
+                    " (announcement time is an ESTIMATE — this institution publishes none)"
+                    if event.time_confidence is TimeConfidence.APPROXIMATE
+                    else ""
+                )
                 return BlackoutVerdict(
                     rejection=ForexRejection.EVENT_BLACKOUT,
                     event=event,
                     detail=(
                         f"{event.currency} {event.name} at {event.at.isoformat()} — "
-                        f"blackout runs -{before_minutes}/+{after_minutes} minutes"
+                        f"blackout runs -{before}/+{after} minutes{approximate}"
                     ),
                 )
         return BlackoutVerdict()
@@ -249,13 +349,27 @@ def load_calendar(path: Path | None = None) -> EconomicCalendar:
             key=lambda event: event.at,
         )
     )
+    gaps = _known_gaps(raw.get("known_gaps"), source=source)
     log.info(
         "forex.calendar_loaded",
         source=source,
         events=len(events),
         coverage_until=None if coverage is None else coverage.isoformat(),
+        approximate=sum(
+            1 for event in events if event.time_confidence is TimeConfidence.APPROXIMATE
+        ),
+        needs_verification=sum(1 for event in events if event.needs_verification),
+        known_gaps=len(gaps),
     )
-    return EconomicCalendar(events=events, coverage_until=coverage, source=source)
+    return EconomicCalendar(events=events, coverage_until=coverage, source=source, known_gaps=gaps)
+
+
+def _known_gaps(value: Any, *, source: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{source}: 'known_gaps' must be a list of strings")
+    return tuple(sanitize_untrusted(item)[0] for item in value)
 
 
 def _events_list(raw: dict[str, Any], *, source: str) -> list[Any]:
@@ -300,7 +414,57 @@ def _event(entry: Any, *, source: str) -> CalendarEvent:
         modified = True
     if modified:
         log.warning("forex.calendar_name_sanitised", source=source, at=at.isoformat())
-    return CalendarEvent(at=at, currency=currency.upper(), impact=impact, name=name)
+
+    # Required, and refused rather than defaulted. A blackout that never fires is
+    # invisible, so the only cheap defence against a wrong date is a URL somebody can
+    # re-check in ten seconds — and a field that may be omitted is a field that will be.
+    raw_source = entry.get("source")
+    if not isinstance(raw_source, str) or not raw_source.strip():
+        raise ValueError(
+            f"{source}: event {name!r} at {at.isoformat()} has no 'source'. Every entry "
+            f"names the issuing institution's own page, because a wrong date is a "
+            f"blackout that does not fire and nothing else would ever notice."
+        )
+    event_source, _ = sanitize_untrusted(raw_source.strip())
+
+    try:
+        confidence = TimeConfidence(str(entry.get("time_confidence", "exact")).lower())
+    except ValueError as exc:
+        raise ValueError(
+            f"{source}: event at {at} has time_confidence "
+            f"{entry.get('time_confidence')!r}; expected one of "
+            f"{', '.join(c.value for c in TimeConfidence)}"
+        ) from exc
+
+    before = _optional_minutes(entry.get("before_minutes"), field="before_minutes", source=source)
+    after = _optional_minutes(entry.get("after_minutes"), field="after_minutes", source=source)
+    if confidence is TimeConfidence.APPROXIMATE and (before is None or after is None):
+        raise ValueError(
+            f"{source}: event {name!r} at {at.isoformat()} is marked approximate but "
+            f"sets no window. An estimated instant inside the default -60/+30 can miss "
+            f"its own event entirely, so the marker must carry the wider window it is "
+            f"the reason for — otherwise it is decoration."
+        )
+
+    return CalendarEvent(
+        at=at,
+        currency=currency.upper(),
+        impact=impact,
+        name=name,
+        source=event_source,
+        time_confidence=confidence,
+        before_minutes=before,
+        after_minutes=after,
+        needs_verification=bool(entry.get("needs_verification", False)),
+    )
+
+
+def _optional_minutes(value: Any, *, field: str, source: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{source}: '{field}' must be a non-negative whole number of minutes")
+    return value
 
 
 def _instant(value: Any, *, source: str) -> datetime:
@@ -336,6 +500,7 @@ __all__ = [
     "CalendarHealth",
     "EconomicCalendar",
     "Impact",
+    "TimeConfidence",
     "currencies_of",
     "load_calendar",
 ]

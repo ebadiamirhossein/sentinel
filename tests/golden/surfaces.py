@@ -329,8 +329,18 @@ def _gate_rows() -> tuple[GateDecisionRow, ...]:
     )
 
 
-def _spend() -> Any:
-    """The owner's spend line, in the WARN state so its wording is pinned too."""
+def _spend(config: AppConfig) -> Any:
+    """The owner's spend line, in the WARN state so its wording is pinned too.
+
+    **Takes the config since M10d; it called ``load_config()`` directly before.** That
+    made ``test_the_deployed_config_renders_the_same_surface`` blind to the whole
+    ``llm:`` block: both sides of that comparison rendered the *shipped* limits
+    whichever config they were handed, so the two shapes agreed by construction on
+    every figure this line prints. Found when raising the ceiling moved ``/pulse`` and
+    the legacy comparison did not notice. A helper that ignores its own parameter is
+    the same shape of defect as a guard that compares strings where it means values
+    (journal/M10c_REPORT.md §3): it reads like coverage.
+    """
     return spend_view(
         SpendTotals(
             day_usd=Decimal("7.42"),
@@ -338,7 +348,7 @@ def _spend() -> Any:
             calls=214,
             unpriced_calls=0,
         ),
-        load_config().llm,
+        config.llm,
     )
 
 
@@ -536,7 +546,7 @@ def render_surfaces(config: AppConfig | None = None) -> dict[str, Any]:
     screener = _screener()
     report_row = _report_row(config)
     gate_rows = _gate_rows()
-    spend = _spend()
+    spend = _spend(config)
 
     pulse = pulse_view(
         cycle,

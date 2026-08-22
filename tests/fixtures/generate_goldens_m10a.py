@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 
 from sentinel.core.config import load_config
-from tests.golden.pipeline import run_golden_cycle
+from tests.golden.pipeline import run_golden_cycle, single_market
 from tests.golden.surfaces import render_surfaces
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +47,17 @@ def main() -> None:
     _write_json(GOLDEN_DIR / "gate_rejected.json", cycle.gate_rejected)
     _write_text(GOLDEN_DIR / "card.txt", cycle.card)
 
-    for name, rendered in render_surfaces().items():
+    # `single_market(config)`, not a bare `render_surfaces()`, since M10d.
+    #
+    # This directory is the SINGLE-MARKET set — what every surface renders with one
+    # market enabled, which specs/TELEGRAM_UX.md §3e still promises after switch-on.
+    # The shipped config now enables two, so a bare call regenerates these six files
+    # in the TAGGED form and silently destroys the distinction the whole
+    # `surfaces/` vs `surfaces_multi/` split exists for. It did exactly that once,
+    # during M10d, and only the sha256 manifest noticed.
+    #
+    # The tagged set has its own generator: `generate_goldens_m10c`.
+    for name, rendered in render_surfaces(single_market(config)).items():
         if isinstance(rendered, str):
             _write_text(SURFACE_DIR / f"{name}.txt", rendered)
         else:

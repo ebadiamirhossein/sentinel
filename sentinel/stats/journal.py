@@ -63,7 +63,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from sentinel.bot.models import SignalDecision
-from sentinel.bot.plans import AnyPlan, leverage_of, market_of, plan_of
+from sentinel.bot.plans import AnyPlan, journal_leverage_of, market_of, plan_of
 from sentinel.core.logging import get_logger
 from sentinel.core.markets import LEGACY_MARKET, Market
 from sentinel.risk.accounting import Exit, Fill, avg_exit_price, avg_fill_price
@@ -308,9 +308,13 @@ def journal_row_of(
         avg_entry=avg_fill_price(filled) if filled else None,
         avg_exit=avg_exit_price(closed) if closed else None,
         size_eur=None if plan is None else plan.notional_eur,
-        # Crypto's is derived, forex's is a configured cap (§7.6) — the accessor is
-        # where that difference is stated, so the column reads honestly for both.
-        leverage=None if plan is None else leverage_of(plan),
+        # A **per-position** figure, so it is blank for forex: §7.6's margin is
+        # account-level and the 30:1 cap is the same configured constant on every row.
+        # `journal_leverage_of` carries the reasoning; the card still shows the cap
+        # with its ESMA words through `leverage_of`, where it means something. Routing
+        # this column through `leverage_of` instead raised a ValidationError on the
+        # first forex row and took /journal down for the WHOLE workbook (M10d, join 3).
+        leverage=None if plan is None else journal_leverage_of(plan),
         sl_pct=None if plan is None else plan.stop_distance_pct,
         risk_eur=risk_eur,
         pnl_r_gross=row.realized_r,

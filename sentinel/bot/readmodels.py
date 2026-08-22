@@ -181,6 +181,41 @@ def alert_view(alert: Alert, *, spend: SpendView | None = None) -> AlertView:
             at=alert.since,
         )
 
+    if alert.kind is AlertKind.FOREX_CALENDAR_COVERAGE:
+        # `failures` carries the state rather than a count here: 0 = still usable and
+        # running out, 1 = lapsed and already suppressing. Two different messages,
+        # because "you have a fortnight" and "forex is silent right now" call for
+        # very different urgency and the same words would flatten them.
+        expired = alert.failures > 0
+        body = [
+            (
+                "Forex is emitting NOTHING: the economic calendar's coverage has run "
+                "out, and with no second source an empty calendar cannot be read as "
+                "'no events today'."
+            )
+            if expired
+            else (
+                "The economic calendar is running out. Forex is still emitting "
+                "signals; it will stop when coverage lapses."
+            ),
+            "Crypto is unaffected.",
+        ]
+        if alert.detail:
+            body.extend(("", alert.detail))
+        if alert.actions:
+            body.extend(("", "What to do:"))
+            body.extend(f"• {action}" for action in alert.actions)
+        return AlertView(
+            kind=alert.kind.value,
+            title=(
+                "🛑 Sentinel — the forex calendar has run out"
+                if expired
+                else "🗓 Sentinel — the forex calendar needs extending"
+            ),
+            body=tuple(body),
+            at=alert.since,
+        )
+
     if spend is None:  # pragma: no cover — the caller always pairs these
         raise ValueError(f"{alert.kind} needs the spend totals to render")
 

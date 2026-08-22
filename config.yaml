@@ -71,20 +71,23 @@ markets:
     # Written as `8`, not `8.00` — see the YAML-float note above.
     llm_reserved_floor_usd: 8
 
-  # STILL OFF, and deploying M10b-2 is a no-op for the running crypto system.
+  # ═══ SWITCHED ON 2026-08-21 (M10d) — A TWO-WEEK OBSERVATION WINDOW ═══
   #
-  # M10a added the market dimension and no forex code at all. M10b-1 added the data
-  # spine: a Saxo FxSpot adapter, market hours, the OAuth chain, sizing, costs and the
-  # calendar, none of it wired into a cycle. M10b-2 added the features, the chart
-  # variant, the adapter registry and an orchestrator path — which stops at an analyst
-  # report, because a forex plan has no shape to travel in until M10c adds the card and
-  # the tracker.
+  # REVIEW 2026-09-04, one day after crypto's measurement review, so both are read
+  # together. This is not a permanent configuration. See `llm_daily_budget_global_usd`
+  # below for the revert values, and journal/M10d_REPORT.md for what was measured.
   #
-  # While this is false the orchestrator is never constructed for forex at all, so none
-  # of that path runs and nothing under `forex:` below is reachable.
+  # `dry_run: false`, deliberately and against FOREX.md §11's "forex starts in
+  # DRY_RUN". journal/M7_REPORT.md settled what dry_run actually does: it publishes
+  # NOTHING. The card is rendered and logged and the owner never sees it. The goal of
+  # this window is that he READS real forex cards and does not trade them — "not
+  # trading" is his hand on the mouse, not a config flag — and a rehearsal that shows
+  # him nothing rehearses nothing. Owner decision, 2026-08-21.
+  #
+  # Everything under `forex:` at the bottom of this file becomes reachable today.
   forex:
-    enabled: false
-    dry_run: true
+    enabled: true
+    dry_run: false
     adapter: forex_saxo
     scan_interval_minutes: 60
     watchlist_max_symbols: 15
@@ -92,8 +95,19 @@ markets:
       - EURUSD
       - GBPUSD
       - USDJPY
-    llm_daily_budget_usd: 4
-    llm_daily_warn_usd: 3
+    # 16 and 12, up from 4 and 3, for the observation window.
+    #
+    # MEASURED, not estimated (journal/M10d_REPORT.md, join 4): one claude-fable-5
+    # call on a real forex payload is $0.226104 cached / $0.281925 uncached, and a
+    # cycle of three pairs pays one cache write and two reads = $0.734. Twelve
+    # cycles inside `forex.scan_hours_utc` is ~$8.81 on a trading day.
+    #
+    # Note the sub-budget is NOT what binds: crypto's reserved floor caps forex at
+    # `llm_daily_budget_global_usd - 8` = $12 whatever crypto spends. 16 sits above
+    # that on purpose, preserving the design where sub-budgets sum past the ceiling so
+    # the markets compete for the last dollar rather than reserving it.
+    llm_daily_budget_usd: 16
+    llm_daily_warn_usd: 12
     # Its own prompt file. FOREX.md §2.1 requires the prompt to STATE which inputs
     # this market does not have, because an absence a model is not told about reads
     # as a quiet market rather than as a missing input. Crypto keeps fable_v1 and is
@@ -112,7 +126,38 @@ markets:
 # measured markets and wrong when an unmeasured one joins a measured one. Only the
 # unspent part of the floor is held, so the competition resumes the moment crypto has
 # actually spent its 8 — the floor protects the measurement, not crypto's convenience.
-llm_daily_budget_global_usd: 11
+# ═══ RAISED 2026-08-21 (M10d) FOR THE FOREX OBSERVATION WINDOW ═══
+#
+# 11 -> 20. REVIEW 2026-09-04. REVERT VALUES IF FOREX IS NOT CONTINUED:
+#     llm_daily_budget_global_usd: 11
+#     markets.forex.llm_daily_budget_usd: 4     (and llm_daily_warn_usd: 3)
+#     llm.daily_spend_limit_usd: 10             (and daily_spend_warn_usd: 7)
+# A spend rail raised for a rehearsal and never lowered is how the $73/day incident
+# started, so the way back is written down beside the way forward.
+#
+# WHAT THIS BUYS. Forex's real ceiling is `this - markets.crypto.llm_reserved_floor_usd`,
+# not its own sub-budget: `evaluate_market_spend` suspends it at
+# `global_day >= global - max(0, 8 - crypto_spent)`, and substituting
+# `global_day = crypto + forex` cancels crypto out. So 20 - 8 = $12 for forex, against
+# a measured need of $8.81 (12 cycles x $0.734). At 11 it was $3 — three cycles of
+# twenty-four, all of them 00:00-03:00 UTC because the window resets at midnight, i.e.
+# the thin Tokyo session and then silence through London and New York.
+#
+# WHAT THIS COSTS, and it is a trade rather than a side effect: a runaway loop can now
+# burn $20/day before anything stops it, against $11 before. This ceiling is the last
+# thing standing between a bug and the bill — nothing else in the system counts calls —
+# so the blast radius of a scan-loop bug, a retry storm or a watchlist that grows is
+# almost doubled for the length of the window. That is the correct trade for two weeks
+# with a human watching, and it must be an expiring one.
+#
+# WHY FOREX NEEDS SO MUCH FOR THREE SYMBOLS WHEN CRYPTO NEEDS $3.61 FOR TEN: crypto has
+# M8.2's two cost controls and forex has neither. There is no forex screener, so every
+# pair buys a full analyst call every cycle; and a re-analysis cooldown of one
+# setup-timeframe candle saves nothing here, because forex's setup timeframe is 1h and
+# the scan interval is 60 minutes, so the cooldown would expire exactly when the next
+# scan fires. Both are recorded as open questions for the review rather than guessed at
+# now (journal/M10d_REPORT.md).
+llm_daily_budget_global_usd: 20
 
 # PRD.md F1 (15 min cycle), ARCHITECTURE.md §3 (tracker every 60s).
 schedule:
@@ -338,8 +383,24 @@ llm:
   # These gate cost_usd_estimate, which is an ESTIMATE and not billing truth.
   # Sizing: the screener alone is ~$0.023/cycle ≈ $2.2/day at 96 cycles, so $10
   # leaves ~$7.8 for deep analysis — about 24 analyst calls at M5's ~$0.32.
-  daily_spend_limit_usd: 10
-  daily_spend_warn_usd: 7
+  # RAISED 2026-08-21 (M10d) with the ceiling above. REVIEW 2026-09-04; revert to
+  # 10 and 7.
+  #
+  # `daily_spend_warn_usd` is the one that HAD to move, and it is easy to miss why:
+  # `evaluate_market_spend` reads it as the GLOBAL warn level (sentinel/llm/spend.py),
+  # so at 7 against a $20 ceiling it would send a Telegram spend notice every single
+  # day — an ordinary day is now ~$12.42 (crypto $3.61 + forex $8.81). Alert fatigue
+  # on the one channel that has to stay meaningful is how a real warning gets muted.
+  # 16 leaves ~$3.6 of headroom over an ordinary day and $4 of notice before the ceiling.
+  #
+  # `daily_spend_limit_usd` is NOT the operative global limit — that is
+  # `llm_daily_budget_global_usd` above, which `evaluate_market_spend` checks first.
+  # This one is the pre-M10a single-market limit, the value a `markets:`-less config
+  # synthesises `markets.crypto.llm_daily_budget_usd` from, and what deployment-wide
+  # surfaces display. It moves to 20 so no surface prints "of $10" while the system
+  # actually allows $20.
+  daily_spend_limit_usd: 20
+  daily_spend_warn_usd: 16
 
   # USD per 1M tokens. In no spec, so it lives here: a price change is a config
   # edit, not a code change. Token counts are the ground truth; money is an
@@ -550,6 +611,40 @@ forex:
   # misfire over the weekend when in fact it compares fetched_at and would have called
   # a frozen weekend snapshot perfectly fresh.
   max_candle_age_multiplier: 2
+
+  # WHICH HOURS FOREX IS SCANNED, half-open UTC. [7, 19) is twelve hourly cycles
+  # covering London and the New York morning. Owner decision, 2026-08-21, for the
+  # observation window; `[0, 24]` turns the window off.
+  #
+  # WHY IT ENDS AT 19 AND NOT AT 21 — the reason is evidence quality, not cost.
+  #
+  # journal/M10b_SPIKE.md §3 (defect D-g) measured elevated spreads from 19:00 through
+  # 21:00 UTC: GBPUSD's hour-of-day median is 4.6 pips at 20:00 and 12.0 at 21:00,
+  # against a global median of 1.8. §5.3 answered that with a spread-TRIGGERED rail —
+  # and the rail provably does not reject those hours. `spread_gate` reaches its clock
+  # backstop only when the spread series is UNUSABLE, and at a 1200-bar tail it never
+  # is, so `ROLLOVER_WINDOW` is unreachable in production and the measured rail decides
+  # alone. At 3.0x the global median the thresholds are 3.3 / 5.4 / 4.5 pips for
+  # EURUSD / GBPUSD / USDJPY, and the 19:00 and 20:00 hour medians are 1.1-1.8 and
+  # 1.5-4.6. Every one of them passes.
+  #
+  # So the 19:00 and 20:00 cycles bought the day's WORST evidence at full price, with
+  # the rail written to stop exactly that letting them through — and the cost model
+  # then charged them the hour-of-day median at row 9, so most of what they bought was
+  # rejected on net RR anyway. Recorded as FOREX.md defect #30 and NOT fixed here: the
+  # fix is a new threshold, which is a new uncalibrated guess, and this window sidesteps
+  # it. 19 invents nothing — it is already `friday_signal_cutoff_hour_utc`, chosen for
+  # the same reason, so the daily window now ends where the Friday one does.
+  #
+  # It is also a spend rail, and that is the secondary benefit rather than the reason.
+  # Forex has no screener and no usable re-analysis cooldown, so every cycle is three
+  # claude-fable-5 calls unconditionally — $0.734 measured. Twelve cycles is ~$8.81 on a
+  # trading day against a real ceiling of $12; twenty-four would be ~$17.6. Outside
+  # these hours the cycle returns before the first fetch, so they cost ZERO rather than
+  # cheap. Nothing here costs information the prompt does not already discount:
+  # fable_forex_v1.md tells the model in as many words that a level formed in a thin
+  # session is weaker evidence than the same level in the London-NY overlap.
+  scan_hours_utc: [7, 19]
 
   # The access token lives ~20 minutes, but the cadence is really about the REFRESH
   # token: it lives ~1 hour and rotates on every use, and each refresh resets that

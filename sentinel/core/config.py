@@ -606,6 +606,28 @@ class ForexConfig(_Strict):
     rollover_window_start_hour_utc: int = Field(default=19, ge=0, le=23)
     rollover_window_end_hour_utc: int = Field(default=22, ge=1, le=24)
 
+    #: The UTC hours forex is scanned, half-open — ``[7, 19)`` is 07:00 through 18:59,
+    #: twelve hourly cycles covering London and the New York morning.
+    #:
+    #: **It ends at 19 because of evidence quality, not cost** (spec defect #30, owner
+    #: decision 2026-08-21). D-g measured elevated spreads from 19:00 to 21:00, and
+    #: §5.3's spread-triggered rail provably does not reject them: ``spread_gate``
+    #: reaches its clock backstop only when the series is *unusable*, which at a
+    #: 1200-bar tail it never is, so ``ROLLOVER_WINDOW`` is unreachable in production
+    #: and the measured rail decides alone — at 3.0x the global median the thresholds
+    #: are 3.3/5.4/4.5 pips against 19:00-20:00 hour medians of 1.1-1.8 and 1.5-4.6, so
+    #: every one of them passes. Those two cycles bought the day's worst evidence at
+    #: full price with the rail written to stop exactly that letting them through. 19
+    #: invents nothing: it is already ``friday_signal_cutoff_hour_utc``.
+    #:
+    #: **It is also a spend rail**, and that is the secondary benefit. Forex has no
+    #: screener and no usable re-analysis cooldown (crypto's two M8.2 cost controls),
+    #: so every cycle is three claude-fable-5 calls unconditionally — measured at
+    #: $0.734 a cycle, so twelve cycles is ~$8.81 a trading day and twenty-four would
+    #: be ~$17.6. Outside these hours the cycle returns before the first fetch, so
+    #: those hours cost **zero** rather than cheap.
+    scan_hours_utc: tuple[int, int] = (7, 19)
+
     # ── authentication (§3) ──────────────────────────────────────────────────
 
     #: How often the refresh job runs, in seconds. Measured access-token lifetime is
@@ -726,6 +748,24 @@ class ForexConfig(_Strict):
     #: over the weekend, when in fact it compares ``fetched_at`` and would have
     #: reported a frozen weekend snapshot as perfectly fresh.
     max_candle_age_multiplier: int = Field(default=2, ge=1)
+
+    @model_validator(mode="after")
+    def _the_scan_window_is_a_window(self) -> ForexConfig:
+        """Two numbers a person edits one at a time, and both ways of getting it
+        wrong are silent.
+
+        ``[21, 7)`` reads like "overnight" and means "never" to a half-open
+        comparison, so forex would run no cycles at all and look like a quiet market.
+        ``[0, 24)`` is legitimate and is how somebody turns the window off.
+        """
+        start, end = self.scan_hours_utc
+        if not 0 <= start < end <= 24:
+            raise ValueError(
+                f"forex.scan_hours_utc must be [start, end) with 0 <= start < end <= 24, "
+                f"got [{start}, {end}). A window that does not increase never opens, and "
+                f"a forex market that is never scanned is indistinguishable from a quiet one."
+            )
+        return self
 
     @model_validator(mode="after")
     def _ladders_expire_before_the_week_closes(self) -> ForexConfig:
