@@ -66,6 +66,21 @@ def calendar_coverage_key(at: datetime) -> str:
     return f"calendar-coverage:{at:%Y-%m-%d}"
 
 
+def barren_market_key(market: str, at: datetime) -> str:
+    """One per market per UTC day (M10e step 4, specs/FOREX.md §31).
+
+    Per market, because a barren forex day says nothing about crypto and an alert that
+    could not tell them apart would send the owner to the wrong logs. Per UTC day,
+    because the condition it reports lasts a whole day: forex skipped every pair for
+    thirteen consecutive cycles on 2026-08-24, and thirteen identical messages would
+    have been muted long before anybody read one.
+
+    Owner-only, like :func:`calendar_coverage_key` and for the same reason: a member has
+    no lever to pull when a market stops ingesting.
+    """
+    return f"barren-market:{market}:{at:%Y-%m-%d}"
+
+
 class UserNotifier:
     """Send one notice to one user, at most once per key.
 
@@ -136,6 +151,7 @@ class UserNotifier:
 
 __all__ = [
     "UserNotifier",
+    "barren_market_key",
     "calendar_coverage_key",
     "loss_pause_key",
     "no_capital_key",

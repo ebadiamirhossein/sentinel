@@ -9,21 +9,28 @@ Friday bar, not an error), and the last Friday bar is stamped 20:00Z covering
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from sentinel.core.config import ForexConfig
 from sentinel.fx.hours import (
+    FRIDAY,
+    SATURDAY,
+    SUNDAY,
     MarketState,
     candles_are_stale,
     clock_verdict,
+    daily_freshness,
     derive_week_open,
     nominal_week_open,
+    observed_hours_since,
     state_at,
 )
 from sentinel.fx.models import ForexRejection
 
 CONFIG = ForexConfig()
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 def at(day: int, hour: int, minute: int = 0) -> datetime:
@@ -179,3 +186,107 @@ def test_a_wider_timeframe_gets_a_wider_budget() -> None:
     now = at(17, 12)
     assert not candles_are_stale(at(17, 4), timeframe="4h", now=now, config=CONFIG)
     assert candles_are_stale(at(17, 3), timeframe="4h", now=now, config=CONFIG)
+
+
+# ── the daily bar's own rule (defect #31, M10e) ─────────────────────────────
+
+
+def hourly_grid(start: datetime, end: datetime) -> tuple[datetime, ...]:
+    """Every hour the venue serves in ``[start, end)`` — weekends simply absent.
+
+    The week boundary is 17:00 America/New_York, derived per date rather than written
+    down as a UTC hour. That matters here and nowhere else in this file: on a changeover
+    weekend the Friday close and the Sunday open have *different* UTC hours, so a single
+    constant could not express the 47- and 49-hour weekends the tests below rely on.
+    """
+    out, cursor = [], start
+    while cursor < end:
+        anchor = (
+            datetime(cursor.year, cursor.month, cursor.day, 17, tzinfo=NEW_YORK)
+            .astimezone(UTC)
+            .hour
+        )
+        weekday = cursor.weekday()
+        open_now = not (
+            weekday == SATURDAY
+            or (weekday == SUNDAY and cursor.hour < anchor)
+            or (weekday == FRIDAY and cursor.hour >= anchor)
+        )
+        if open_now:
+            out.append(cursor)
+        cursor += timedelta(hours=1)
+    return tuple(out)
+
+
+def test_observed_hours_ignore_the_hours_the_venue_did_not_serve() -> None:
+    """The whole fix in one assertion. 79 hours of clock, 31 hours of market.
+
+    Friday's daily bar read on Monday morning: the wall clock says nearly three and a
+    half days and the market says a day and a bit, because the market was shut for the
+    two days in between. The second number is the one a recency budget means.
+    """
+    label = datetime(2026, 8, 21, tzinfo=UTC)  # Friday's 1d bar, stamped 00:00Z (D-k)
+    monday = datetime(2026, 8, 24, 7, tzinfo=UTC)
+    grid = hourly_grid(label, monday)
+
+    assert (monday - label) == timedelta(hours=79)
+    assert observed_hours_since(label, monday, hourly_open_times=grid) == 31
+
+
+@pytest.mark.parametrize(
+    ("friday", "monday", "weekend_hours"),
+    [
+        # An ordinary summer weekend and an ordinary winter one: 48 hours, an hour apart
+        # in UTC and the same instant in New York.
+        (datetime(2026, 8, 21, tzinfo=UTC), datetime(2026, 8, 24, 7, tzinfo=UTC), 48),
+        (datetime(2027, 1, 22, tzinfo=UTC), datetime(2027, 1, 25, 7, tzinfo=UTC), 48),
+        # Spring forward, 2026-03-08: Friday closes at 22:00Z (EST) and Sunday opens at
+        # 21:00Z (EDT), so that weekend is 47 hours long.
+        (datetime(2026, 3, 6, tzinfo=UTC), datetime(2026, 3, 9, 7, tzinfo=UTC), 47),
+        # Fall back, 2026-11-01: Friday closes at 21:00Z (EDT), Sunday opens at 22:00Z
+        # (EST). 49 hours.
+        (datetime(2026, 10, 30, tzinfo=UTC), datetime(2026, 11, 2, 7, tzinfo=UTC), 49),
+    ],
+    ids=["summer", "winter", "spring-forward", "fall-back"],
+)
+def test_the_daily_rule_survives_both_sides_of_the_daylight_saving_boundary(
+    friday: datetime, monday: datetime, weekend_hours: int
+) -> None:
+    """The anchor moves by an hour twice a year and the verdict does not move at all.
+
+    D-k measured Saxo's daily anchor at 21:00Z in August and 22:00Z in January, and the
+    two changeover weekends are 47 and 49 hours rather than 48 — the US changes at 02:00
+    local, which falls inside the weekend. A rule that *computed* the anchor would have a
+    term to get wrong in each of these four rows. This one counts bars, so the season is
+    carried by the data and never appears in the arithmetic.
+
+    Note the spring-forward row: a 47-hour weekend leaves the *most* market time between
+    the same two calendar instants, and it is still nowhere near the budget.
+    """
+    grid = hourly_grid(friday, monday)
+    freshness = daily_freshness(friday, now=monday, hourly_open_times=grid, config=CONFIG)
+
+    assert freshness.wall_clock_hours == 79
+    assert freshness.observed_hours == 79 - weekend_hours
+    assert freshness.budget_hours == 48
+    assert freshness.covers_label
+    assert not freshness.is_stale
+    assert freshness.margin_hours == 48 - freshness.observed_hours
+
+
+def test_the_daily_rule_still_fires_when_the_feed_actually_stops() -> None:
+    """One day later, the identical tail is no longer a weekend — it is a fault.
+
+    This is the assertion that keeps the rail a rail. FOREX.md #21 and #30 are both the
+    same lesson twice: a threshold widened until the symptom disappears is a checklist
+    item, not a control. The budget here is untouched at 48 hours; it is the ruler that
+    changed, and the ruler still reaches.
+    """
+    label = datetime(2026, 8, 21, tzinfo=UTC)
+    tuesday = datetime(2026, 8, 25, 7, tzinfo=UTC)
+    grid = hourly_grid(label, tuesday)
+
+    freshness = daily_freshness(label, now=tuesday, hourly_open_times=grid, config=CONFIG)
+    assert freshness.observed_hours == 55
+    assert freshness.is_stale
+    assert freshness.margin_hours == -7

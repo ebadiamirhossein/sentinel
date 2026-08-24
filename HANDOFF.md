@@ -315,6 +315,34 @@ signal #4 ETHUSDT trend_pullback — pending entry). Owner capital €200
     one *account size* cannot produce the plan the owner actually trades.
 
 
+16. **A calendar-dependent rule tested on one day of the week has not been tested.**
+    M10d switched forex on at 11:29 on a Saturday. The first trading day a forex
+    cycle ever ran on was Monday 2026-08-24, and it lost every cycle of it: the 1d
+    staleness rail compared wall-clock age against a 48-hour budget, and on a Monday
+    the newest *closed* daily bar is Friday's — 79 hours old at the first cycle of
+    the day, 90 at the last. `status: OK`, `spend_usd: 0`, `/health` green, no alert.
+
+    **Nothing was wrong with the fixture.** `tests/core/saxo_double.py` already
+    generated the venue's real daily grid, 00:00Z labels on weekdays, exactly as the
+    spike measured it. Every forex test in the repo simply ran at `NOW = 2026-08-12
+    12:05 UTC` — a Wednesday. Pointing the same double at a Monday reproduced the
+    live defect on the first attempt, with no other change.
+
+    This is item 11 in a dimension nobody had counted as one. A boundary is not only
+    "a producer shipped in a different session from its consumer"; it is any axis the
+    suite holds constant. **Time is such an axis, and for a market with opening hours
+    it is a load-bearing one:** day of week, side of the DST changeover, and the first
+    session after a holiday are three separate cases, and a system that is shut 49
+    hours a week will meet all three. Forex tests now parametrise over the summer and
+    winter anchors, both ends of the scan window, and the Monday after a closed Friday
+    — Christmas Day 2026 and New Year's Day 2027 are both Fridays.
+
+    Corollary, and the reason this cost a day rather than an hour: **"all three pairs
+    skipped, status OK, cost zero" is the system's blind spot, not an edge case.**
+    Every rail watched for something going wrong; none watched for nothing going
+    right. `AlertKind.MARKET_BARREN` (M10e) is that rail. Full account in
+    journal/M10e_REPORT.md; the spec ruling is FOREX.md §5.1 and defect #31.
+
 ## 5. Boundaries that must survive any new feature
 
 - No execution code / trade-capable keys. Ever. (v1 hard boundary; revisit only

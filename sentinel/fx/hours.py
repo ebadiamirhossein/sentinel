@@ -19,6 +19,13 @@ perfectly fresh, because the *fetch* was recent.
 The conclusion §5.1 reaches is right and its reasoning is inverted. Forex needs a
 **candle-recency** check that crypto never needed, and that check is exactly the one
 that must be skipped while the market is closed. Both halves live here.
+
+**Spec defect #31, recorded 2026-08-24 (M10e).** Skipping the check while the market is
+closed is not enough, because the *weekend does not end when the market reopens*. A
+daily bar read on a Monday is Friday's, and 79 hours of wall clock separate them however
+the venue stamps it. So the daily rail measures in **observed market hours** — see
+:func:`daily_freshness` — while the intraday rails, which are dense and on the UTC grid,
+keep the wall-clock rule above unchanged.
 """
 
 from __future__ import annotations
@@ -207,9 +214,99 @@ def candles_are_stale(
     The budget is the same shape crypto uses for its own staleness — a multiple of
     the timeframe — but measured from the **candle**, not from the fetch. That is the
     whole difference, and it is the difference that matters: a fetch is always recent.
+
+    **Intraday only from M10e.** 15m, 1h and 4h sit on the UTC grid in every season
+    (D-k) and are dense while the market is open, so wall-clock age is the right
+    question for them and this rule is unchanged. The 1d bar is a different animal and
+    has :func:`daily_freshness`; see defect #31 for why asking it this question emptied
+    forex for a day.
     """
     budget = timeframe_to_timedelta(timeframe) * config.max_candle_age_multiplier
     return (now - newest_open_time) > budget
+
+
+@dataclass(frozen=True)
+class DailyFreshness:
+    """The 1d rail's whole arithmetic, kept rather than reduced to a bool.
+
+    The verdict is one number away from the margin, and the margin is the number worth
+    watching (M10e R1): the rail clears a Monday evening by 4-6 observed hours against
+    a D-d measurement noise of +/-2. A margin that thin has to be visible in the logs,
+    so this carries every term the decision used, including ``wall_clock_hours`` — what
+    the pre-M10e rule would have computed, so one log line shows both the verdict and
+    the verdict it replaced.
+    """
+
+    newest_label: datetime
+    observed_hours: int
+    budget_hours: int
+    wall_clock_hours: int
+    #: Does the hourly tail reach back to the daily label? When it does not, the count
+    #: below is a floor rather than a measurement and the bar is stale by construction.
+    covers_label: bool
+
+    @property
+    def margin_hours(self) -> int:
+        return self.budget_hours - self.observed_hours
+
+    @property
+    def is_stale(self) -> bool:
+        return not self.covers_label or self.observed_hours > self.budget_hours
+
+
+def observed_hours_since(
+    label: datetime, now: datetime, *, hourly_open_times: Sequence[datetime]
+) -> int:
+    """How many hourly bars the venue itself placed in ``[label, now)``.
+
+    The market-hours analogue of ``now - label``: identical when nothing was shut in
+    between, and smaller by exactly the closure when something was.
+    """
+    return sum(1 for at in hourly_open_times if label <= at < now)
+
+
+def daily_freshness(
+    newest_label: datetime,
+    *,
+    now: datetime,
+    hourly_open_times: Sequence[datetime],
+    config: ForexConfig,
+) -> DailyFreshness:
+    """The 1d recency rule, measured in **observed market hours** — defect #31.
+
+    Wall clock is the wrong ruler for a daily bar. The forex market is shut ~49 hours a
+    week and the scan window is 07:00-19:00Z, so on any Monday the newest *closed* daily
+    bar is Friday's: 79 hours old at 07:00Z and 90 at 18:00Z, against a 48-hour budget.
+    Every symbol was skipped, every Monday, and M10d's switch-on landed on a Saturday so
+    the first trading day forex ever saw was one of them.
+
+    **The New York anchor is not the cause and correcting for it does not help.** D-k
+    measured the 1d ``Time`` as a date label: a bar stamped ``D 00:00Z`` really spans
+    ``D-1 21:00Z -> D 21:00Z`` in summer. The label is therefore three hours *newer*
+    than the bar's real start, so anchoring the arithmetic makes the age worse (82.6h ->
+    85.6h at the cycle that was logged) and changes no verdict at any hour of any day.
+
+    **The hourly tail is the venue's own trading calendar.** Closed hours are cleanly
+    absent from a Saxo chart response (journal/M10b_SPIKE.md §6), so weekends, market
+    holidays and the 17:00 NY anchor are all already recorded in the 1h series as holes.
+    Counting them has no timezone term to get wrong twice a year — DST correctness is
+    inherited from the data rather than derived — and it costs nothing on a holiday,
+    which is what rules out the obvious clock-derived alternative: Christmas Day 2026
+    and New Year's Day 2027 are both Fridays, and subtracting only weekends reproduces
+    this exact outage on the Monday after each.
+
+    The budget is unchanged. ``max_candle_age_multiplier`` days of *observed* hours is
+    still "you may be one daily bar behind, no more", and a daily feed frozen at Friday
+    is still stale by Tuesday morning (55 observed hours against 48).
+    """
+    budget = timeframe_to_timedelta("1d") * config.max_candle_age_multiplier
+    return DailyFreshness(
+        newest_label=newest_label,
+        observed_hours=observed_hours_since(newest_label, now, hourly_open_times=hourly_open_times),
+        budget_hours=round(budget.total_seconds() / 3600),
+        wall_clock_hours=round((now - newest_label).total_seconds() / 3600),
+        covers_label=bool(hourly_open_times) and min(hourly_open_times) <= newest_label,
+    )
 
 
 __all__ = [
@@ -218,11 +315,14 @@ __all__ = [
     "SATURDAY",
     "SUNDAY",
     "ClockVerdict",
+    "DailyFreshness",
     "MarketState",
     "WeekBounds",
     "candles_are_stale",
     "clock_verdict",
+    "daily_freshness",
     "derive_week_open",
     "nominal_week_open",
+    "observed_hours_since",
     "state_at",
 ]

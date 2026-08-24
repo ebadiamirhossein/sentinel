@@ -64,14 +64,19 @@ from sentinel.bot.cards import alert_card, no_capital_card, signal_card
 from sentinel.bot.forex_cards import forex_signal_card
 from sentinel.bot.formatting import zone_info
 from sentinel.bot.models import SignalRecord, UserAccount
-from sentinel.bot.notices import UserNotifier, calendar_coverage_key, no_capital_key
+from sentinel.bot.notices import (
+    UserNotifier,
+    barren_market_key,
+    calendar_coverage_key,
+    no_capital_key,
+)
 from sentinel.bot.plans import AnyPlan, plan_of
 from sentinel.bot.publisher import SignalPublisher
 from sentinel.bot.readmodels import alert_view
 from sentinel.bot.runtime import account_state, effective_config
 from sentinel.charts.models import ChartImage, ChartSpec, album_specs
 from sentinel.charts.renderer import render_album
-from sentinel.core.alerts import calendar_alert
+from sentinel.core.alerts import BarrenOutcome, barren_alert, calendar_alert
 from sentinel.core.clock import Clock, SystemClock
 from sentinel.core.config import AppConfig, MarketConfig, Settings
 from sentinel.core.forex_cycle import MARKET_CLOSED_REASON, ForexAssembly, assemble_forex
@@ -421,6 +426,11 @@ class CycleOrchestrator:
             )
         finally:
             await self._close_cycle(result, status=status)
+
+        # After the row is written, so this cycle counts toward its own streak. A market
+        # that ingests nothing produces no exception to catch and no failed row to find:
+        # every barren cycle below reported OK. See `_alert_barren_market`.
+        await self._alert_barren_market()
 
         log.info(
             "cycle.complete",
@@ -1265,6 +1275,63 @@ class CycleOrchestrator:
         await self._notices.notice(
             owner_id,
             key=calendar_coverage_key(now),
+            text=alert_card(
+                alert_view(alert),
+                zone_info(self._settings.config.telegram.owner_timezone),
+            ),
+        )
+
+    async def _alert_barren_market(self) -> None:
+        """Tell the owner when this market has looked and found nothing, N times running.
+
+        **The failure this closes.** On 2026-08-24 forex skipped all three pairs on
+        every cycle of the day, on a daily-staleness rail that could not pass on a
+        Monday (defect #31). Every cycle logged ``status: OK``, ``scanned: 0``,
+        ``spend_usd: 0``. ``/health`` stayed green, no alert fired, and the outage was
+        found by the owner going to look. Every rail this system has watches for
+        something going wrong; nothing watched for nothing going right.
+
+        Derived from the ``cycles`` rows every time, exactly as the M8 failure streak
+        is, so it needs no state of its own, survives a restart, and needs no migration
+        — the ``skipped`` JSONB column already distinguishes "the market was shut" and
+        "we chose not to look" from "we looked and got nothing".
+        """
+        if self._notices is None:
+            return
+        threshold = self._settings.config.alerts.consecutive_cycle_failures
+        async with self._database.session() as session:
+            rows = await self._cycles(session).recent(limit=threshold * 2)
+        alert = barren_alert(
+            [
+                BarrenOutcome(
+                    status=row.status,
+                    started_at=row.started_at,
+                    symbols_requested=row.symbols_requested,
+                    symbols_scanned=row.symbols_scanned,
+                    skip_reasons=frozenset(
+                        str(skip.get("reason", "")) for skip in row.skipped.values()
+                    ),
+                )
+                for row in rows
+            ],
+            market=self._market.value,
+            threshold=threshold,
+        )
+        if alert is None:
+            return
+        owner_id = await self._owner_id()
+        if owner_id is None:
+            return
+        now = self._clock.now()
+        log.warning(
+            "market.barren",
+            market=self._market.value,
+            cycles=alert.failures,
+            since=alert.since.isoformat() if alert.since else None,
+        )
+        await self._notices.notice(
+            owner_id,
+            key=barren_market_key(self._market.value, now),
             text=alert_card(
                 alert_view(alert),
                 zone_info(self._settings.config.telegram.owner_timezone),

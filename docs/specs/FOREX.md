@@ -296,6 +296,23 @@ reason code. Measured and confirmed: closed hours are cleanly **absent** from th
 response, not repeated and not zero-filled, which is the outcome that makes this
 straightforward. Tested.
 
+**But the weekend does not end when the market reopens** *(corrected 2026-08-24: defect
+#31)*. Checking market hours first answers "is it shut **now**"; it says nothing about
+the 49 hours the tail has to reach back across. On any Monday the newest *closed* daily
+bar is Friday's — 79 hours old at 07:00Z and 90 at 18:00Z, against a 48-hour budget — and
+the market-hours guard passes every one of those cycles as OPEN. Forex ingested nothing
+for its entire first trading day on exactly that.
+
+**Ruling: the daily rail measures in observed market hours, the intraday rails do not.**
+The 1d bar's age is the number of hourly bars the venue itself served between its label
+and now. The hourly tail *is* the venue's trading calendar — closed hours are absent, so
+weekends, market holidays and the 17:00 NY anchor are all already recorded in it as
+holes — which means the rule has no timezone term to get wrong twice a year and costs
+nothing on a holiday. 15m, 1h and 4h keep the wall-clock rule above unchanged: they are
+dense and on the UTC grid in every season, they are checked first, and a 1h tail proven
+fresh on its own 2-hour budget is what makes it trustworthy as the daily rule's
+denominator. `max_candle_age_multiplier` is **not** changed.
+
 ### §5.2 — The trading week *(amended: D-d)*
 
 Roughly Sunday 21:00 UTC to Friday 21:00 UTC, and **the boundary moves by an hour twice
@@ -660,9 +677,15 @@ normally while forex is in that state.
 
 ## §13 — Open decisions for the owner
 
-1. **Daily/4h alignment** (§6.1) — **recommendation reversed to Saxo's native 17:00 NY.**
-   The alternative now costs self-aggregation and desynchronises our levels from the
-   platform the owner executes on.
+1. ~~**Daily/4h alignment** (§6.1)~~ — **CLOSED 2026-08-24 (M10e).** Saxo's native 17:00
+   NY alignment stands, and is what M10b-2 already implemented. It was reopened by the
+   first forex outage on the suspicion that the NY anchor was mis-measuring daily
+   staleness; it was not. Measured three ways — the D-k date label, the bar's real start
+   and its real close — the Monday age is 61.6-85.6 hours against a 48-hour budget and
+   every convention fails, while mid-week every convention passes. Correcting for the
+   anchor moves the number 3 hours *in the wrong direction* (the label sits 3 hours
+   after the bar's real start) and changes no verdict at any hour of any day. The cause
+   was the weekend; see defect #31.
 2. **Blackout cancels pending ladders?** (§8) *Recommend yes for high-impact events.*
 3. **Blackout window** (§8) — *Recommend −60 / +30 minutes, currency-matched.*
 4. **Max concurrent forex positions** (§9) — *Recommend 1 for the first window.*
@@ -1225,6 +1248,40 @@ disabled. Owner rulings on all six are dated the same day.
   pin it: one that the backstop cannot fire (to be inverted, not deleted, when somebody
   fixes it) and one that the scan window ends at or before the rollover band, so the
   exposure cannot be re-acquired by widening the window alone.
+
+- **#31 §5.1 — the candle-recency rail measures wall-clock time, and forex is shut for
+  49 hours a week.** §5.1 correctly requires market hours to be checked before staleness
+  and stops there, which answers only "is it shut now". `candles_are_stale` then compares
+  `now - newest_open_time` against `timeframe x max_candle_age_multiplier`. For 1d that is
+  48 hours, and `forex.scan_hours_utc: [7, 19]` means the day's own bar is always still
+  forming, so **on every Monday the newest closed daily bar is Friday's**: 79 hours old at
+  07:00Z, 82.6 at the cycle that was logged, 90 at 18:00Z. All three pairs skipped, every
+  cycle, with `status: OK`, `spend_usd: 0` and `/health` green. M10d switched forex on at
+  11:29 on Saturday 2026-08-22, so **Monday 2026-08-24 was the first trading day a forex
+  cycle had ever run on** and 100% of them were lost.
+
+  Nothing caught it because `tests/core/saxo_double.py` pins `NOW` to a **Wednesday**, and
+  every forex test in the repo runs on that Wednesday. The double's daily grid was already
+  correct; the untested axis was the day of the week — the milestone-boundary lesson below
+  in a dimension nobody had thought of as one.
+
+  **Not D-k.** The obvious suspect was the 17:00 NY anchor. It is not the cause and
+  correcting for it makes the arithmetic worse; see §13 decision 1, now closed.
+
+  **Ruling: the 1d rail is measured in observed market hours; no threshold moves.** The
+  full statement is in §5.1. Rejected alternatives, recorded because each is the obvious
+  next thought: raising `max_candle_age_multiplier` (defects #21 and #30 twice over — the
+  >4 needed to clear a holiday Monday would let a frozen daily feed through for four
+  days); excluding 1d from the check (`prior_day_levels` reads that bar directly, so a
+  silently stale one puts a wrong "yesterday's high" on the card, which is worse than a
+  skip); and subtracting only weekends from the elapsed span, which is correct for the bug
+  as reported and reproduces it exactly on the Monday after a closed Friday — **Christmas
+  Day 2026 and New Year's Day 2027 are both Fridays**.
+
+  Tested on both sides of the daylight-saving boundary, on the Monday after a holiday
+  Friday, and with a sibling for each that proves the rail still fires. The margin the
+  rail clears a Monday evening by is single-digit hours, so it is logged every cycle as
+  `forex.daily_freshness` rather than left in a report.
 
 ### The M10b boundary defect — a milestone boundary is untested by construction
 
