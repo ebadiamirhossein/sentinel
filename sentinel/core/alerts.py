@@ -59,6 +59,12 @@ class AlertKind(StrEnum):
     #: There is no second source, so a lapsed calendar suppresses every forex signal;
     #: this is the message that arrives BEFORE that happens.
     FOREX_CALENDAR_COVERAGE = "FOREX_CALENDAR_COVERAGE"
+    #: M10e. The market was open, we looked, and nothing came back — for N cycles in a
+    #: row. Its own kind and not CYCLE_FAILURES, because nothing failed: every one of
+    #: those cycles reported ``status: OK``, spent $0.00 and left /health green. That is
+    #: the shape of this defect and the reason it ran for a day unnoticed, so the alert
+    #: has to be about ingestion producing nothing rather than about anything raising.
+    MARKET_BARREN = "MARKET_BARREN"
 
 
 @dataclass(frozen=True)
@@ -177,6 +183,101 @@ def cycle_alert(
     return Alert(kind=AlertKind.CYCLE_RECOVERED, failures=previous, since=decided[0].started_at)
 
 
+@dataclass(frozen=True)
+class BarrenOutcome:
+    """The four things a ``cycles`` row says about whether it ingested anything.
+
+    ``skip_reasons`` is the ``SkipReason`` vocabulary M8.2 put in the ``skipped`` JSONB
+    column, which is what makes this decidable without a migration: "the market was
+    shut" and "we chose not to look" already have their own keys and are already stored.
+    """
+
+    status: str
+    started_at: datetime
+    symbols_requested: int
+    symbols_scanned: int
+    skip_reasons: frozenset[str] = frozenset()
+
+
+#: Skips that mean **we did not look**, so a cycle carrying one is not barren. Forex is
+#: shut ~49 hours a week and deliberately unscanned outside ``forex.scan_hours_utc``; an
+#: alert that could not tell those from an outage would fire every Saturday and be muted
+#: before the first real one arrived.
+NOT_BARREN_REASONS = frozenset({"MARKET_CLOSED", "OUTSIDE_SCAN_HOURS"})
+
+
+def _barren(outcome: BarrenOutcome) -> bool:
+    return (
+        outcome.status == "OK"
+        and outcome.symbols_requested > 0
+        and outcome.symbols_scanned == 0
+        and not (outcome.skip_reasons & NOT_BARREN_REASONS)
+    )
+
+
+def consecutive_barren(rows: Sequence[BarrenOutcome]) -> int:
+    """How many cycles in a row looked and got nothing, newest first.
+
+    Same shape as :func:`consecutive_failures` and the same treatment of an in-flight
+    row: a ``RUNNING`` cycle is neither, and must not reset a count that the next cycle
+    is about to complete. A ``FAILED`` cycle *does* break the streak — it is a different
+    condition with a different alert, and reporting one outage twice trains the reader
+    to ignore both.
+    """
+    streak = 0
+    for outcome in rows:
+        if _barren(outcome):
+            streak += 1
+        elif outcome.status == "RUNNING":
+            continue
+        else:
+            break
+    return streak
+
+
+def barren_alert(
+    rows: Sequence[BarrenOutcome],
+    *,
+    market: str,
+    threshold: int = DEFAULT_THRESHOLD,
+) -> Alert | None:
+    """The alert a run of empty cycles justifies, or ``None`` — M10e step 4.
+
+    **Why this exists.** Forex ran for a full trading day ingesting nothing: every pair
+    skipped every cycle on a staleness rail that could not pass on a Monday (defect
+    #31). Every one of those cycles logged ``status: OK``, ``spend_usd: 0``, and left
+    ``/health`` green, because none of them *failed* — they succeeded at producing
+    nothing. The existing rails all watch for something going wrong; this one watches
+    for nothing going right, which is the failure mode HANDOFF §4 item 1 names and the
+    only one this system has repeatedly been unable to see.
+
+    **Why the threshold is the same 3.** ARCHITECTURE.md §2 and §6 already spend that
+    number on consecutive cycle failures, and a second, adjacent rail with a second,
+    different constant is a number somebody will misremember. Three cycles is three
+    hours at either market's hourly cadence, so a Monday-morning outage is on the phone
+    by 10:00Z rather than never, and three of forex's ~13 daily cycles is far enough
+    from one that a single Saxo 5xx or a token refresh spanning two polls cannot reach
+    it — the credential chain has a one-hour memory by design (§3.1).
+
+    Unlike :func:`cycle_alert` this does **not** re-alert on multiples of the threshold.
+    The condition it reports persists for the whole of the day it starts on, and four
+    identical messages before lunch is the alert fatigue ``calendar_coverage_key`` was
+    written to avoid. The caller dedups to one per market per UTC day instead.
+    """
+    if threshold < 1:
+        raise ValueError("barren threshold must be at least 1 cycle")
+    streak = consecutive_barren(rows)
+    if streak != threshold:
+        return None
+    barren = [row for row in rows if _barren(row)]
+    return Alert(
+        kind=AlertKind.MARKET_BARREN,
+        failures=streak,
+        since=barren[streak - 1].started_at,
+        detail=market,
+    )
+
+
 def reauth_alert(*, authorize_url: str, detail: str, since: datetime | None = None) -> Alert:
     """The forex re-authentication alert (specs/FOREX.md §3.1).
 
@@ -230,10 +331,14 @@ def calendar_alert(
 
 __all__ = [
     "DEFAULT_THRESHOLD",
+    "NOT_BARREN_REASONS",
     "Alert",
     "AlertKind",
+    "BarrenOutcome",
     "CycleOutcome",
+    "barren_alert",
     "calendar_alert",
+    "consecutive_barren",
     "consecutive_failures",
     "cycle_alert",
     "reauth_alert",

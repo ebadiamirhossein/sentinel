@@ -610,6 +610,19 @@ forex:
   # not a fault. See spec defect #14: FOREX.md §5.1 expected crypto's staleness rule to
   # misfire over the weekend when in fact it compares fetched_at and would have called
   # a frozen weekend snapshot perfectly fresh.
+  #
+  # M10e, defect #31 — THIS NUMBER MEANS TWO DIFFERENT THINGS, and deliberately so.
+  # For 15m/1h/4h it is multiples of the timeframe in WALL-CLOCK time: 30 minutes, 2
+  # hours, 8 hours. For 1d it is multiples of a day in OBSERVED MARKET hours — hourly
+  # bars the venue actually served — because wall clock cannot survive a weekend. On a
+  # Monday the newest closed daily bar is Friday's, 79 hours old at the first cycle of
+  # the day and 90 at the last, and this rail emptied forex for its entire first
+  # trading day before anybody noticed the difference.
+  #
+  # 2 is "you may be one bar behind, no more" under both readings, and it is NOT the
+  # knob to reach for if the daily rail starts firing again. Watch `margin_hours` on
+  # the `forex.daily_freshness` log line first: a Monday evening clears by single
+  # digits, and journal/M10e_REPORT.md §R1 says what to do when it stops.
   max_candle_age_multiplier: 2
 
   # WHICH HOURS FOREX IS SCANNED, half-open UTC. [7, 19) is twelve hourly cycles

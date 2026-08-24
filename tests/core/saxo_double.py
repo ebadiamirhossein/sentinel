@@ -13,8 +13,9 @@ evidence about whether the pieces compose.
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -27,8 +28,25 @@ from tests.ingestion.conftest import make_fetcher
 #: A Wednesday, mid-London, well clear of the 19:00-22:00 rollover band.
 NOW = datetime(2026, 8, 12, 12, 5, tzinfo=UTC)
 
-#: The August 4h grid — 17:00 America/New_York is 21:00Z (D-k).
-FOUR_HOUR_HOURS = (1, 5, 9, 13, 17, 21)
+#: The venue's own anchor. Every grid below is derived from it rather than written
+#: down, for the reason sessions.py gives for doing the same to its session windows: a
+#: table of UTC hours is right for forty-four weeks a year and quietly wrong for the
+#: other eight. 17:00 America/New_York is 21:00Z in August and 22:00Z in January (D-k),
+#: and a double pinned to August can only ever test August — which is how M10e's Monday
+#: went unnoticed, one axis over.
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def anchor_hour_utc(on: date) -> int:
+    """The UTC hour of 17:00 America/New_York on ``on`` — 21 in summer, 22 in winter."""
+    return datetime(on.year, on.month, on.day, 17, tzinfo=NEW_YORK).astimezone(UTC).hour
+
+
+def four_hour_hours(on: date) -> tuple[int, ...]:
+    """The 4h grid for that date: 01/05/09/13/17/21 in August, 02/06/…/22 in January."""
+    anchor = anchor_hour_utc(on)
+    return tuple(sorted((anchor + 4 * step) % 24 for step in range(6)))
+
 
 BASE_PRICES = {"EURUSD": 1.1690, "GBPUSD": 1.3050, "USDJPY": 150.25}
 #: Phase offsets so the three do not move in lockstep. All three cross the dollar and
@@ -50,6 +68,8 @@ class SyntheticSaxo:
         short_by: int = 0,
         stale_hours: float = 0.0,
         unresolvable: frozenset[str] = frozenset(),
+        closed_dates: frozenset[date] = frozenset(),
+        newest_daily_bar: date | None = None,
     ) -> None:
         self.now = now
         #: Return this many fewer rows than asked for — D-e's silent clamp.
@@ -57,6 +77,14 @@ class SyntheticSaxo:
         #: Age every bar by this much, so the newest one is too old (§5.1, defect #14).
         self.stale_hours = stale_hours
         self.unresolvable = unresolvable
+        #: Dates the venue served nothing at all — a market holiday. Christmas Day 2026
+        #: and New Year's Day 2027 are both Fridays, which is the worst placement there
+        #: is: the Monday after sees a Thursday daily bar.
+        self.closed_dates = closed_dates
+        #: Stop the 1d series at this date while the intraday tails keep running. Not a
+        #: closure — a daily feed that has frozen while the venue is plainly alive, which
+        #: is the one thing the 1d rail exists to catch.
+        self.newest_daily_bar = newest_daily_bar
         self.chart_requests: list[dict[str, str]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -85,15 +113,22 @@ class SyntheticSaxo:
         out: list[datetime] = []
         if horizon == 1440:
             cursor = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+            if self.newest_daily_bar is not None:
+                cursor = datetime(
+                    self.newest_daily_bar.year,
+                    self.newest_daily_bar.month,
+                    self.newest_daily_bar.day,
+                    tzinfo=UTC,
+                )
             while len(out) < count:
-                if cursor.weekday() < 5:
+                if cursor.weekday() < 5 and cursor.date() not in self.closed_dates:
                     out.append(cursor)
                 cursor -= timedelta(days=1)
             return sorted(out)
 
         if horizon == 240:
             cursor = anchor.replace(minute=0, second=0, microsecond=0)
-            while cursor.hour not in FOUR_HOUR_HOURS:
+            while cursor.hour not in four_hour_hours(cursor.date()):
                 cursor -= timedelta(hours=1)
             step = timedelta(hours=4)
         else:
@@ -102,7 +137,7 @@ class SyntheticSaxo:
             cursor = anchor.replace(minute=minute, second=0, microsecond=0)
 
         while len(out) < count:
-            if _inside_the_week(cursor):
+            if _inside_the_week(cursor) and cursor.date() not in self.closed_dates:
                 out.append(cursor)
             cursor -= step
         return sorted(out)
@@ -138,14 +173,19 @@ class SyntheticSaxo:
 
 
 def _inside_the_week(at: datetime) -> bool:
-    """Sunday 21:00Z to Friday 21:00Z, which is the week the venue actually serves."""
+    """Sunday 17:00 New York to Friday 17:00 New York — the week the venue serves.
+
+    In UTC that is 21:00 to 21:00 in summer and 22:00 to 22:00 in winter, and it moves
+    on the US changeover dates rather than on any date we choose.
+    """
+    anchor = anchor_hour_utc(at.date())
     weekday = at.weekday()
     if weekday == 5:
         return False
     if weekday == 6:
-        return at.hour >= 21
+        return at.hour >= anchor
     if weekday == 4:
-        return at.hour < 21
+        return at.hour < anchor
     return True
 
 

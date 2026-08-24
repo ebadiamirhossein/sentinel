@@ -181,6 +181,30 @@ def alert_view(alert: Alert, *, spend: SpendView | None = None) -> AlertView:
             at=alert.since,
         )
 
+    if alert.kind is AlertKind.MARKET_BARREN:
+        # The wording works hard to say "not a crash", because the reader's first
+        # instinct on any Sentinel alert is to go looking for an exception — and there
+        # is not one. Every cycle in this streak reported OK.
+        market = alert.detail or "a market"
+        return AlertView(
+            kind=alert.kind.value,
+            title=f"🕳 Sentinel — {market} has ingested nothing",
+            body=(
+                f"The last {alert.failures} {market} cycles ran while the market was "
+                "open, fetched, and produced no usable symbols at all.",
+                "",
+                "Nothing crashed. Every one of those cycles reported OK and spent "
+                "$0.00, which is why /health is green and nothing else has said a "
+                "word — this alert exists because that combination is invisible.",
+                "",
+                "What to do:",
+                "• `/pulse` for this market to see the skip reasons.",
+                "• Grep the logs for `forex.symbol_skipped` and `cycle.no_snapshots`.",
+                "• The other market is unaffected; this rail is per market.",
+            ),
+            at=alert.since,
+        )
+
     if alert.kind is AlertKind.FOREX_CALENDAR_COVERAGE:
         # `failures` carries the state rather than a count here: 0 = still usable and
         # running out, 1 = lapsed and already suppressing. Two different messages,

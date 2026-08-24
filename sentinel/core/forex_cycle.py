@@ -9,7 +9,9 @@ and the two reasons are not stylistic.
    newest bar is fifty hours old perfectly fresh. Forex needs recency measured from
    the *candle* — :func:`sentinel.fx.hours.candles_are_stale` — and that check must be
    **skipped while the market is shut**, because closed is a normal state and not a
-   fault.
+   fault. M10e adds the other half of that thought (defect #31): the weekend does not
+   end when the market reopens, so the *daily* bar is judged in observed market hours by
+   :func:`sentinel.fx.hours.daily_freshness` rather than on the clock.
 
 2. **Bid and ask have to be one read.** The spread is measured as ``CloseAsk -
    CloseBid`` per bar, so the two sides must come from the same request. D-d found the
@@ -46,7 +48,13 @@ from sentinel.fx.features import (
     compute_cycle_features,
     spread_profile_of,
 )
-from sentinel.fx.hours import MarketState, candles_are_stale, state_at
+from sentinel.fx.hours import (
+    DailyFreshness,
+    MarketState,
+    candles_are_stale,
+    daily_freshness,
+    state_at,
+)
 from sentinel.fx.instruments import ForexInstrument
 from sentinel.fx.sessions import Session, session_bands
 from sentinel.fx.spread import SpreadProfile
@@ -58,6 +66,10 @@ log = get_logger(__name__)
 #: The exact reason string a closed market produces, so the orchestrator can map it
 #: to :attr:`SkipReason.MARKET_CLOSED` without matching on prose.
 MARKET_CLOSED_REASON = "market closed"
+
+#: The two timeframes the staleness rails name explicitly. ``1d`` because it has a rule
+#: of its own (defect #31) and ``1h`` because it is the grid that rule counts in.
+DAILY, HOURLY = "1d", "1h"
 
 #: Which forex feature maps onto which mark on the chart (§6). Session shading is
 #: added separately because it is an interval rather than a price.
@@ -181,7 +193,7 @@ async def assemble_forex(
             log.warning("forex.symbol_skipped", symbol=symbol, reason=str(exc))
             continue
 
-        stale = _stale_timeframes(tails, now=now, config=config)
+        stale = _stale_timeframes(tails, symbol=symbol, now=now, config=config)
         if stale:
             # Measured from the candle, not the fetch — spec defect #14 — and only
             # ever asked while the market is open, which the guard above ensures.
@@ -244,12 +256,22 @@ async def assemble_forex(
 
 
 def _stale_timeframes(
-    tails: dict[str, ForexTail], *, now: datetime, config: AppConfig
+    tails: dict[str, ForexTail], *, symbol: str, now: datetime, config: AppConfig
 ) -> list[str]:
-    return [
+    """Which tails are too old to analyse — two rules, because 1d is not intraday.
+
+    The intraday tails are judged first and on wall clock (defect #14, unchanged). Only
+    if they all pass is the daily bar asked about, and it is asked in observed market
+    hours (defect #31). The order is load-bearing twice over: a frozen feed is reported
+    against the rail that can actually see it, rather than surfacing as a misleading
+    ``stale: ["1d"]``, and the 1h tail is proven fresh by its own 2-hour budget before
+    it is trusted as the denominator the daily rule counts in.
+    """
+    intraday = [
         timeframe
         for timeframe, tail in tails.items()
-        if tail.bid.candles
+        if timeframe != DAILY
+        and tail.bid.candles
         and candles_are_stale(
             tail.bid.candles[-1].open_time,
             timeframe=timeframe,
@@ -257,6 +279,46 @@ def _stale_timeframes(
             config=config.forex,
         )
     ]
+    if intraday:
+        return intraday
+
+    freshness = _daily_freshness(tails, now=now, config=config)
+    if freshness is None:
+        return []
+    log.info(
+        "forex.daily_freshness",
+        symbol=symbol,
+        newest_1d_label=freshness.newest_label.isoformat().replace("+00:00", "Z"),
+        observed_hours=freshness.observed_hours,
+        budget_hours=freshness.budget_hours,
+        margin_hours=freshness.margin_hours,
+        wall_clock_hours=freshness.wall_clock_hours,
+        hourly_covers_label=freshness.covers_label,
+    )
+    return [DAILY] if freshness.is_stale else []
+
+
+def _daily_freshness(
+    tails: dict[str, ForexTail], *, now: datetime, config: AppConfig
+) -> DailyFreshness | None:
+    """The 1d verdict and the numbers behind it, or ``None`` when there is no 1d tail.
+
+    ``None`` is not "fresh": it is "not asked", and it happens only when ``1d`` is absent
+    from ``forex.timeframes`` altogether. A 1d tail that arrived empty is handled by the
+    adapter's own count assertion long before this.
+    """
+    daily = tails.get(DAILY)
+    if daily is None or not daily.bid.candles:
+        return None
+    hourly = tails.get(HOURLY)
+    return daily_freshness(
+        daily.bid.candles[-1].open_time,
+        now=now,
+        hourly_open_times=()
+        if hourly is None
+        else tuple(candle.open_time for candle in hourly.bid.candles),
+        config=config.forex,
+    )
 
 
 def _alignment_of(tails: dict[str, ForexTail]) -> tuple[int, ...]:
