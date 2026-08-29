@@ -379,6 +379,56 @@ switch-on day moves no golden at all.
 risk branch coverage unchanged at 100%, `make check` exit 0, and the only crypto bytes
 that moved are defect #22's two lines — approved in advance, line by line.
 
+## M10d — Forex switch-on ✅
+Added retrospectively 2026-08-29 (M12): this milestone and M10e shipped and are reported
+in `journal/`, and this file stopped at M10c. Recorded here so the ledger and the journal
+agree.
+
+* `markets.forex.enabled: true`, 2026-08-21, opening a **two-week observation window**
+  with `dry_run: false` — deliberately against FOREX.md §11. M7 settled that `dry_run`
+  publishes *nothing*, and the point of the window is that the owner **reads** real forex
+  cards and does not trade them. "Not trading" is his hand on the mouse, not a config flag.
+* Spend ceiling raised 11 → 20 for the window, with a `llm_reserved_floor_usd: 8` held for
+  crypto so an unmeasured market cannot compete with a measured one, and the **revert
+  values written down beside the way forward** — a rail raised for a rehearsal and never
+  lowered is how the $73/day incident started.
+* **Review date now ~2026-09-07**, moved from 2026-09-04 by M12: five of the window's
+  first days produced nothing (see M10e).
+
+## M10e — The forex daily-staleness rail ✅
+Added retrospectively 2026-08-29 (M12), same reason as M10d.
+
+The first trading day a forex cycle ever ran on was Monday 2026-08-24, and it lost every
+cycle of it. The 1d staleness rail compared **wall-clock** age against a 48-hour budget,
+and on a Monday the newest *closed* daily bar is Friday's — 79 hours old at the first
+cycle, 90 at the last. `status: OK`, `spend_usd: 0`, `/health` green, no alert.
+
+* The 1d rail is now measured in **observed market hours**; intraday rails untouched; no
+  threshold moved. New `forex.daily_freshness` log line every cycle.
+* **`AlertKind.MARKET_BARREN`** — the rail for *nothing going right*. Every previous rail
+  watched for something going wrong, and "all three pairs skipped, status OK, cost zero"
+  was the blind spot rather than an edge case.
+* **The lesson (HANDOFF §4 item 16):** a calendar-dependent rule tested on one day of the
+  week has not been tested. Every forex test in the repo ran at a Wednesday anchor; the
+  fixture was already correct. Forex tests now parametrise over both DST anchors, both
+  ends of the scan window, and the Monday after a closed Friday.
+* Spec ruling: FOREX.md §5.1, corrections-log defect #31. Its falsifying date was
+  **Monday 2026-08-31**, which is after the measurement window closed.
+
+> **M12 was briefly reassigned and the reassignment is reverted (2026-08-29).** The crypto
+> correlation cap was scoped as M12 and **cancelled** before any rail was built — the rail
+> would never have fired, because `check_portfolio_rails` reads the *taken* book and the
+> evidence for it comes from the *published* one. Full reasoning and the surviving design:
+> `journal/M9_STATS_REVIEW.md` (the banner and §4a) and `journal/M12_REPORT.md` §5.
+>
+> **So the numbering below is unchanged from the 2026-08-20 renumbering:** consensus gate
+> keeps **M12**, dashboard keeps **M13**. The work that did ship under that name closed the
+> M9 measurement window and is reported in `journal/`, which is where a cancelled milestone
+> belongs — this file is the forward plan.
+>
+> Note that `journal/M11p_REPORT.md` is **M11p — Persian summaries**, a side milestone
+> shipped out of band; it is not the M11 below.
+
 ## M11 — Ensemble shadow mode (1 day) (spec pending — do not implement)
 OpenAI GPT-5.6 Sol as second AnalystProvider per docs/specs/ENSEMBLE.md §3; parallel
 shadow analysis; comparer; `/stats compare-models`. Was M10 before M10a's renumbering.
