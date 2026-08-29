@@ -415,47 +415,29 @@ cycle, 90 at the last. `status: OK`, `spend_usd: 0`, `/health` green, no alert.
 * Spec ruling: FOREX.md §5.1, corrections-log defect #31. Its falsifying date was
   **Monday 2026-08-31**, which is after the measurement window closed.
 
-> **Renumbering (2026-08-29, from M12).** The owner closed the crypto measurement window
-> with a structural rail rather than with the ensemble work, so **M12 is now the crypto
-> correlation cap** (below). The consensus gate moves M12 → **M13** and the read-only
-> dashboard M13 → **M14**. Same treatment as the 2026-08-20 renumbering above:
-> docs/specs/ENSEMBLE.md carries a dated correction rather than being rewritten — this
-> file is the forward plan, that one is the recorded decision.
+> **M12 was briefly reassigned and the reassignment is reverted (2026-08-29).** The crypto
+> correlation cap was scoped as M12 and **cancelled** before any rail was built — the rail
+> would never have fired, because `check_portfolio_rails` reads the *taken* book and the
+> evidence for it comes from the *published* one. Full reasoning and the surviving design:
+> `journal/M9_STATS_REVIEW.md` (the banner and §4a) and `journal/M12_REPORT.md` §5.
 >
-> M11 (ensemble shadow mode) is **unaffected and still unbuilt**. Note that
-> `journal/M11p_REPORT.md` is **M11p — Persian summaries**, a side milestone shipped out
-> of band; it is not this M11.
+> **So the numbering below is unchanged from the 2026-08-20 renumbering:** consensus gate
+> keeps **M12**, dashboard keeps **M13**. The work that did ship under that name closed the
+> M9 measurement window and is reported in `journal/`, which is where a cancelled milestone
+> belongs — this file is the forward plan.
+>
+> Note that `journal/M11p_REPORT.md` is **M11p — Persian summaries**, a side milestone
+> shipped out of band; it is not the M11 below.
 
 ## M11 — Ensemble shadow mode (1 day) (spec pending — do not implement)
 OpenAI GPT-5.6 Sol as second AnalystProvider per docs/specs/ENSEMBLE.md §3; parallel
 shadow analysis; comparer; `/stats compare-models`. Was M10 before M10a's renumbering.
 **Demo:** signal card shows the 2nd-opinion footer; stats command splits by agreement.
 
-## M12 — The crypto correlation cap (documentation phase shipped 2026-08-29; rail held)
-Closes the M9 measurement window and gives crypto the correlation rail forex has carried
-since it shipped. `docs/specs/FOREX.md` §9 caps forex at one open position because EURUSD,
-GBPUSD and USDJPY all cross the dollar; crypto permits three concurrent positions with no
-correlation check, and on 2026-08-28 three same-direction longs stopped within 61 seconds
-of each other — one trade sized three times. All 11 crypto signals in the window were long.
+## M12 — Consensus gate (½ day, feature-flagged, only if M11 exit criteria met) (spec pending — do not implement)
+Deterministic gating table per docs/specs/ENSEMBLE.md §4. Was M11.
 
-**Shipped:** `journal/M9_STATS_REVIEW.md` (the window's result, and the risk-budget
-decision put to the owner as a decision); `sentinel/tools/concurrency_backtest.py` (the
-rail's number, replayable rather than asserted); the forex spend-review date moved to
-~2026-09-07; the five known defects ranked by severity.
-
-**Held, at owner instruction, pending the backtest:** the rail itself. Design is settled
-and recorded in journal/M12_REPORT.md §5 — a **risk-based** `max_same_direction_risk_pct`
-rather than a position count, because `max_positions: 4` demonstrates what happens to a
-count cap shadowed by a risk cap: it never fires and becomes decorative.
-
-**Exit criteria:** `git diff main -- sentinel/risk/ sentinel/fx/ sentinel/analyst/prompts/`
-empty; no golden moved; `make check` exit 0; and the owner has answered
-`journal/M9_STATS_REVIEW.md` §9.
-
-## M13 — Consensus gate (½ day, feature-flagged, only if M11 exit criteria met) (spec pending — do not implement)
-Deterministic gating table per docs/specs/ENSEMBLE.md §4. Was M11, then M12.
-
-## M14 — Read-only web dashboard (spec pending — do not implement)
+## M13 — Read-only web dashboard (spec pending — do not implement)
 Read-only over the existing Postgres; auth for owner and members; hosted on the same
 box behind the existing Caddy. Telegram stays the delivery surface and keeps the
 buttons. Journal, pulse, stats and charts as pages. PRD P2 slot.

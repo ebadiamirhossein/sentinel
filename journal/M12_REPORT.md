@@ -1,33 +1,47 @@
-# M12 — The crypto correlation cap
+# M12 — The crypto correlation cap: CANCELLED
 
 Branch `m12-crypto-correlation-cap` off `main` (d776f5f). **Not deployed.**
 
 ## State at handoff
 
-**The rail is not built.** That is the milestone's main fact and it is a decision, not a
-shortfall: the owner held it pending the backtest, at the point in the session where the
-data turned out not to be in the repo. What shipped is everything the decision needs.
+**The rail was not built, and it is now cancelled — owner decision, 2026-08-29, on this
+milestone's own evidence.** The analysis M12 was commissioned to justify the cap instead
+killed it:
 
-- `journal/M9_STATS_REVIEW.md` — the measurement window's result, closing M9. Twelve
-  sections; §9 puts the risk-budget decision to the owner as a decision, with both sides
-  argued and neither recommended.
-- `sentinel/tools/concurrency_backtest.py` + 19 tests — the cap's number, replayable in
-  one command instead of asserted in prose. **Run against the full export (§3): 1.5%
-  costs no winners.**
-- `config.yaml` — the forex spend review moved 2026-09-04 → ~2026-09-07. **Comments only;
-  `git diff` touches no value line.**
-- `docs/MILESTONES.md` — M12 renumbered (see §6), and the missing M10d/M10e sections
-  written so the ledger and `journal/` agree.
+1. `check_portfolio_rails` reads `open_taken` — signals pressed ✅ Taken. The owner carried
+   **at most one position at any instant** in the window, so the rail **would never have
+   fired**, at any setting.
+2. The evidence for the cap — three simultaneous same-direction longs on 2026-08-28 — lives
+   in the **published** book, which that rail does not read.
+3. Making it read the published book would cap *publication*, truncating the HYPOTHETICAL
+   record precisely on the clustered days: **it buys protection by destroying the evidence
+   that would justify it.**
 
-**Verified, not asserted:**
+`sentinel/risk/` was never touched. The design survives as §5 below, to be built **when a
+real book carries two or more concurrent positions and the rail can actually bind.**
+
+**The window's headline finding is not the cap.** It is that **`/stats` reports gross R
+while `min_rr_tp1` gates net** — so every conclusion drawn from this window came from the
+wrong column. Promoted to defect 1 of six at owner instruction, with a fix proposal (§4a).
+
+### What shipped
+
+- `journal/M9_STATS_REVIEW.md` — the window's result, closing M9. Fourteen sections: the
+  cancellation banner, the gross/net correction, the taken-vs-published finding (§4a), the
+  answered cost side (§9), six ranked defects with a fix proposal for the first (§10), the
+  conviction hypothesis (§12) and the forex query (§13).
+- `sentinel/tools/concurrency_backtest.py` + 19 tests — the cap's number, replayable. Kept
+  despite the cancellation: the next window needs it to decide when the rail can bind.
+- `config.yaml` — forex spend review 2026-09-04 → ~2026-09-07. **Comments only.**
+- `docs/MILESTONES.md` — **the renumbering is reverted**: consensus gate keeps M12,
+  dashboard keeps M13. M10d and M10e written up; the file had stopped at M10c.
+
+### Verified, not asserted
 
 - `make check` **exit 0**.
 - `git diff main -- sentinel/risk/ sentinel/fx/ sentinel/analyst/prompts/` — **empty.**
-  The gate, `min_rr_tp1`, `min_confidence`, every setup threshold, sizing arithmetic,
-  forex's own rails and the prompts are untouched, and none of them can see this
-  milestone.
-- **No golden moved.** No generator was run. `sentinel/risk/`'s branch coverage is
-  unchanged at 100% because `sentinel/risk/` is unchanged.
+- **No golden moved.** No generator was run. `docs/MILESTONES.md` is purely additive over
+  `main` — zero lines removed.
 - The `risk:` block in `config.yaml` is byte-identical.
 
 ---
@@ -293,10 +307,61 @@ because leaving it says "review Sept 4", which is now wrong.
 
 ---
 
-## 5. The rail — designed, recorded, NOT built
+## 4a. Defect 1's fix proposal, in short (owner requirement F1)
 
-Held at owner instruction pending §3's number. Written here so the next session builds
-rather than re-derives.
+Full version in `journal/M9_STATS_REVIEW.md` §10 defect 1. **Not built — written to be
+read.**
+
+**The defect is narrower than "nobody labelled it".** `stats/journal.py`'s module
+docstring item 3 settles the gross/net split deliberately — the win rate is gross so the
+journal and `/stats` cannot contradict each other, the running balance is net because a
+balance is money — and ends *"That is true of `/stats` too, and the Legend sheet says
+so."* **The disclosure exists; it lives in the XLSX Legend sheet, which nobody reading
+`/stats` in Telegram ever opens.**
+
+**Recommended: T1, a label.** The card already prints `costs paid: €9.48` two lines under
+`total 0.60R (€45.00)` (`bot/cards.py:1109-1116`) — everything needed is on screen, and
+nothing says the first figure is before the second.
+
+```
+  avg 0.20R · total 0.60R (€45.00)   ->   avg 0.20R · total 0.60R gross (€45.00)
+  <i>(taken + watched + skipped)</i>  ->   <i>(taken + watched + skipped · gross R)</i>
+```
+
+Renderer-only: no arithmetic, no field, no query, no migration —
+`tests/bot/test_no_arithmetic.py` scans that file and a label is exactly what it permits.
+**Moves two goldens**, `surfaces/stats.txt` and `surfaces_multi/stats.txt`, four lines
+each; regenerated with `generate_goldens_m10a` and `generate_goldens_m10c`. No other
+golden is reachable from the stats card.
+
+**T2** adds a net EUR figure — free arithmetic (`total_eur − costs_eur`, both already on
+`PerformanceStats`) but it must live in `stats/compute.py`, and it changes a Pydantic
+contract, which CLAUDE.md says to ask about first.
+
+**T3, switching `/stats` to net R: recommended against.** It breaks the documented
+invariant that the journal's win rate equals `/stats`' (a trade winning gross and losing
+net would flip); net R needs `planned_risk_eur`, which lives only inside the `plan` JSONB,
+so it means loading and validating every plan — `/stats` has no degrade path for a plan
+that no longer matches the model, `/journal` does — or a migration; and it silently
+rewrites every figure the owner has already read.
+
+## 5. The rail — CANCELLED, design kept as a dated note
+
+> **Dated note, 2026-08-29. Cancelled, not deferred — but the design is kept rather than
+> deleted, because the cap becomes correct the moment its premise does.**
+>
+> **Build it when a real book carries two or more concurrent positions.** Concretely: when
+> `SELECT max(concurrent) FROM ...` over `signals` with `decision = 'TAKEN'` shows two
+> same-direction positions overlapping in a measured window, the rail can bind and the
+> question of its number becomes answerable. Until then it is a rail that cannot fire, and
+> a rail that cannot fire reads on a checklist as a rail — `config.yaml`'s own words about
+> `max_entry_distance_pct` at 3.0 for forex.
+>
+> Re-run `sentinel/tools/concurrency_backtest.py` against the taken book at that point.
+> The tool is kept for exactly this.
+
+The design as settled before cancellation, so the next session builds rather than
+re-derives:
 
 **Shape: risk-based, not a position count.** `risk.max_same_direction_risk_pct: 1.5`.
 
@@ -348,33 +413,36 @@ report before regenerating anything.**
 
 ---
 
-## 6. Milestone numbering
+## 6. Milestone numbering — reverted
 
-`docs/MILESTONES.md` already assigned M12 to the consensus gate. Following the precedent
-of the 2026-08-20 renumbering note: **M12 is now the crypto correlation cap**, consensus
-gate M12 → **M13**, dashboard M13 → **M14**, with a dated note in the file. M11 (ensemble
-shadow mode) is unaffected; the note also records that `journal/M11p_REPORT.md` is a side
-milestone and not that M11.
+M12 was briefly reassigned to the correlation cap. **With the cap cancelled the
+reassignment is reverted at owner instruction:** consensus gate keeps **M12**, dashboard
+keeps **M13**, and `docs/MILESTONES.md` carries a dated note saying so and pointing here.
+A cancelled milestone belongs in `journal/`; that file is the forward plan.
 
 `M10d` and `M10e` shipped, are reported in `journal/`, and had no sections in
 `MILESTONES.md` — the file stopped at M10c. Both are now written, marked as added
-retrospectively.
-
----
+retrospectively. The file is **purely additive** over `main`: zero lines removed.
 
 ## 7. How to demo
+
+There is no rail to demonstrate. What there is to read:
 
 ```bash
 .venv/bin/python -m sentinel.tools.concurrency_backtest window.csv --cap 1.5 --cap 2.25
 ```
 
-Export `/journal all` from Telegram, save the Hypothetical sheet as CSV, run the above.
-Then read `journal/M9_STATS_REVIEW.md` §9 and answer it.
+Export `/journal all` from Telegram, save the Hypothetical sheet as CSV, run the above —
+it reproduces §3's table. Then read `journal/M9_STATS_REVIEW.md`, starting at the
+cancellation banner and §10 defect 1.
 
 ## 8. What the next session needs
 
-1. **The forex `gate_decisions` query** (`M9_STATS_REVIEW.md` §10). It decides whether §8
-   of the review is a finding or an artefact of an invisible rail.
-2. **The full export**, run through §3's tool. It decides the cap's number.
-3. **An answer to `M9_STATS_REVIEW.md` §9.** Until then the rail stays designed and
-   unbuilt, which is where this milestone deliberately leaves it.
+1. **Run `M9_STATS_REVIEW.md` §13 Query A** — the forex `gate_decisions` histogram. It is
+   the only open question in either document whose answer changes what is written in them:
+   whether "all three forex signals were GBPUSD" is a finding or an artefact of a cap that
+   `/pulse` could not display. Query B and C are there for each branch of the answer.
+2. **Decide defect 1's fix** (§10, and §4a below). T1 is a label — renderer-only, two
+   goldens, no arithmetic. I did not build it; the proposal is written to be read.
+3. **Nothing on the cap.** Cancelled. §5's note says what would revive it.
+4. Start accumulating §12's conviction counts; do not read them before ~50 decided signals.

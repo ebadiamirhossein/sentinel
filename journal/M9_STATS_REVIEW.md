@@ -9,6 +9,30 @@ decision to the owner rather than to take one.
 
 ---
 
+> ## Outcome: the correlation cap is CANCELLED
+>
+> **Owner decision, 2026-08-29, on the evidence in §4a and §9.** M12 was scoped as a cap
+> on concurrent same-direction crypto risk. It is not being built, and the reasoning is
+> recorded here rather than in a branch nobody will read again:
+>
+> 1. `check_portfolio_rails` reads `open_taken` — signals the owner pressed ✅ Taken on.
+>    He carried **at most one position at any instant** in the whole window, so the rail
+>    **would never have fired**, at any setting.
+> 2. The evidence for the cap — three simultaneous same-direction longs on 2026-08-28 —
+>    comes from the **published** book, which that rail does not read.
+> 3. Making it read the published book would cap *publication*, and the HYPOTHETICAL
+>    population is the record of what the pipeline would have done. That truncates the
+>    record precisely on the clustered days: **it buys protection by destroying the
+>    evidence that would justify it.**
+>
+> The design survives as a dated note in §5 of `journal/M12_REPORT.md`. **Build it when a
+> real book carries two or more concurrent positions and the rail can actually bind.**
+> Nothing in `sentinel/risk/` was touched.
+>
+> **The window's headline finding is instead defect 1 in §10:** `/stats` reports gross R
+> while `min_rr_tp1` gates net, so every conclusion drawn this window came from the wrong
+> column.
+
 ## 0. The framing, corrected before anything else
 
 The 2026-08-28 cluster — three same-direction longs open at once, all stopped within 61
@@ -59,8 +83,9 @@ parameter: this is the gross/net split, not a transcription error.
 is net, and the number the owner has been reading his results in is gross. Costs ate
 **14% of the window's net result**. Wins average 1.21R net; losses average 0.895R net.
 
-**Recorded as a defect, not fixed:** `/stats` and `/journal` should say which of the two
-they are showing. Ranked with the others in §10.
+**Recorded as a defect, not fixed — and it is now defect 1 in §10**, with a fix
+proposal, at the owner's instruction: every conclusion drawn from this window came from
+the wrong column.
 
 **The pipeline is not failing.** Nothing in this section justifies touching the gate,
 `min_rr_tp1`, `min_confidence` or any setup threshold, and M12 touches none of them.
@@ -245,7 +270,7 @@ no conclusion drawn about forex's viability, and the spend review moves to ~2026
 **And "all GBPUSD" may not be a fact about the market.** `forex.max_concurrent_positions`
 is 1, counted **across all users** (`sentinel/core/orchestrator.py:1745`). Any EURUSD or
 USDJPY candidate that reached the rails while a GBPUSD position was open was rejected
-with `MAX_CONCURRENT_POSITIONS` — and, per §10 defect 1, **`/pulse` could not show it.**
+with `MAX_CONCURRENT_POSITIONS` — and, per §10 defect 2, **`/pulse` could not show it.**
 This paragraph carries that caveat inline so it cannot be quoted without it.
 
 Also unresolved: M10e's daily-staleness fix is **not deployed**, and the first cycle that
@@ -421,7 +446,81 @@ listed, because the ordering is the useful part. The criterion:
 
 > **Does a reader draw a false conclusion, or are they merely inconvenienced?**
 
-### 1 — most serious. `/pulse` silently discards every forex rejection code
+### 1 — most serious. `/stats` reports GROSS R; the gate decides on NET
+
+`/stats` computes every figure from `SignalRow.realized_r` (`stats/compute.py:87-93`);
+`/journal` maps that same column to **`pnl_r_gross`** and derives `pnl_r_net` beside it
+(`stats/journal.py:320-322`). So the same window reads **+2.86R** on one surface and
+**+2.47R** on the other, and **`min_rr_tp1 = 1.5` gates the net figure** — the number the
+system admits a plan on is not the number the owner is judging results by.
+
+**Ranked first at owner instruction (2026-08-29), above the `/pulse` defects.** The
+reasoning he gave is the correct one and outranks the criterion this list otherwise uses:
+every conclusion drawn from this window came from the wrong column. A surface that hides a
+rail (defect 2) is worse *per reading*; a surface that misstates the central number is
+worse *per conclusion*, and conclusions are what a measurement window is for.
+
+**It is narrower than "nobody labelled it", and the precise form matters for the fix.**
+`stats/journal.py`'s module docstring, item 3, settles this deliberately:
+
+> *"A win is **gross** realized R > 0 — `stats/compute.py`'s definition, unchanged — while
+> the **running balance is net R**. The two bases differ on purpose: the win rate at the
+> bottom of the Real sheet has to equal what `/stats` reports for the same window, or the
+> two surfaces appear to contradict each other... **That is true of `/stats` too, and the
+> Legend sheet says so.**"*
+
+So the design is intentional, correct, and **already disclosed — in the XLSX's Legend
+sheet.** The defect is that the disclosure lives in an artefact the `/stats` reader never
+opens. That is why the fix is small.
+
+#### Fix proposal — not built, for the owner to read (F1)
+
+**Recommended: T1, a label. One word on one line, plus one header.**
+
+The `/stats` card already prints `costs paid: €9.48` two lines below `total 0.60R
+(€45.00)` (`bot/cards.py:1109-1116`). Everything needed is on screen; nothing says the
+first figure is before the second.
+
+```
+  avg 0.20R · total 0.60R (€45.00)          ->   avg 0.20R · total 0.60R gross (€45.00)
+  <b>By setup type</b> <i>(taken + watched + skipped)</i>
+                                            ->   <i>(taken + watched + skipped · gross R)</i>
+```
+
+- **Why this and not more:** it is a **renderer-only** change. No arithmetic, no new field,
+  no query, no migration — `tests/bot/test_no_arithmetic.py` scans this file and a label is
+  exactly what it permits. It closes the gap that actually caused the error: a reader of
+  the card cannot currently tell which basis they are on.
+- **What it moves:** `tests/fixtures/golden_cycle/surfaces/stats.txt` and
+  `surfaces_multi/stats.txt` — **two files, four lines each** (three population blocks plus
+  the by-setup header). Regenerated with `generate_goldens_m10a` and
+  `generate_goldens_m10c`. Nothing else in either file changes, and no other golden is
+  reachable from the stats card.
+
+**T2, if a label is judged too thin: add net EUR.** `total_eur` and `costs_eur` are both
+already on `PerformanceStats`, so `net €35.52` costs one subtraction — but it must happen
+in `stats/compute.py`, not the card, and it adds a field to a Pydantic contract, which
+CLAUDE.md says to ask about first. Same two goldens, one extra line each.
+
+**T3, switching `/stats` to net R: recommended against**, for three reasons that are not
+about effort:
+
+1. **It breaks a documented invariant.** The journal's Real-sheet win rate must equal
+   `/stats`' win rate for the same window (docstring item 3). A trade that wins gross and
+   loses after fees would flip populations, and the two surfaces would contradict each
+   other — the exact failure the current design exists to prevent.
+2. **Net R is not cheaply computable there.** It needs `planned_risk_eur` as the
+   denominator, which lives only inside the `plan` JSONB. `/stats` would have to load and
+   validate every plan in the window; `/journal` already carries a degrade path for plans
+   that no longer match the model (`stats/journal.py:262`) and `/stats` has none. The
+   alternative is a new column, i.e. a migration.
+3. **It silently rewrites history.** Every figure the owner has read to date would change
+   with no note on the card, which is a worse version of the problem being fixed.
+
+**Whichever is chosen, the surface should keep saying `costs paid`** — it is the line that
+makes the gap visible once the basis is named.
+
+### 2 — `/pulse` silently discards every forex rejection code
 
 `gate_outcome` coerces the stored reason with `RejectionReason(row.reason)` inside
 `except ValueError: continue` (`sentinel/bot/pulse.py:255`, marked
@@ -443,7 +542,7 @@ surface built to make rails visible.**
 exists because a member *"cannot tell 'quiet market' from 'system down'"*
 (`sentinel/bot/pulse.py:10`). For forex it does not do that job.
 
-**It compounds with defect 2 into a coherent and entirely wrong story.** A reader sees
+**It compounds with defect 3 into a coherent and entirely wrong story.** A reader sees
 `/pulse EURUSD` say *"the screener triages it every cycle"* — forex has no screener — and
 never sees a cap rejection. Together those read as *forex is being triaged and nothing is
 being blocked*, when the truth may be the reverse.
@@ -464,45 +563,29 @@ A second consequence for the spend review: forex has **no screener**, so every p
 blocked at the rails had already bought a full analyst call. The cap may have been
 spending money on analyses it then discarded, invisibly.
 
-### 2 — `/pulse EURUSD` claims a screener that does not exist
+### 3 — `/pulse EURUSD` claims a screener that does not exist
 
 The text says *"the screener triages it every cycle"*. Forex has no screener; every pair
 buys a full analyst call every cycle, which is why its budget is larger than crypto's
 (`config.yaml`, the `llm_daily_budget_global_usd` block).
 
-Second because it is also a false statement about how the system works — but it is static
+Third because it is also a false statement about how the system works — but it is static
 text a careful reader can catch, and it hides no event. Most of its severity is borrowed
-from defect 1, which it compounds.
+from defect 2, which it compounds.
 
-### 3 — crypto screener calls report `cache_read_tokens: 0`
+### 4 — crypto screener calls report `cache_read_tokens: 0`
 
 Prompt caching is not being read on the screener call. Real money, every cycle, and
 possibly a symptom of caching being broken more widely than the one call it was noticed
-on. Above the Persian freeze because it is unbounded and silent; below 1 and 2 because
+on. Above the Persian freeze because it is unbounded and silent; below 1-3 because
 nobody concludes anything false from it.
 
-### 4 — Persian summary storage lookup is not wired
+### 5 — Persian summary storage lookup is not wired
 
 Every press regenerates the summary and freezes the UI for about 12 seconds. The
 `persian_summaries` table exists (migration `0012`) and is not being read. User-visible
 and it damages trust in a surface, but it misinforms nobody, and it has a known one-line
 mitigation: show `⏳ در حال آماده‌سازی…` before the call.
-
-### 5 — `/stats` and `/journal` report different R and neither says which
-
-`/stats` computes on `SignalRow.realized_r` (`stats/compute.py:87-93`); `/journal` maps
-that same column to **`pnl_r_gross`** and derives `pnl_r_net` beside it
-(`stats/journal.py:320-322`). Both are correct and neither is labelled on the surface, so
-the same window reads as **+2.86R** in one place and **+2.47R** in the other. It is what
-sent the wrong headline figures into the first draft of this review (§1).
-
-Placed fifth, not higher, on the criterion: a reader draws a conclusion that is *directionally*
-right and *quantitatively* wrong — the pipeline is profitable either way. But it is the
-only defect on this list that has already caused a documented error, which is an argument
-for it being higher than its rank, and the argument is recorded rather than acted on.
-`min_rr_tp1` gates the **net** figure, so net is the number the system actually decides on.
-
-**The fix is a label, not arithmetic.** Neither number is wrong.
 
 ### 6 — `forex.calendar_loaded` logs twice per minute
 
@@ -510,9 +593,8 @@ Log noise. Real, cheap, last.
 
 ### On the ordering
 
-**3-versus-4-versus-5 is arguable** — money, a user-facing freeze and a mislabelled
-number are not commensurable, and defect 5 is the only one here that has already caused a
-documented error. **1-and-2-above-the-rest is not arguable:** those two are the only defects
+**4-versus-5 is arguable** — money against a user-facing freeze is a judgement, not a
+measurement. **1-and-2-above-the-rest is not arguable:** those two are the only defects
 here that cause a reader to believe something false.
 
 ---
@@ -532,17 +614,142 @@ at €200–€1000.
 
 ---
 
-## 12. Next actions, in order
+## 12. Hypothesis for the next window — does clustering raise conviction?
 
-1. **Decide which book the rail reads** (§4a, §9). This comes before the number: on the
-   taken book the cap would have changed nothing in this window, on the published book it
-   blocks two losses and no winners — and a published-book cap truncates the evidence the
-   next window would be measured on.
-2. **Answer §9's yes/no.** The cost side is now filled in: **1.5% costs no winners.**
-3. **Run the forex `gate_decisions` query** (§10 defect 1). It decides whether §8's forex
-   paragraph is a finding or an artefact of an invisible rail.
+**This is about the owner, not about the pipeline, and it is the most actionable line in
+this review.** It is recorded as a hypothesis because the window cannot test it.
+
+**The observation.** Under §9's Book B, a 1.5% cap blocks exactly two trades — #12 and
+#22 — and those are **exactly the two the owner took with real money**. Two blocks out of
+eleven landing on the two TAKEN rows is roughly a 1-in-55 coincidence.
+
+**The hypothesis, stated so it can fail.**
+
+> *A crypto signal published while two or more same-direction signals are already open is
+> more likely to be marked ✅ Taken than one published into an empty or single-position
+> book.*
+
+The mechanism, if there is one: a third same-direction card arrives with two similar ones
+already on screen, and the agreement between them reads as confirmation rather than as
+concentration. If true, **the correlation cap and the owner's own conviction pull in
+opposite directions** — the rail would be most restrictive exactly where he is most
+inclined to act, which is either the strongest argument for it or the strongest argument
+that it will be overridden. Worth knowing before either is trusted.
+
+**What answers it, and it is all already stored.** No new instrumentation:
+
+| quantity | source |
+|---|---|
+| when the card arrived | `signals.created_at` |
+| when the button was pressed | `signals.decided_at` |
+| what was pressed | `signals.decision` |
+| direction | `signals.direction` |
+| what was open at press time | `signals.created_at` / `closed_at` of every other signal, `OPEN_STATUSES` |
+
+For each signal, count same-direction signals open at its **`decided_at`** — not
+`created_at`. The concurrency that could influence a decision is the concurrency visible
+when the button was pressed, and the two differ by however long the owner took to answer.
+Then compare `P(TAKEN | ≥2 concurrent same-direction)` against
+`P(TAKEN | 0 or 1)`.
+
+**It needs far more than two TAKEN rows.** With a base rate near 2/11 and an effect size
+worth acting on (say a doubling), this needs on the order of **50+ decided signals** before
+the comparison means anything — which is itself more than M9's unmet 25-signal exit
+criterion (§7). **Do not read this from the next handful of trades.** Record the counts
+each window and let it accumulate.
+
+**A confound to control for, or the answer will be wrong.** Clustered signals arrive on
+trending days, and a trending day changes both the signals and the owner's mood. Split by
+day, or compare only signals published within the same 24 hours, so "he takes more on
+clustered days" is not mistaken for "he takes the third of a cluster".
+
+## 13. The forex query that decides §8
+
+§8 records that all three forex signals were GBPUSD, and that this may be the rail rather
+than the market: `forex.max_concurrent_positions` is **1**, counted across **all users**
+(`orchestrator.py:1745`), so any EURUSD or USDJPY candidate reaching the rails while
+GBPUSD was open was rejected — and per defect 2, `/pulse` could not show it.
+
+Run on the server, against the app's database:
+
+```bash
+docker compose exec -T postgres psql -U sentinel -d sentinel
+```
+
+**Query A — what the forex gate actually decided, by symbol and reason.**
+
+```sql
+SELECT symbol,
+       gate_status,
+       COALESCE(reason, '(approved)') AS reason,
+       count(*) AS n,
+       min(evaluated_at) AS first_seen,
+       max(evaluated_at) AS last_seen
+FROM gate_decisions
+WHERE market = 'forex'
+  AND evaluated_at >= TIMESTAMPTZ '2026-08-24 00:00:00+00'
+GROUP BY symbol, gate_status, reason
+ORDER BY symbol, n DESC;
+```
+
+**How to read every possible result:**
+
+| what comes back | what it means | verdict on §8 |
+|---|---|---|
+| EURUSD / USDJPY rows with `MAX_CONCURRENT_POSITIONS` | the §9 cap was firing and `/pulse` never said so | **artefact.** "All GBPUSD" is the rail. §8's forex paragraph must be rewritten and defect 2 is confirmed as a false picture, not a wording bug |
+| EURUSD / USDJPY rows with other codes (`SPREAD_TOO_WIDE`, `EVENT_BLACKOUT`, `BELOW_MIN_TICKET`) | a different rail filtered them | **artefact, different cause.** Still not a market fact; the named rail becomes the thing to review at the ~2026-09-07 spend review |
+| EURUSD / USDJPY rows, all `NOT_A_CANDIDATE` | the analyst reached them and declined them | **closest to a finding** — though on one pair-window it establishes very little |
+| **no EURUSD / USDJPY rows at all** | they never reached the gate | neither; the filter is upstream — **run Query B** |
+
+**Query B — only if Query A returns no rows for the other two pairs.** A symbol declined
+before analysis is recorded in `cycles.skipped`, not in `gate_decisions`
+(`orchestrator.py:1173` — *"nothing was evaluated, so there is no verdict"*).
+
+```sql
+SELECT kv.key AS symbol,
+       kv.value ->> 'reason' AS skip_reason,
+       count(*) AS n
+FROM cycles c, jsonb_each(c.skipped) AS kv
+WHERE c.market = 'forex'
+  AND c.started_at >= TIMESTAMPTZ '2026-08-24 00:00:00+00'
+GROUP BY 1, 2
+ORDER BY 1, n DESC;
+```
+
+`MARKET_CLOSED` / `OUTSIDE_SCAN_HOURS` mean the window simply never looked; `NO_DATA`
+points at the adapter and is a defect; `OPEN_SIGNAL` / `COOLDOWN` are the book again.
+
+**Query C — was the cap even reachable?** How much of the window had a forex position
+open at all:
+
+```sql
+SELECT symbol, direction, created_at, first_fill_at, closed_at, outcome, decision
+FROM signals
+WHERE market = 'forex'
+ORDER BY created_at;
+```
+
+If GBPUSD held an open signal for most of the window, Query A's answer is close to
+predetermined and the cap is doing the filtering by construction.
+
+**Why this is the top next action rather than the cap's number:** it is the only open
+question in this file whose answer changes what is written in it. §9's number is settled
+and the rail it was for is cancelled.
+
+## 14. Next actions, in order
+
+1. **Run §13's Query A.** It is the only open question in this file whose answer changes
+   what is written in it — whether §8's "all GBPUSD" is a finding or an artefact of a rail
+   `/pulse` could not show.
+2. **Decide defect 1's fix** (§10). T1 is a label, renderer-only, two goldens. Until it
+   ships, quote `/stats` figures as gross and the journal's balance as net.
+3. **Nothing to decide on the cap.** It is cancelled (see the banner above). The design is
+   kept in `journal/M12_REPORT.md` §5 for the day a real book carries two concurrent
+   positions.
 4. Do not change a threshold on §3. Re-ask it after the next window.
-5. Do not move capital mid-window again (§6).
-6. Next window: check whether a third same-direction signal is disproportionately likely
-   to be **taken** (§9, temper 2). If it is, the cap and the owner's own conviction are
-   pulling in opposite directions and that is worth knowing before either is trusted.
+5. Do not move capital mid-window again (§6). It changed which signals cleared the gate,
+   not just the euro column.
+6. Start accumulating §12's counts now, and do not read them until there are ~50 decided
+   signals.
+7. M9's exit criteria (§7) are unmet at 9 tracked signals against 25. The next window
+   should run to the criterion before conclusions are drawn from it.
