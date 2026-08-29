@@ -11,8 +11,9 @@ data turned out not to be in the repo. What shipped is everything the decision n
 - `journal/M9_STATS_REVIEW.md` — the measurement window's result, closing M9. Twelve
   sections; §9 puts the risk-budget decision to the owner as a decision, with both sides
   argued and neither recommended.
-- `sentinel/tools/concurrency_backtest.py` + 17 tests — the cap's number, replayable in
-  one command instead of asserted in prose.
+- `sentinel/tools/concurrency_backtest.py` + 19 tests — the cap's number, replayable in
+  one command instead of asserted in prose. **Run against the full export (§3): 1.5%
+  costs no winners.**
 - `config.yaml` — the forex spend review moved 2026-09-04 → ~2026-09-07. **Comments only;
   `git diff` touches no value line.**
 - `docs/MILESTONES.md` — M12 renumbered (see §6), and the missing M10d/M10e sections
@@ -141,34 +142,92 @@ becomes without them.
 .venv/bin/python -m sentinel.tools.concurrency_backtest window.csv --cap 1.5 --cap 2.25
 ```
 
-**The full export was not available in this session** — `backups/` stops at 2026-08-21,
-five days before the window opened, and there is no CLI or make target that exports the
-journal; `/journal` in Telegram is the only path and it runs against the server. So the
-committed evidence is the four rows the brief supplied:
+The owner supplied the full export mid-session (2026-08-29, 14 data rows + header). Times
+are **Europe/Vilnius**, UTC+3 throughout — the changeover is 2026-10-25, so no row
+straddles it. Converted once to UTC; a constant offset cannot change an overlap, so every
+concurrency figure is zone-invariant and the conversion matters only for reconciling
+against logs.
 
-```
-── same-direction cap, replayed against the window ──
-trades with a fill: 4   net as traded: +0R   (from 0 of 4 with a result)
-⚠️  no row carries pnl_r_net — every R figure below is an ABSENCE, not a zero.
+### The answer
 
-cap 1.5% of capital in one direction
-  BLOCKED #22 DOGEUSDT long at 2026-08-28 05:57 — 1.50% already open · STOP · unresolved
-  net without them: +0R   (removed +0R across 1 trade(s))
+**1.5% costs no winners. Not one.** The five winners — #2 (+2.93R), #4 (+0.69R), #10
+(+0.35R), #15 (+1.44R), #8 (+0.64R) — are all admitted. The cap blocks only losses.
 
-cap 2.25% of capital in one direction
-  nothing blocked — this cap is a no-op on this window.
-```
+**But which losses, and whether any, depends on a distinction the brief did not draw and
+neither did I until I went looking for where `PortfolioState` comes from.**
 
-**What is certain from this, and it is not nothing:**
+| book | what it counts | blocked at 1.5% | net | at 2.25% |
+|---|---|---|---|---|
+| **A — taken** (`open_taken`, what crypto's rails read now) | 2 trades | **nothing** | −1.78R → −1.78R | nothing |
+| **B — published** (`open_symbols_by_user`, what forex §9 reads) | 11 trades | #12, #22 — both losses | +0.69R → **+2.47R** | nothing |
+| B without the undecided #8 | 10 trades | #22 — a loss | +0.05R → **+1.10R** | nothing |
 
-- **1.5% blocks exactly one trade on 2026-08-28: #22 DOGEUSDT — the owner's real money.**
-- **#21 BTCUSDT is admitted.** It filled at 13:08, four minutes after the cluster cleared.
-  A rail that blocked it too would be a daily quota, not a concurrency cap.
-- **2.25% as a same-direction cap is a no-op.** It is the existing rail wearing a new name.
-  So the choice really is between 1.5% and no change; there is no middle setting.
+**2.25% is a confirmed no-op on every book.** Peak same-direction concurrency in the
+window was 3 — exactly the designed maximum. So the choice is 1.5% or no change.
 
-**What is not known, and the question that decides the number:** whether any of the five
-winners was a third concurrent same-direction position. That needs the other rows.
+**The 08-28 cluster:** #18 (02:21 UTC) admitted, #20 (02:31) admitted as the second,
+**#22 (02:57) blocked**, #21 (10:08) admitted because #18 and #20 closed five minutes
+earlier. Four stops totalling −3.86R become three totalling −2.81R.
+
+**Lower-bound caveat, applied rather than restated.** `time_in` is the fill time and the
+rail fires at publication, so the table understates blocking. Computed per admitted trade,
+how much earlier it would have to be published to be refused: **every winner has ≥ 2 days
+of margin** (#15 2d 0:33, #8 2d 21:47, #10 4d 0:07; #2 and #4 never had two
+same-direction ahead of them). Signals publish hourly and expire within a day, so nothing
+reaches back two days. The one tight case is **#21 at five minutes — and it is a loss.**
+So publication times can only move the answer toward *more losses blocked, no winners*.
+The measured result is a floor.
+
+### What I found while answering it, and it is the milestone's pivot
+
+`check_portfolio_rails` reads a `PortfolioState` built from `open_taken`
+(`repositories.py:1535-1548`), which filters `decision == TAKEN`. Forex's §9 cap reads
+`open_symbols_by_user` (`:1524-1533`), which filters on `OPEN_STATUSES` and nothing else.
+
+**So crypto's rails count only signals the owner pressed Taken on; forex's counts every
+open signal.** In this window he took two, non-overlapping.
+
+> **The crypto rails saw at most ONE open position at any instant in the whole window.**
+> On 2026-08-28 the system *published* three simultaneous same-direction longs; the owner
+> *carried* one. `positions: 0 of 4` was an accurate reading of an empty book, not an
+> unused limit.
+
+"Give crypto the rail forex has" is therefore not adding a direction dimension to an
+equivalent rail — **the two rails read different books**, and that choice decides whether
+the cap does anything. Written up as `M9_STATS_REVIEW.md` §4a and folded into §9's
+decision.
+
+**One engineering recommendation, which is not the risk-budget call and so I do make it:**
+a published-book cap suppresses signals, and the HYPOTHETICAL population is the record of
+what the pipeline would have done. Capping publication truncates that record precisely on
+the clustered days — **it buys protection by destroying the evidence that would justify
+it.** The taken book constrains money and leaves the measurement intact.
+
+### Three things that temper the result, all in the review
+
+Two blocked trades out of eleven is the whole of the +1.78R. The two the cap blocks are
+**exactly the two the owner took with real money** — a 1-in-55 coincidence, or a mechanism
+in which a third same-direction signal arrives with two similar ones on screen and
+clustering raises conviction. Recorded as a hypothesis for the next window, not a finding.
+Under Book B neither of his real trades would have been published.
+
+### Corrections the rows forced
+
+- **The headline figures are GROSS.** `/stats` computes on `SignalRow.realized_r`, which
+  `/journal` labels `pnl_r_gross`. The window is **+2.47R / PF 1.69 net**, not +2.86R /
+  1.84. One parameter — 0.0433R/trade of costs — reconciles the net total, the PF *and*
+  the REAL population's −1.69R from its net −1.78R. Three targets, one parameter. Now
+  defect 5 in the review's ranking; it is what put wrong figures in the first draft.
+- **Times were Vilnius, not UTC.** The review now carries both columns.
+- **Two suspected findings died on contact with the code and are not reported as findings:**
+  `by_setup` spanning REAL+HYPOTHETICAL is a documented M7 owner ruling
+  (`stats/models.py:16-18`), not a population merge; and `Population` has no `UNDECIDED`
+  member, so the system correctly counts #8 as HYPOTHETICAL — the label is the owner's
+  annotation. Both were checked before writing rather than after.
+- **`#10` and `#8` are `STOP` with positive net R** — trailing stops after the management
+  plan moved them. The replay never reads `outcome`; two tests now pin that, one of them
+  relabelling every outcome in the fixture to prove the whole replay ignores the column
+  rather than one trade doing so.
 
 **Three deliberate properties of the tool**, each of them a lesson from this repo applied
 rather than restated:

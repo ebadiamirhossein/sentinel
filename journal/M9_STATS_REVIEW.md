@@ -33,17 +33,34 @@ points at the wrong fix, which is why this correction is the first thing in the 
 
 ## 1. Crypto, HYPOTHETICAL population
 
-| | |
-|---|---|
-| trades | 9 |
-| record | 5W / 4L — 55.6% |
-| net | **+2.86R** |
-| profit factor | **1.84** |
+> **Correction (2026-08-29, from the export). The headline figures are GROSS. The
+> window's net result is +2.47R, not +2.86R.**
+>
+> `/stats` computes on `SignalRow.realized_r` (`sentinel/stats/compute.py:87-93`), and
+> `/journal` maps that same column to **`pnl_r_gross`** (`stats/journal.py:320`),
+> deriving `pnl_r_net` separately. So the two surfaces report different numbers under
+> similar names, and the figures quoted into this review came from the gross one.
 
-Decomposed from those two aggregates (`W/L = 1.84`, `W − L = 2.86`): gross wins
-**6.265R** across five, gross losses **3.405R** across four. So **average win 1.25R
-against average loss 0.85R.** The sub-1R average loss is consistent with partial fills
-and stops moved to breakeven after TP1 — the ladder doing what it is for.
+| | gross (`/stats`) | **net (the export)** |
+|---|---|---|
+| trades | 9 | 9 |
+| record | 5W / 4L — 55.6% | 5W / 4L — 55.6% |
+| total | +2.86R | **+2.47R** |
+| profit factor | 1.84 | **1.69** |
+
+Summing the export's `pnl_r_net` over the nine gives **+2.47R and PF 1.69**. One free
+parameter reconciles the two readings — total costs of **0.39R**, about **0.0433R per
+trade** — and that same constant independently reproduces the stated PF of 1.84 (computed
+1.8395) *and* the REAL population's stated −1.69R from its net −1.78R. Three targets, one
+parameter: this is the gross/net split, not a transcription error.
+
+**Why it matters beyond bookkeeping.** `min_rr_tp1 = 1.5` gates the **net** figure
+(RISK_ENGINE.md §2 rule 5, corrected at M5.1) — so the number the gate admits a plan on
+is net, and the number the owner has been reading his results in is gross. Costs ate
+**14% of the window's net result**. Wins average 1.21R net; losses average 0.895R net.
+
+**Recorded as a defect, not fixed:** `/stats` and `/journal` should say which of the two
+they are showing. Ranked with the others in §10.
 
 **The pipeline is not failing.** Nothing in this section justifies touching the gate,
 `min_rr_tp1`, `min_confidence` or any setup threshold, and M12 touches none of them.
@@ -54,7 +71,8 @@ and stops moved to breakeven after TP1 — the ladder doing what it is for.
 |---|---|
 | trades | 2 |
 | record | 0W / 2L |
-| net | −1.69R |
+| gross | −1.69R |
+| **net** | **−1.78R** |
 
 **This is selection variance on a two-trade sample. It is not evidence about the
 pipeline.** At the measured 55.6% win rate, two consecutive losses happen about 20% of
@@ -67,10 +85,20 @@ what the owner's money did, not because it measures anything.
 
 ## 3. By setup type — recorded, not acted on
 
-| setup | trades | win rate | net |
-|---|---|---|---|
-| `trend_pullback` | 8 | 37.5% | −0.33R |
-| `breakout_retest` | 3 | 66.7% | +1.26R |
+| setup | trades | win rate | gross avg/trade | net avg/trade | net total |
+|---|---|---|---|---|---|
+| `trend_pullback` | 8 | 37.5% | −0.33R | −0.37R | −2.95R |
+| `breakout_retest` | 3 | 66.7% | +1.26R | +1.21R | +3.64R |
+
+Two clarifications the rows forced, neither of them a defect:
+
+- **The −0.33R and +1.26R are gross averages *per trade*, not totals.** Same gross/net
+  split as §1, and the same 0.0433R/trade reconciles both rows.
+- **The eleven trades here span REAL + HYPOTHETICAL**, which looks like the population
+  merge HANDOFF §5 forbids and is not: `by_setup` and `by_prompt_version` carry a
+  documented owner exception from M7 (`stats/models.py:16-18`) because *"which setups does
+  the analyst get right"* is a question about the analyst rather than about which cards
+  somebody acted on. Checked before reporting it as a finding.
 
 **Too small to act on. No threshold moves on n = 3.** Recorded as a **hypothesis for the
 next window**: *does `breakout_retest` outperform `trend_pullback`, and if so is it the
@@ -83,12 +111,19 @@ observations** — they may be one observation counted twice.
 
 ## 4. 2026-08-28, in full
 
-| # | symbol | dir | filled | stopped |
-|---|---|---|---|---|
-| 18 | AVAXUSDT | long | 05:21 | 13:03 |
-| 20 | SOLUSDT | long | 05:31 | 13:04 |
-| 22 | DOGEUSDT | long | 05:57 | 13:03 |
-| 21 | BTCUSDT | long | 13:08 | 19:02 |
+**Times below are UTC.** The export is in **Europe/Vilnius**, which was UTC+3 (EEST) for
+every row in this window — the changeover is 2026-10-25, so no row straddles it and one
+constant offset is correct throughout. Both columns are given because the owner reads the
+export in local time and every stored row is UTC (CLAUDE.md). A constant offset cannot
+change an overlap, so **every concurrency figure in this file is zone-invariant**; the
+conversion matters only for reconciling against logs.
+
+| # | symbol | dir | filled (UTC) | stopped (UTC) | filled (Vilnius) | stopped (Vilnius) | net R |
+|---|---|---|---|---|---|---|---|
+| 18 | AVAXUSDT | long | 02:21 | 10:03 | 05:21 | 13:03 | −1.04 |
+| 20 | SOLUSDT | long | 02:31 | 10:04 | 05:31 | 13:04 | −1.04 |
+| 22 | DOGEUSDT | long | 02:57 | 10:03 | 05:57 | 13:03 | −1.05 |
+| 21 | BTCUSDT | long | 10:08 | 16:02 | 13:08 | 19:02 | −0.73 |
 
 \#22 was **REAL** — the owner's money. Three positions were open simultaneously from
 05:57 to 13:03, all long, and they stopped **within one minute of each other**. That is
@@ -105,6 +140,45 @@ stronger:
 \#21 BTCUSDT is worth separating out: it filled at 13:08, **four minutes after** the
 cluster cleared. It was not concurrent with the other three. Any rail modelled on this
 day must admit it — see §10's test.
+
+## 4a. The rails did not see that cluster — and this is the milestone's pivot
+
+`check_portfolio_rails` reads `PortfolioState`, which the orchestrator builds from
+`SignalRepository.open_taken` (`orchestrator.py:1652`, `repositories.py:1535-1548`):
+
+```python
+    SignalRow.status.in_([status.value for status in OPEN_STATUSES]),
+    SignalRow.decision == SignalDecision.TAKEN.value,
+    SignalRow.dry_run.is_(False),
+```
+
+with the docstring *"Watched, skipped and dry-run signals are tracked but commit nothing,
+so they cannot occupy a budget the user never spent."*
+
+**So crypto's open-risk and position rails count only what the owner pressed ✅ Taken
+on.** In this window he took **two** signals — #12 and #22 — and they did not overlap
+(#12 closed 2026-08-25 09:53 UTC; #22 opened 2026-08-28 02:57 UTC).
+
+> **The crypto rails saw at most ONE open position at any instant in the entire
+> measurement window.** `positions: 0 of 4` on the `/status` card was not a limit going
+> unused — it was an accurate reading of an almost always empty book.
+
+On 2026-08-28 the system **published** three simultaneous same-direction longs. The owner
+**carried** one. The concentration is real and it is in the *published* book; it was never
+in his account.
+
+**And forex's §9 cap reads the other book.** `ForexPortfolioState.open_positions` is built
+from `open_symbols_by_user` (`repositories.py:1524-1533`), which filters on
+`OPEN_STATUSES` and **nothing else** — no decision, no dry-run test. So:
+
+| | counts | scope |
+|---|---|---|
+| crypto `MAX_OPEN_RISK` / `MAX_POSITIONS` | signals **decided TAKEN** | per user |
+| forex `MAX_CONCURRENT_POSITIONS` (§9) | **every open signal** | all users |
+
+"Give crypto the rail forex has" is therefore not a matter of adding a direction
+dimension to an equivalent rail. **The two rails read different books**, and which book
+the new rail reads decides whether it does anything at all — see §9.
 
 ## 5. Every crypto signal in the window was long
 
@@ -190,6 +264,12 @@ it is the decision. **This section does not recommend one.**
 > correlated position, or **cut the effective same-direction budget to 1.5%** and accept
 > 33% less exposure on the days the pipeline is right.
 
+**And §4a adds a second choice that has to be made first, because it decides whether the
+number matters at all:** does the rail read the **taken** book, as crypto's existing rails
+do — in which case it would have changed nothing in this window — or the **published**
+book, as forex's §9 does, in which case it would have blocked two losses and no winners?
+The measured answer to the first choice is different under each. Both are below.
+
 ### The strongest case for keeping 2.25%
 
 - **The edge is real and capping exposure caps it.** PF 1.84, average win 1.25R against
@@ -227,27 +307,103 @@ it is the decision. **This section does not recommend one.**
 - **At rehearsal capital the asymmetry favours the cap.** Forgone upside is a
   rehearsal-sized number; a correlated drawdown is a real one, plus the pause.
 
-### What is still missing, and will not be guessed
+### The cost side, answered — 2026-08-29, from the full export
 
-**What 1.5% would have cost on the days that WON.** From the four rows in §4 it is
-certain that 1.5% blocks **#22 DOGEUSDT and nothing else on 2026-08-28** — #21 filled
-four minutes after the cluster cleared. What is *not* known is whether any of the five
-winners was a third concurrent same-direction position.
+**DOES 1.5% COST ANY WINNERS? No. Not one — under either reading of the book.**
 
-That is one command against the full export:
+The five winners are #2 (+2.93R), #4 (+0.69R), #10 (+0.35R), #15 (+1.44R) and #8
+(+0.64R). **Every one is admitted.** The cap blocks only losses.
+
+**But the answer depends entirely on §4a's question — which book the rail reads — and
+under the book the rail actually reads today, it does nothing at all.**
+
+| book | what it counts | blocked at 1.5% | window net | at 2.25% |
+|---|---|---|---|---|
+| **A — taken** (what `check_portfolio_rails` reads now) | 2 trades | **nothing** | −1.78R → −1.78R | nothing |
+| **B — published** (what forex §9 reads) | 11 trades | **#12, #22** — both losses | +0.69R → **+2.47R** | nothing |
+| B without #8 | 10 trades | **#22** — a loss | +0.05R → **+1.10R** | nothing |
+
+- **Book A: the cap is untestable against this window.** The owner took two signals and
+  never held two at once, so no same-direction cap — 1.5%, 0.75%, anything — would have
+  fired. It protects a future in which he trades more; this window contains no evidence
+  about it either way.
+- **Book B: +0.69R → +2.47R, and no winner is touched.** It blocks #12 BTCUSDT (−0.73R)
+  and #22 DOGEUSDT (−1.05R).
+- **2.25% is confirmed a no-op on every book.** Maximum same-direction concurrency
+  reached in the window was **3** — exactly the designed maximum (§0). So the real choice
+  is 1.5% or no change; there is no middle setting.
+
+**The 2026-08-28 cluster, explicitly.** #18 (02:21 UTC) is admitted, #20 (02:31) is
+admitted as the second, **#22 (02:57) is blocked**. #21 (10:08) is admitted because #18
+and #20 had closed five minutes earlier. So the day goes from four stops totalling
+−3.86R to **three stops totalling −2.81R**. The cluster of three becomes a pair.
+
+### Three things that should temper this before it is read as a result
+
+1. **It rests on two data points.** Two blocked trades out of eleven. The +1.78R is the
+   sum of two losses that happened to arrive third in a queue, and §7's warning about
+   sample size applies to this section more than to any other in the file.
+2. **The two trades the cap blocks are exactly the two the owner took with real money.**
+   At random that is a 1-in-55 coincidence, which is worth naming rather than enjoying.
+   There is a plausible mechanism — a third same-direction signal arrives with two
+   similar ones already on screen, and clustering raises conviction — under which the cap
+   would systematically target the signals he is most likely to act on. **That is
+   speculation and is recorded as a hypothesis for the next window**, not as a finding.
+   Under Book B, neither of his two real trades would have been published, and his real
+   P&L for the window would have been zero rather than −1.78R.
+3. **A cap on the published book changes what the next measurement can measure.** The
+   HYPOTHETICAL population exists to record what the pipeline would have done. Suppress
+   publication and it stops being that record — truncated precisely on the clustered
+   days, which are the days in question. **A Book B rail buys protection by destroying
+   the evidence that would justify it.** Book A has the opposite property: it constrains
+   only money, and leaves the measurement intact. This is an argument for the taken book
+   that has nothing to do with the risk-budget question, and it is the one engineering
+   recommendation in this section.
+
+### The lower-bound caveat, applied
+
+`time_in` is the **fill** time; the rail fires at **publication**, and a published but
+unfilled signal already occupies the budget. So the table above understates blocking. How
+much could it move? For each admitted trade, how much earlier it would have had to be
+published to be refused:
+
+| trade | net R | margin |
+|---|---|---|
+| #2, #4 | +2.93, +0.69 | never had two same-direction ahead of them |
+| #15 | **+1.44** | 2 days 0:33 |
+| #6 | −0.77 | 2 days 1:30 |
+| #18 | −1.04 | 2 days 5:13 |
+| #20 | −1.04 | 2 days 5:23 |
+| #8 | **+0.64** | 2 days 21:47 |
+| #10 | **+0.35** | 4 days 0:07 |
+| #21 | −0.73 | **0:05** |
+
+**Every winner has at least two days of margin.** Signals are published on a 60-minute
+cycle and expire within a day, so no plausible publication time reaches back two days.
+The single tight case is **#21, at five minutes — and it is a loss.**
+
+> **So publication times can only move the answer in one direction: more losses blocked,
+> no winners.** The measured result is a floor, and the finding is robust to the
+> limitation that produced it.
+
+Reproduce with:
 
 ```bash
 .venv/bin/python -m sentinel.tools.concurrency_backtest window.csv --cap 1.5 --cap 2.25
 ```
 
-`sentinel/tools/concurrency_backtest.py` exists so this number is reproducible rather
-than asserted. **Two limitations it prints with every result:** `time_in` is the *fill*
-time while the rail fires at *publication*, so every figure is a **lower bound** on what
-the cap blocks; and removing a trade and re-summing assumes the others played out
-identically, which is the assumption under examination on a day when everything moved
-together.
+### On #8, the undecided row
 
-**Until that number exists, §9 is not answerable and the rail is not built.**
+The export labels #8 `UNDECIDED`; `stats/models.py`'s `Population` has no such member and
+`population_of` returns `HYPOTHETICAL` for anything not TAKEN, so **the system counts it
+as HYPOTHETICAL** — which is why the headline says nine trades over eight
+`HYPOTHETICAL`-labelled rows. The label is the owner's annotation, not a stored value.
+
+**Does including it change a conclusion? One, and it is worth knowing.** With #8 in the
+book, #12 is blocked (it arrives with #8 and #10 both open); without it, #12 is admitted
+and only #22 is blocked. So **#8 alone decides whether the cap catches one of the owner's
+real losses or both.** It does not change the answer to the question that matters — no
+winner is blocked either way, and the net improves either way (+1.10R or +1.78R).
 
 ### One caveat on the percentages above
 
@@ -260,7 +416,7 @@ euro column did.
 
 ## 10. Known defects — recorded, not fixed, ranked
 
-Five carry-forwards. **Ordered by severity, and the ordering is argued** rather than
+Six carry-forwards. **Ordered by severity, and the ordering is argued** rather than
 listed, because the ordering is the useful part. The criterion:
 
 > **Does a reader draw a false conclusion, or are they merely inconvenienced?**
@@ -332,14 +488,31 @@ Every press regenerates the summary and freezes the UI for about 12 seconds. The
 and it damages trust in a surface, but it misinforms nobody, and it has a known one-line
 mitigation: show `⏳ در حال آماده‌سازی…` before the call.
 
-### 5 — `forex.calendar_loaded` logs twice per minute
+### 5 — `/stats` and `/journal` report different R and neither says which
+
+`/stats` computes on `SignalRow.realized_r` (`stats/compute.py:87-93`); `/journal` maps
+that same column to **`pnl_r_gross`** and derives `pnl_r_net` beside it
+(`stats/journal.py:320-322`). Both are correct and neither is labelled on the surface, so
+the same window reads as **+2.86R** in one place and **+2.47R** in the other. It is what
+sent the wrong headline figures into the first draft of this review (§1).
+
+Placed fifth, not higher, on the criterion: a reader draws a conclusion that is *directionally*
+right and *quantitatively* wrong — the pipeline is profitable either way. But it is the
+only defect on this list that has already caused a documented error, which is an argument
+for it being higher than its rank, and the argument is recorded rather than acted on.
+`min_rr_tp1` gates the **net** figure, so net is the number the system actually decides on.
+
+**The fix is a label, not arithmetic.** Neither number is wrong.
+
+### 6 — `forex.calendar_loaded` logs twice per minute
 
 Log noise. Real, cheap, last.
 
 ### On the ordering
 
-**3-versus-4 is arguable** — money against a user-facing freeze is a judgement, not a
-measurement. **1-and-2-above-the-rest is not arguable:** those two are the only defects
+**3-versus-4-versus-5 is arguable** — money, a user-facing freeze and a mislabelled
+number are not commensurable, and defect 5 is the only one here that has already caused a
+documented error. **1-and-2-above-the-rest is not arguable:** those two are the only defects
 here that cause a reader to believe something false.
 
 ---
@@ -361,9 +534,15 @@ at €200–€1000.
 
 ## 12. Next actions, in order
 
-1. **Run the forex `gate_decisions` query** (§10 defect 1). It decides whether §8's
-   forex paragraph is a finding or an artefact.
-2. **Export the full window and run the backtest** (§9). It decides the cap's number.
-3. **Answer §9.** Until then M12's rail is designed and not built.
+1. **Decide which book the rail reads** (§4a, §9). This comes before the number: on the
+   taken book the cap would have changed nothing in this window, on the published book it
+   blocks two losses and no winners — and a published-book cap truncates the evidence the
+   next window would be measured on.
+2. **Answer §9's yes/no.** The cost side is now filled in: **1.5% costs no winners.**
+3. **Run the forex `gate_decisions` query** (§10 defect 1). It decides whether §8's forex
+   paragraph is a finding or an artefact of an invisible rail.
 4. Do not change a threshold on §3. Re-ask it after the next window.
 5. Do not move capital mid-window again (§6).
+6. Next window: check whether a third same-direction signal is disproportionately likely
+   to be **taken** (§9, temper 2). If it is, the cap and the owner's own conviction are
+   pulling in opposite directions and that is worth knowing before either is trusted.

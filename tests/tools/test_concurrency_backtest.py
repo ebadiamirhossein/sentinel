@@ -340,3 +340,68 @@ def test_a_window_with_results_does_not_carry_the_absence_warning() -> None:
     output = render(list(CLUSTER), [replay(CLUSTER, cap_pct=CAP_CANDIDATE)])
     assert "ABSENCE" not in output
     assert "from 4 of 4 with a result" in output
+
+
+# --------------------------------------------------------------------------- #
+# `outcome` is a label, never an input to the arithmetic
+# --------------------------------------------------------------------------- #
+
+
+def test_a_stop_with_positive_r_is_counted_as_a_win() -> None:
+    """#10 and #8 in the real window are `STOP` with **positive** net R.
+
+    Those are trailing stops after the management plan moved them to breakeven and
+    beyond — the ladder working, not losses. Any code that reads `outcome == "STOP"`
+    as a loss would misclassify two of the window's five winners and invert the
+    finding. The replay must never read `outcome` at all: it sums `pnl_r_net`.
+    """
+    trailing = Trade(
+        number=10,
+        symbol="BNBUSDT",
+        direction="long",
+        time_in=_at(20, 2, day=24),
+        time_out=_at(12, 51, day=25),
+        pnl_r_net=Decimal("0.35"),
+        outcome="STOP",
+        population="HYPOTHETICAL",
+        setup_type="trend_pullback",
+    )
+    result = replay((trailing,), cap_pct=CAP_CANDIDATE)
+    assert result.taken_net_r == Decimal("0.35")
+    assert "+0.35R" in render([trailing], [result])
+
+
+def test_outcome_never_reaches_the_replay() -> None:
+    """Proof of teeth for the test above: relabel every outcome, change nothing.
+
+    If `outcome` ever became an input, this test fails while the one above still
+    passes — a single trade cannot show that the *whole* replay ignores the column.
+    """
+    relabelled = tuple(
+        Trade(
+            number=trade.number,
+            symbol=trade.symbol,
+            direction=trade.direction,
+            time_in=trade.time_in,
+            time_out=trade.time_out,
+            pnl_r_net=trade.pnl_r_net,
+            outcome="TP3",
+            population=trade.population,
+            setup_type=trade.setup_type,
+        )
+        for trade in CLUSTER
+    )
+
+    def arithmetic(trades: tuple[Trade, ...]) -> tuple[list[int], Decimal, Decimal, int]:
+        outcome = replay(trades, cap_pct=CAP_CANDIDATE)
+        return (
+            [item.trade.number for item in outcome.blocked],
+            outcome.taken_net_r,
+            outcome.blocked_net_r,
+            outcome.unresolved,
+        )
+
+    # Compared by arithmetic, not by object: the Trades themselves differ in exactly
+    # the field under test, so a whole-Result comparison would fail for the wrong
+    # reason and prove nothing about whether the column is read.
+    assert arithmetic(relabelled) == arithmetic(CLUSTER)
