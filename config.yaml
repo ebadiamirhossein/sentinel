@@ -73,9 +73,15 @@ markets:
 
   # ═══ SWITCHED ON 2026-08-21 (M10d) — A TWO-WEEK OBSERVATION WINDOW ═══
   #
-  # REVIEW 2026-09-04, one day after crypto's measurement review, so both are read
-  # together. This is not a permanent configuration. See `llm_daily_budget_global_usd`
-  # below for the revert values, and journal/M10d_REPORT.md for what was measured.
+  # REVIEW ~2026-09-07. This is not a permanent configuration. See
+  # `llm_daily_budget_global_usd` below for the revert values, and
+  # journal/M10d_REPORT.md for what was measured.
+  #
+  # MOVED 2026-08-29 (M12), 09-04 -> 09-07. Forex was configured 2026-08-21 but the
+  # daily-staleness defect meant it produced nothing until 2026-08-24 (M10e). A
+  # two-week window that spent five days broken has not had two weeks.
+  # It no longer trails crypto's measurement review by a day: that window closed on
+  # 2026-08-29 (journal/M9_STATS_REVIEW.md) and this one had not finished.
   #
   # `dry_run: false`, deliberately and against FOREX.md §11's "forex starts in
   # DRY_RUN". journal/M7_REPORT.md settled what dry_run actually does: it publishes
@@ -128,7 +134,9 @@ markets:
 # actually spent its 8 — the floor protects the measurement, not crypto's convenience.
 # ═══ RAISED 2026-08-21 (M10d) FOR THE FOREX OBSERVATION WINDOW ═══
 #
-# 11 -> 20. REVIEW 2026-09-04. REVERT VALUES IF FOREX IS NOT CONTINUED:
+# 11 -> 20. REVIEW ~2026-09-07 (MOVED 2026-08-29, M12 — five of the window's first
+# days produced nothing; see markets.forex above). REVERT VALUES IF FOREX IS NOT
+# CONTINUED:
 #     llm_daily_budget_global_usd: 11
 #     markets.forex.llm_daily_budget_usd: 4     (and llm_daily_warn_usd: 3)
 #     llm.daily_spend_limit_usd: 10             (and daily_spend_warn_usd: 7)
@@ -383,8 +391,8 @@ llm:
   # These gate cost_usd_estimate, which is an ESTIMATE and not billing truth.
   # Sizing: the screener alone is ~$0.023/cycle ≈ $2.2/day at 96 cycles, so $10
   # leaves ~$7.8 for deep analysis — about 24 analyst calls at M5's ~$0.32.
-  # RAISED 2026-08-21 (M10d) with the ceiling above. REVIEW 2026-09-04; revert to
-  # 10 and 7.
+  # RAISED 2026-08-21 (M10d) with the ceiling above. REVIEW ~2026-09-07 (MOVED
+  # 2026-08-29, M12 — see markets.forex above); revert to 10 and 7.
   #
   # `daily_spend_warn_usd` is the one that HAD to move, and it is easy to miss why:
   # `evaluate_market_spend` reads it as the GLOBAL warn level (sentinel/llm/spend.py),

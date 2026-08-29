@@ -379,15 +379,83 @@ switch-on day moves no golden at all.
 risk branch coverage unchanged at 100%, `make check` exit 0, and the only crypto bytes
 that moved are defect #22's two lines — approved in advance, line by line.
 
+## M10d — Forex switch-on ✅
+Added retrospectively 2026-08-29 (M12): this milestone and M10e shipped and are reported
+in `journal/`, and this file stopped at M10c. Recorded here so the ledger and the journal
+agree.
+
+* `markets.forex.enabled: true`, 2026-08-21, opening a **two-week observation window**
+  with `dry_run: false` — deliberately against FOREX.md §11. M7 settled that `dry_run`
+  publishes *nothing*, and the point of the window is that the owner **reads** real forex
+  cards and does not trade them. "Not trading" is his hand on the mouse, not a config flag.
+* Spend ceiling raised 11 → 20 for the window, with a `llm_reserved_floor_usd: 8` held for
+  crypto so an unmeasured market cannot compete with a measured one, and the **revert
+  values written down beside the way forward** — a rail raised for a rehearsal and never
+  lowered is how the $73/day incident started.
+* **Review date now ~2026-09-07**, moved from 2026-09-04 by M12: five of the window's
+  first days produced nothing (see M10e).
+
+## M10e — The forex daily-staleness rail ✅
+Added retrospectively 2026-08-29 (M12), same reason as M10d.
+
+The first trading day a forex cycle ever ran on was Monday 2026-08-24, and it lost every
+cycle of it. The 1d staleness rail compared **wall-clock** age against a 48-hour budget,
+and on a Monday the newest *closed* daily bar is Friday's — 79 hours old at the first
+cycle, 90 at the last. `status: OK`, `spend_usd: 0`, `/health` green, no alert.
+
+* The 1d rail is now measured in **observed market hours**; intraday rails untouched; no
+  threshold moved. New `forex.daily_freshness` log line every cycle.
+* **`AlertKind.MARKET_BARREN`** — the rail for *nothing going right*. Every previous rail
+  watched for something going wrong, and "all three pairs skipped, status OK, cost zero"
+  was the blind spot rather than an edge case.
+* **The lesson (HANDOFF §4 item 16):** a calendar-dependent rule tested on one day of the
+  week has not been tested. Every forex test in the repo ran at a Wednesday anchor; the
+  fixture was already correct. Forex tests now parametrise over both DST anchors, both
+  ends of the scan window, and the Monday after a closed Friday.
+* Spec ruling: FOREX.md §5.1, corrections-log defect #31. Its falsifying date was
+  **Monday 2026-08-31**, which is after the measurement window closed.
+
+> **Renumbering (2026-08-29, from M12).** The owner closed the crypto measurement window
+> with a structural rail rather than with the ensemble work, so **M12 is now the crypto
+> correlation cap** (below). The consensus gate moves M12 → **M13** and the read-only
+> dashboard M13 → **M14**. Same treatment as the 2026-08-20 renumbering above:
+> docs/specs/ENSEMBLE.md carries a dated correction rather than being rewritten — this
+> file is the forward plan, that one is the recorded decision.
+>
+> M11 (ensemble shadow mode) is **unaffected and still unbuilt**. Note that
+> `journal/M11p_REPORT.md` is **M11p — Persian summaries**, a side milestone shipped out
+> of band; it is not this M11.
+
 ## M11 — Ensemble shadow mode (1 day) (spec pending — do not implement)
 OpenAI GPT-5.6 Sol as second AnalystProvider per docs/specs/ENSEMBLE.md §3; parallel
 shadow analysis; comparer; `/stats compare-models`. Was M10 before M10a's renumbering.
 **Demo:** signal card shows the 2nd-opinion footer; stats command splits by agreement.
 
-## M12 — Consensus gate (½ day, feature-flagged, only if M11 exit criteria met) (spec pending — do not implement)
-Deterministic gating table per docs/specs/ENSEMBLE.md §4. Was M11.
+## M12 — The crypto correlation cap (documentation phase shipped 2026-08-29; rail held)
+Closes the M9 measurement window and gives crypto the correlation rail forex has carried
+since it shipped. `docs/specs/FOREX.md` §9 caps forex at one open position because EURUSD,
+GBPUSD and USDJPY all cross the dollar; crypto permits three concurrent positions with no
+correlation check, and on 2026-08-28 three same-direction longs stopped within 61 seconds
+of each other — one trade sized three times. All 11 crypto signals in the window were long.
 
-## M13 — Read-only web dashboard (spec pending — do not implement)
+**Shipped:** `journal/M9_STATS_REVIEW.md` (the window's result, and the risk-budget
+decision put to the owner as a decision); `sentinel/tools/concurrency_backtest.py` (the
+rail's number, replayable rather than asserted); the forex spend-review date moved to
+~2026-09-07; the five known defects ranked by severity.
+
+**Held, at owner instruction, pending the backtest:** the rail itself. Design is settled
+and recorded in journal/M12_REPORT.md §5 — a **risk-based** `max_same_direction_risk_pct`
+rather than a position count, because `max_positions: 4` demonstrates what happens to a
+count cap shadowed by a risk cap: it never fires and becomes decorative.
+
+**Exit criteria:** `git diff main -- sentinel/risk/ sentinel/fx/ sentinel/analyst/prompts/`
+empty; no golden moved; `make check` exit 0; and the owner has answered
+`journal/M9_STATS_REVIEW.md` §9.
+
+## M13 — Consensus gate (½ day, feature-flagged, only if M11 exit criteria met) (spec pending — do not implement)
+Deterministic gating table per docs/specs/ENSEMBLE.md §4. Was M11, then M12.
+
+## M14 — Read-only web dashboard (spec pending — do not implement)
 Read-only over the existing Postgres; auth for owner and members; hosted on the same
 box behind the existing Caddy. Telegram stays the delivery surface and keeps the
 buttons. Journal, pulse, stats and charts as pages. PRD P2 slot.
